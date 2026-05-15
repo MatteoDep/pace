@@ -20,6 +20,7 @@ export GARMINTOKENS=<path to token storage>
 """
 
 import logging
+import sys
 from datetime import date
 
 from garminconnect import Garmin
@@ -33,20 +34,20 @@ logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 def display_user_info(api: Garmin):
     """Display basic user information with proper error handling."""
     # Get user's full name
-    success, _full_name, _error_msg = safe_api_call(api.get_full_name)
+    success, full_name, error_msg = safe_api_call(api.get_full_name)
     if success:
-        pass
+        print(f"Hello, {full_name}!")
     else:
-        pass
+        print(f"Could not get full name: {error_msg}")
 
     # Get user profile number from device info
-    success, device_info, _error_msg = safe_api_call(api.get_device_last_used)
+    success, device_info, error_msg = safe_api_call(api.get_device_last_used)
     if success and device_info and device_info.get("userProfileNumber"):
-        device_info.get("userProfileNumber")
+        print(f"User profile number: {device_info.get('userProfileNumber')}")
     elif not success:
-        pass
+        print(f"Could not get device info: {error_msg}")
     else:
-        pass
+        print("No device info available.")
 
 
 def display_daily_stats(api: Garmin):
@@ -54,36 +55,43 @@ def display_daily_stats(api: Garmin):
     today = date.today().isoformat()
 
     # Get user summary (steps, calories, etc.)
-    success, summary, _error_msg = safe_api_call(api.get_user_summary, today)
+    success, summary, error_msg = safe_api_call(api.get_user_summary, today)
     if success and summary:
         steps = summary.get("totalSteps", 0)
-        summary.get("totalDistanceMeters", 0) / 1000  # Convert to km
-        summary.get("totalKilocalories", 0)
-        summary.get("floorsClimbed", 0)
+        distance_km = summary.get("totalDistanceMeters", 0) / 1000
+        calories = summary.get("totalKilocalories", 0)
+        floors = summary.get("floorsClimbed", 0)
 
-        # Fun motivation based on steps
+        print(f"\nToday's stats ({today}):")
+        print(f"  Steps:    {steps}")
+        print(f"  Distance: {distance_km:.2f} km")
+        print(f"  Calories: {calories}")
+        print(f"  Floors:   {floors}")
+
         if steps < 5000 or steps > 15000:
-            pass
+            print("  Step count outside typical range.")
         else:
-            pass
+            print("  Step count in healthy range.")
     elif not success:
-        pass
+        print(f"Could not get user summary: {error_msg}")
     else:
-        pass
+        print("No user summary available.")
 
     # Get hydration data
-    success, hydration, _error_msg = safe_api_call(api.get_hydration_data, today)
+    success, hydration, error_msg = safe_api_call(api.get_hydration_data, today)
     if success and hydration and hydration.get("valueInML"):
         hydration_ml = int(hydration.get("valueInML", 0))
         hydration_goal = hydration.get("goalInML", 0)
-        round(hydration_ml / 240, 1)  # 240ml = 1 cup
+        cups = round(hydration_ml / 240, 1)
 
+        print(f"\nHydration: {hydration_ml} ml ({cups} cups)")
         if hydration_goal > 0:
-            round((hydration_ml / hydration_goal) * 100)
+            pct = round((hydration_ml / hydration_goal) * 100)
+            print(f"  Goal: {hydration_goal} ml ({pct}%)")
     elif not success:
-        pass
+        print(f"Could not get hydration: {error_msg}")
     else:
-        pass
+        print("No hydration data available.")
 
 
 def main():
@@ -91,7 +99,8 @@ def main():
     api = init_api()
 
     if not api:
-        return
+        print("Failed to authenticate with Garmin Connect.")
+        sys.exit(1)
 
     display_user_info(api)
     display_daily_stats(api)

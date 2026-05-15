@@ -8,3 +8,9 @@ dependencies = [
     "garminconnect>=0.2.8",
     "readchar>=4.2.1",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.13",
+    "ty>=0.0.35",
+]
