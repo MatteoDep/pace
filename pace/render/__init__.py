@@ -40,4 +40,4 @@ def render(model: BaseModel, fmt: Format | None = None, stream: IO | None = None
 
 
 # Trigger registration of built-in renderers.
-from pace.render import json_, table  # noqa: E402, F401
+from pace.render import csv_, json_, md, table  # noqa: E402, F401

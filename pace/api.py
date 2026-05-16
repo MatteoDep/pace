@@ -73,3 +73,33 @@ async def safe_call(
             return False, None, f"Rate limit: {err}"
         except Exception as err:
             return False, None, f"Unexpected error: {err}"
+
+
+async def paginate(
+    method_name: str,
+    *,
+    page_size: int = 1000,
+    max_items: int | None = None,
+    **kwargs: Any,
+) -> list[Any]:
+    """Repeatedly call a `(start, limit, ...)`-style method until exhausted.
+
+    Garmin caps `limit` at 1000 per request for `get_activities`. We accumulate
+    pages until an empty result or the optional `max_items` cap is hit.
+    """
+    out: list[Any] = []
+    start = 0
+    while True:
+        ok, page, err = await safe_call(method_name, start, page_size, **kwargs)
+        if not ok:
+            raise RuntimeError(err)
+        if not page:
+            break
+        out.extend(page)
+        if len(page) < page_size:
+            break
+        if max_items is not None and len(out) >= max_items:
+            out = out[:max_items]
+            break
+        start += page_size
+    return out
