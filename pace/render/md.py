@@ -1,11 +1,12 @@
 """Markdown table renderer."""
 
-from typing import IO, Any
+from typing import IO
 
 from pydantic import BaseModel
 
 from pace.models.list import ListModel
 from pace.render import register
+from pace.render._columns import infer_columns, to_dict
 
 
 @register("md")
@@ -30,30 +31,12 @@ def _list_md(model: ListModel, stream: IO) -> None:
     if not items:
         stream.write("_no rows_\n")
         return
-    columns = model.columns or _infer_columns(items)
+    columns = model.columns or infer_columns(items)
     stream.write("| " + " | ".join(_esc(c) for c in columns) + " |\n")
     stream.write("|" + "|".join("---" for _ in columns) + "|\n")
     for row in items:
-        rec = _to_dict(row)
+        rec = to_dict(row)
         stream.write("| " + " | ".join(_esc(_fmt(rec.get(c))) for c in columns) + " |\n")
-
-
-def _infer_columns(items: list[Any]) -> list[str]:
-    seen: list[str] = []
-    for row in items[:20]:
-        rec = _to_dict(row)
-        for key in rec:
-            if key not in seen:
-                seen.append(key)
-    return seen
-
-
-def _to_dict(row: Any) -> dict[str, Any]:
-    if isinstance(row, BaseModel):
-        return row.model_dump()
-    if isinstance(row, dict):
-        return row
-    return {"value": row}
 
 
 def _fmt(value: object) -> str:

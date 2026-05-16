@@ -11,7 +11,15 @@ gear_app = typer.Typer(no_args_is_help=True, help="Gear inventory and usage.")
 
 _TTL = 86400  # 1 day
 
-_GEAR_COLUMNS = ["uuid", "displayName", "gearType", "totalDistance", "totalActivities"]
+_GEAR_COLUMNS = [
+    "uuid",
+    "gearTypeName",
+    "customMakeModel",
+    "gearMakeName",
+    "gearStatusName",
+    "dateBegin",
+    "maximumMeters",
+]
 
 
 async def _user_profile_number(cache) -> int:

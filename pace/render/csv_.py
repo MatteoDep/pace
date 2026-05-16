@@ -1,12 +1,13 @@
 """CSV renderer."""
 
 import csv
-from typing import IO, Any
+from typing import IO
 
 from pydantic import BaseModel
 
 from pace.models.list import ListModel
 from pace.render import register
+from pace.render._columns import infer_columns, to_dict
 
 
 @register("csv")
@@ -28,30 +29,12 @@ def _list_csv(model: ListModel, stream: IO) -> None:
     items = model.items
     if not items:
         return
-    columns = model.columns or _infer_columns(items)
+    columns = model.columns or infer_columns(items, cap=64)
     writer = csv.writer(stream)
     writer.writerow(columns)
     for row in items:
-        rec = _to_dict(row)
+        rec = to_dict(row)
         writer.writerow([_fmt(rec.get(c)) for c in columns])
-
-
-def _infer_columns(items: list[Any]) -> list[str]:
-    seen: list[str] = []
-    for row in items[:20]:
-        rec = _to_dict(row)
-        for key in rec:
-            if key not in seen:
-                seen.append(key)
-    return seen
-
-
-def _to_dict(row: Any) -> dict[str, Any]:
-    if isinstance(row, BaseModel):
-        return row.model_dump()
-    if isinstance(row, dict):
-        return row
-    return {"value": row}
 
 
 def _fmt(value: object) -> str:

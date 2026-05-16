@@ -12,7 +12,13 @@ device_app = typer.Typer(no_args_is_help=True, help="Registered Garmin devices."
 
 _TTL = 86400  # 1 day
 
-_DEVICE_COLUMNS = ["deviceId", "displayName", "productDisplayName", "serialNumber"]
+_DEVICE_COLUMNS = [
+    "applicationKey",
+    "productDisplayName",
+    "productSku",
+    "deviceTypePk",
+    "currentFirmwareVersion",
+]
 
 
 @device_app.command("list")
