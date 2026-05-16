@@ -1,0 +1,80 @@
+"""SQLite-backed read-through cache with per-key TTL."""
+
+import asyncio
+import json
+import sqlite3
+import time
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+from pace.config import CACHE_DB, ensure_home
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cache (
+    key TEXT PRIMARY KEY,
+    value BLOB NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    ttl INTEGER NOT NULL
+);
+"""
+
+
+class Cache:
+    def __init__(self, path: Path = CACHE_DB) -> None:
+        self.path = path
+        ensure_home()
+        self._conn = sqlite3.connect(str(path))
+        self._conn.execute(_SCHEMA)
+        self._conn.commit()
+        self._lock = asyncio.Lock()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def _get(self, key: str) -> Any | None:
+        cur = self._conn.execute(
+            "SELECT value, fetched_at, ttl FROM cache WHERE key = ?", (key,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        value, fetched_at, ttl = row
+        if time.time() - fetched_at >= ttl:
+            return None
+        return json.loads(value)
+
+    def _put(self, key: str, value: Any, ttl: int) -> None:
+        payload = json.dumps(value, default=str)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO cache (key, value, fetched_at, ttl) "
+            "VALUES (?, ?, ?, ?)",
+            (key, payload, int(time.time()), ttl),
+        )
+        self._conn.commit()
+
+    async def get_or_fetch(
+        self,
+        key: str,
+        fetch: Callable[[], Awaitable[Any]],
+        ttl: int,
+    ) -> Any:
+        async with self._lock:
+            cached = self._get(key)
+            if cached is not None:
+                return cached
+        value = await fetch()
+        async with self._lock:
+            self._put(key, value, ttl)
+        return value
+
+    def clear(self) -> int:
+        cur = self._conn.execute("DELETE FROM cache")
+        self._conn.commit()
+        return cur.rowcount
+
+    def stats(self) -> dict[str, int]:
+        cur = self._conn.execute("SELECT COUNT(*) FROM cache")
+        entries = cur.fetchone()[0]
+        size = self.path.stat().st_size if self.path.exists() else 0
+        return {"entries": entries, "size_bytes": size}

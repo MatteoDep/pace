@@ -1,8 +1,8 @@
-# Trainscout CLI -- Proposal & Implementation Plan
+# Pace CLI -- Proposal & Implementation Plan
 
 ## Context
 
-The current `trainscout` project is a sketch: `main.py` calls a handful of Garmin endpoints and discards their output, `demo.py` is a 4k-line interactive reference exercising 100+ API methods, and the `trainscout` entry script is a stub.
+The current `pace` project is a sketch: `main.py` calls a handful of Garmin endpoints and discards their output, `demo.py` is a 4k-line interactive reference exercising 100+ API methods, and the `pace` entry script is a stub.
 The goal is a polished, documented, scriptable CLI that lets the user navigate the full Garmin Connect surface area (66+ read endpoints across activities, wellness, training, devices, gear, goals, profile) with nicely rendered output.
 
 The CLI must be:
@@ -23,7 +23,7 @@ The CLI must be:
 | Data models | `pydantic` v2 (already installed) | Typed wrappers around raw Garmin dicts; one model per command output. |
 | Cache | stdlib `sqlite3` | Per-endpoint table, TTL column. No ORM. |
 | HTTP | `garminconnect` (sync) wrapped via `aionode.make_async` | Keep existing auth/MFA flow. |
-| Config | env vars + `~/.garminconnect` token file (unchanged) | Plus optional `~/.trainscout/config.toml` for prefs (default format, cache TTL). |
+| Config | env vars + `~/.garminconnect` token file (unchanged) | Plus optional `~/.pace/config.toml` for prefs (default format, cache TTL). |
 | Man pages | `click-man` over Typer's underlying Click app | Generated at build time. |
 | Linting/types | `ruff` + `ty` (unchanged) | |
 
@@ -32,10 +32,10 @@ Python `>=3.14` (already pinned).
 ## Repository Layout
 
 ```
-trainscout/
+pace/
   __init__.py
   cli.py                  # Typer app root; wires subcommand groups
-  config.py               # Settings (env + TOML), paths (~/.trainscout/)
+  config.py               # Settings (env + TOML), paths (~/.pace/)
   auth.py                 # init_api(), MFA, token store (move from garmin_api.py)
   ratelimit.py            # Async token bucket + sliding window
   api.py                  # Async wrappers around Garmin methods; uses aionode.node
@@ -57,14 +57,14 @@ trainscout/
     goal.py
     profile.py
     today.py              # Cross-domain daily dashboard
-  __main__.py             # `python -m trainscout`
-pyproject.toml             # Add deps, define [project.scripts] trainscout = "trainscout.cli:app"
+  __main__.py             # `python -m pace`
+pyproject.toml             # Add deps, define [project.scripts] pace = "pace.cli:app"
 docs/
   man/                    # Generated man pages
 README.md                 # Quickstart + cheat sheet
 ```
 
-Delete the current top-level `trainscout` shell stub; replace with the entry point declared in `pyproject.toml` (`trainscout = "trainscout.cli:app"`).
+Delete the current top-level `pace` shell stub; replace with the entry point declared in `pyproject.toml` (`pace = "pace.cli:app"`).
 
 ## Architecture
 
@@ -82,7 +82,7 @@ Delete the current top-level `trainscout` shell stub; replace with the entry poi
 
 - `progress.py` runs a `rich.live.Live` loop that polls `aionode.walk_dag()` every 100 ms.
 - For each `TaskInfo` it renders a row with name, status icon (WAITING/RUNNING/DONE/FAILED), and `info.duration()`.
-- For aggregate commands (e.g. `trainscout today`), the DAG visualises which endpoints are fetching in parallel.
+- For aggregate commands (e.g. `pace today`), the DAG visualises which endpoints are fetching in parallel.
 
 ### Cache
 
@@ -90,7 +90,7 @@ Delete the current top-level `trainscout` shell stub; replace with the entry poi
 - Schema: single table `cache(key TEXT PRIMARY KEY, value BLOB, fetched_at INTEGER, ttl INTEGER)`; `value` is JSON-serialized response.
 - Keys: `f"{endpoint}:{args_hash}"`.
 - Default TTLs per endpoint family (today's data: 5 min; historical: 24 h; static like devices/profile: 7 d).
-- `--no-cache` flag and `trainscout cache clear|stats` subcommand.
+- `--no-cache` flag and `pace cache clear|stats` subcommand.
 
 ### Rendering
 
@@ -118,7 +118,7 @@ Each subcommand accepts: `--format {table,json,csv,md}`, `--no-cache`, `--date Y
 
 ### Stage 1 -- Skeleton (auth, cache, one command)
 
-Goal: `trainscout profile show` works end-to-end with table + JSON output.
+Goal: `pace profile show` works end-to-end with table + JSON output.
 
 - Add deps: `typer`, `rich`, `aionode`, `click-man` (dev).
 - Create package layout above.
@@ -126,7 +126,7 @@ Goal: `trainscout profile show` works end-to-end with table + JSON output.
 - Build `cache.py` (SQLite, TTL).
 - Build `render/table.py` + `render/json_.py` + format dispatcher.
 - One command: `profile show`.
-- `trainscout auth login` / `auth status` / `auth logout` (wraps existing token flow).
+- `pace auth login` / `auth status` / `auth logout` (wraps existing token flow).
 - `pyproject.toml` entry point.
 Replace top-level shell stub.
 
@@ -141,7 +141,7 @@ Goal: full domain coverage of the most-used endpoints.
 - Add `csv` and `md` formatters.
 - `--date` / `--from` / `--to` date helpers (shared util).
 - Pagination handled internally for `activity list` (Garmin caps `limit` at 1000).
-- `trainscout cache clear|stats`.
+- `pace cache clear|stats`.
 
 Deliverable: feature-complete read CLI for typical daily/weekly use.
 
@@ -149,12 +149,12 @@ Deliverable: feature-complete read CLI for typical daily/weekly use.
 
 Goal: aggregate views, polished rendering, progress UI.
 
-- `trainscout today`: parallel fetch of summary, sleep, HR, body-battery, training-readiness; rendered as a multi-panel Rich dashboard.
+- `pace today`: parallel fetch of summary, sleep, HR, body-battery, training-readiness; rendered as a multi-panel Rich dashboard.
 - `progress.py` Live UI wired via `aionode.walk_dag()`; shown when >=2 in-flight requests or stderr is a TTY.
 - Sparklines for step/HR trends (Rich's bar plot or unicode block chars).
 - Color-coded status (good/warn/bad thresholds per metric).
-- Config file `~/.trainscout/config.toml` for default format, cache TTLs, dashboard layout.
-- Shell completions (`typer` built-in: `trainscout --install-completion`).
+- Config file `~/.pace/config.toml` for default format, cache TTLs, dashboard layout.
+- Shell completions (`typer` built-in: `pace --install-completion`).
 
 Deliverable: production-quality daily-driver CLI.
 
@@ -162,30 +162,30 @@ Deliverable: production-quality daily-driver CLI.
 
 Goal: extensibility, history, exports.
 
-- `trainscout activity export --from --to --format gpx|fit|tcx` (uses `download_activity`).
-- Historical trends: `trainscout wellness trend hrv --days 90` with inline chart.
+- `pace activity export --from --to --format gpx|fit|tcx` (uses `download_activity`).
+- Historical trends: `pace wellness trend hrv --days 90` with inline chart.
 - Man page generation pipeline (`click-man` -> `docs/man/`), packaged with the wheel.
-- Plugin hooks: entry point `trainscout.commands` so third-party packages can register subcommands.
-- Optional notification hooks (e.g. low body-battery alert) via a simple `trainscout watch` subcommand.
+- Plugin hooks: entry point `pace.commands` so third-party packages can register subcommands.
+- Optional notification hooks (e.g. low body-battery alert) via a simple `pace watch` subcommand.
 
 Deliverable: extensible platform; advanced users get history, exports, plugins.
 
 ## Critical Files To Modify / Create
 
 - `pyproject.toml` -- add deps, entry point.
-- New: `trainscout/` package (per layout).
+- New: `pace/` package (per layout).
 - Reuse logic from `garmin_api.py:22-125` (rate limiter, safe call) and `garmin_api.py:132-207` (auth/MFA).
 - Reference: `demo.py:3354` (`execute_api_call` router) for endpoint coverage during Stage 2.
-- Delete (later): top-level `trainscout` shell stub once the entry point is wired.
+- Delete (later): top-level `pace` shell stub once the entry point is wired.
 
 ## Verification
 
 Per stage:
 
 - Unit: pytest for rate limiter (token bucket math, sliding window), cache (TTL expiry, hit/miss), formatters (snapshot tests against fixture dicts).
-- Smoke: `trainscout profile show`, `trainscout wellness today`, `trainscout activity list --limit 5` against a real account.
+- Smoke: `pace profile show`, `pace wellness today`, `pace activity list --limit 5` against a real account.
 - Output formats: pipe through `jq`, import CSV into Numbers/Excel, render Markdown in a viewer.
-- Rate limit: run `trainscout today` 20 times in a loop; observe no 429s and progress UI behaves.
+- Rate limit: run `pace today` 20 times in a loop; observe no 429s and progress UI behaves.
 - Cache: re-run the same command with `--no-cache` vs cached; verify cache hit avoids API call (assertable via aionode DAG inspection).
-- Help: `trainscout --help`, `trainscout activity --help`, `man trainscout-activity` (after Stage 4).
+- Help: `pace --help`, `pace activity --help`, `man pace-activity` (after Stage 4).
 - Types/lint: `ruff check` + `ty check` green.

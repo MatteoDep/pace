@@ -1,8 +1,8 @@
 # Stage 1 -- Skeleton
 
-Goal: installable `trainscout` CLI with `auth` subcommands + `profile show`, async rate-limited API client, SQLite cache, table + JSON output.
+Goal: installable `pace` CLI with `auth` subcommands + `profile show`, async rate-limited API client, SQLite cache, table + JSON output.
 
-Exit criteria: `uv run trainscout profile show` prints user profile as Rich table; `... profile show --format json` prints valid JSON; cache hit on second run; `uv run trainscout auth status` reports token state.
+Exit criteria: `uv run pace profile show` prints user profile as Rich table; `... profile show --format json` prints valid JSON; cache hit on second run; `uv run pace auth status` reports token state.
 
 ## Task breakdown
 
@@ -14,7 +14,7 @@ Each task ends with a runnable check.
 - Edit `pyproject.toml`:
   - Add to `dependencies`: `typer>=0.12`, `rich>=13.7`, `aionode>=0.3.0`.
   - Add to `dev`: `click-man>=0.5`, `pytest>=8`, `pytest-asyncio>=0.23`.
-  - Add `[project.scripts]` table: `trainscout = "trainscout.cli:app"`.
+  - Add `[project.scripts]` table: `pace = "pace.cli:app"`.
   - Add `[tool.hatch.build.targets.wheel]` (or equivalent) so the package is built.
 - `uv sync` to install.
 - Check: `uv run python -c "import typer, rich, aionode"` exits 0.
@@ -24,7 +24,7 @@ Each task ends with a runnable check.
 Create empty modules so imports resolve:
 
 ```
-trainscout/
+pace/
   __init__.py
   __main__.py             # from .cli import app; app()
   cli.py                  # Typer app + sub-app registration
@@ -46,16 +46,16 @@ trainscout/
     profile.py
 ```
 
-- Delete top-level `trainscout` shell stub once package entry point works.
-- Check: `uv run trainscout --help` lists `auth` and `profile` sub-apps (even if empty).
+- Delete top-level `pace` shell stub once package entry point works.
+- Check: `uv run pace --help` lists `auth` and `profile` sub-apps (even if empty).
 
 ### 3. `config.py`
 
-- Resolve paths: `TRAINSCOUT_HOME = Path(os.getenv("TRAINSCOUT_HOME", "~/.trainscout")).expanduser()`.
-- Sub-paths: `CACHE_DB = TRAINSCOUT_HOME / "cache.db"`, `TOKEN_STORE = Path(os.getenv("GARMINTOKENS", "~/.garminconnect")).expanduser()`.
+- Resolve paths: `PACE_HOME = Path(os.getenv("PACE_HOME", "~/.pace")).expanduser()`.
+- Sub-paths: `CACHE_DB = PACE_HOME / "cache.db"`, `TOKEN_STORE = Path(os.getenv("GARMINTOKENS", "~/.garminconnect")).expanduser()`.
 - `ensure_home()` -- mkdir parents.
 - No TOML loading yet (deferred to Stage 3).
-- Check: `python -c "from trainscout.config import TRAINSCOUT_HOME, ensure_home; ensure_home(); print(TRAINSCOUT_HOME)"`.
+- Check: `python -c "from pace.config import PACE_HOME, ensure_home; ensure_home(); print(PACE_HOME)"`.
 
 ### 4. `ratelimit.py` (async port)
 
@@ -74,7 +74,7 @@ trainscout/
 - Keep them sync (auth is one-shot at startup; async port adds no value here).
 - Add `auth_status() -> dict` returning `{"authenticated": bool, "token_path": str, "expires_at": str | None}` (inspect `garth` token expiry if accessible; else just check file exists).
 - Add `logout()`: delete `TOKEN_STORE` directory if exists; confirm to user.
-- Check: `uv run trainscout auth status` prints expected dict.
+- Check: `uv run pace auth status` prints expected dict.
 
 ### 6. `api.py`
 
@@ -83,7 +83,7 @@ trainscout/
   - `await limiter.acquire()`; `async with concurrency:` `await asyncio.to_thread(getattr(get_api(), method_name), *args, **kwargs)`.
   - Wrap with the error-handling block from `garmin_api.py:81-125` (port verbatim).
 - Optionally wrap with `aionode.node` decorator so calls appear in the DAG.
-- Check: `python -c "import asyncio; from trainscout.api import safe_call; print(asyncio.run(safe_call('get_full_name')))"`.
+- Check: `python -c "import asyncio; from pace.api import safe_call; print(asyncio.run(safe_call('get_full_name')))"`.
 
 ### 7. `cache.py`
 
@@ -113,7 +113,7 @@ trainscout/
   - `def render(model, fmt: str | None, stream=sys.stdout)` dispatcher.
 - `render/json_.py`: dump via `model.model_dump_json(indent=2)`.
 - `render/table.py`: generic Pydantic -> two-column Rich table (field, value); specialized renderers can override per-model.
-- Check: `python -c "from trainscout.render import render, default_format; ..."` (sanity).
+- Check: `python -c "from pace.render import render, default_format; ..."` (sanity).
 
 ### 9. `models/profile.py`
 
@@ -146,17 +146,17 @@ trainscout/
 ### 13. README quickstart
 
 - Install: `uv sync` or `pipx install .`.
-- First-run auth: `trainscout auth login` (env vars EMAIL/PASSWORD or prompt; MFA prompt if needed).
-- Examples: `trainscout profile show`, `... --format json`.
-- Caching: `~/.trainscout/cache.db`; bypass with `--no-cache`.
+- First-run auth: `pace auth login` (env vars EMAIL/PASSWORD or prompt; MFA prompt if needed).
+- Examples: `pace profile show`, `... --format json`.
+- Caching: `~/.pace/cache.db`; bypass with `--no-cache`.
 
 ## Verification (end of Stage 1)
 
-- `uv run trainscout --help` shows `auth` and `profile` groups.
-- `uv run trainscout auth status` prints token state.
-- `uv run trainscout auth login` succeeds (interactive MFA still works).
-- `uv run trainscout profile show` renders a 4-row Rich table.
-- `uv run trainscout profile show --format json` outputs valid JSON (verify with `... | jq`).
+- `uv run pace --help` shows `auth` and `profile` groups.
+- `uv run pace auth status` prints token state.
+- `uv run pace auth login` succeeds (interactive MFA still works).
+- `uv run pace profile show` renders a 4-row Rich table.
+- `uv run pace profile show --format json` outputs valid JSON (verify with `... | jq`).
 - Second run of `profile show` is fast (cache hit) -- verify by adding a debug log in `Cache.get_or_fetch` and observing only the first run prints "MISS".
 - `uv run pytest` green (rate-limiter + cache tests).
 - `uv run ruff check` and `uv run ty check` green.
