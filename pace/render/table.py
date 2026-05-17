@@ -9,6 +9,7 @@ from rich.table import Table
 from pace.models.list import ListModel
 from pace.render import register
 from pace.render._columns import infer_columns, to_dict
+from pace.render._flatten import flatten_dict
 
 
 @register("table")
@@ -24,7 +25,7 @@ def _scalar_table(model: BaseModel) -> Table:
     table = Table(title=type(model).__name__, show_header=True, header_style="bold")
     table.add_column("Field", style="cyan")
     table.add_column("Value")
-    for name, value in model.model_dump().items():
+    for name, value in flatten_dict(model.model_dump()).items():
         table.add_row(name, _fmt(value))
     return table
 

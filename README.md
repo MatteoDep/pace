@@ -58,6 +58,32 @@ pace cache stats
 Responses are cached at `~/.pace/cache.db` (override with `PACE_HOME`).
 TTLs default to 5 min for today's wellness data, 1 hour for training metrics, 1 day for static data (devices, gear), 7 days for profile.
 
+## Shell completion
+
+Typer ships completion for bash, zsh, fish, and PowerShell:
+
+```bash
+pace --install-completion           # auto-detects current shell
+pace --show-completion              # print the script to stdout
+```
+
+After install, restart your shell.
+Then tab-complete subcommands: `pace acti<TAB>` -> `pace activity`.
+
+## Configuration
+
+User config lives at `~/.pace/config.toml` (or `$PACE_HOME/config.toml`).
+
+```toml
+default_format = "json"     # used when no --format flag and no TTY hint
+dashboard_panels = ["steps", "sleep", "hr", "body_battery", "readiness", "hrv"]
+
+[cache_ttl_overrides]
+"wellness.today" = 60       # override per-command TTLs (seconds)
+```
+
+Run `pace config show` to view the effective config, `pace config path` to print the file location.
+
 ## Development
 
 ```bash
@@ -70,7 +96,7 @@ uv run ty check
 
 - Stage 1 (skeleton, auth, cache, `profile show`): done.
 - Stage 2 (full read-command coverage, all formats): done.
-- Stage 3 (dashboards, progress UI, sparklines): pending.
-- Stage 4 (exports, history, plugins, man pages): pending.
+- Stage 3 (dashboards, progress UI, sparklines, config, completion): done.
+- Stage 4 (TUI browse, exports, history, plugins, man pages): pending.
 
-See `docs/STAGE1.md`, `docs/STAGE2.md`, `PROPOSAL.md` for details.
+See `docs/STAGE1.md`, `docs/STAGE2.md`, `docs/STAGE3.md`, `docs/STAGE4.md`, `PROPOSAL.md` for details.
