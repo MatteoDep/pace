@@ -83,6 +83,15 @@ class ActivityScreen(Screen):
     def _show_detail(self, payload: Any) -> None:
         self.query_one(DetailTree).populate(payload)
 
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Live-preview the highlighted row's summary in the side tree."""
+        if not self._activities:
+            return
+        idx = event.cursor_row
+        if idx is None or idx >= len(self._activities):
+            return
+        self._show_detail(self._activities[idx])
+
     async def action_expand(self) -> None:
         table = self.query_one("#table", DataTable)
         if not self._activities:
