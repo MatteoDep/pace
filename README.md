@@ -32,6 +32,12 @@ Tokens are cached at `~/.garminconnect/` (override with `GARMINTOKENS`).
 | `profile` | `show`, `settings`, `unit-system` |
 | `cache` | `stats`, `clear`, `path` |
 | `auth` | `login`, `status`, `logout` |
+| `config` | `show`, `path` |
+| `today` | one-shot daily dashboard with sparklines |
+| `watch` | poll a metric, run a shell hook on threshold crossings |
+| `browse activity` | interactive TUI with row drill-down |
+| `wellness trend` | sparkline chart of a metric over N days |
+| `activity export` / `export-range` | GPX/TCX/KML/original downloads |
 
 Run `pace <group> --help` for the full list.
 
@@ -51,6 +57,14 @@ pace wellness today --format json | jq .totalSteps
 pace activity list --limit 10 --format csv > activities.csv
 pace activity show 10000000001 --format md
 pace cache stats
+
+# Stage 4 features
+pace today                                       # dashboard with sparklines
+pace browse activity                             # interactive TUI
+pace wellness trend hrv --days 90                # sparkline chart of HRV
+pace activity export 10000000001 --format gpx    # download a single GPX
+pace activity export-range --from -7d --out-dir runs/  # batch export 1 week
+pace watch body_battery --threshold "value < 20" --on-cross "notify-send 'low'"
 ```
 
 ## Cache
@@ -97,6 +111,8 @@ uv run ty check
 - Stage 1 (skeleton, auth, cache, `profile show`): done.
 - Stage 2 (full read-command coverage, all formats): done.
 - Stage 3 (dashboards, progress UI, sparklines, config, completion): done.
-- Stage 4 (TUI browse, exports, history, plugins, man pages): pending.
+- Stage 4 (TUI browse, exports, trends, watch, plugins, man pages): done.
 
-See `docs/STAGE1.md`, `docs/STAGE2.md`, `docs/STAGE3.md`, `docs/STAGE4.md`, `PROPOSAL.md` for details.
+Version 1.0.0.
+
+See `docs/STAGE1.md`-`STAGE4.md`, `PROPOSAL.md`, `docs/PLUGINS.md` for details.

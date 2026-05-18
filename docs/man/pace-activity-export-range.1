@@ -1,0 +1,24 @@
+.TH "PACE ACTIVITY EXPORT-RANGE" "1" "2026-05-17" "0.1.0" "pace activity export-range Manual"
+.SH NAME
+pace\-activity\-export-range \- Download every activity in a date range to...
+.SH SYNOPSIS
+.B pace activity export-range
+[OPTIONS]
+.SH DESCRIPTION
+Download every activity in a date range to `--out-dir`.
+.SH OPTIONS
+.TP
+\fB\-F,\fP \-\-from TEXT
+Start date (YYYY-MM-DD | -Nd).  [required]
+.TP
+\fB\-T,\fP \-\-to TEXT
+[default: today]
+.TP
+\fB\-f,\fP \-\-format [gpx|tcx|kml|original]
+[default: gpx]
+.TP
+\fB\-d,\fP \-\-out\-dir PATH
+[default: activities]
+.TP
+\fB\-t,\fP \-\-type TEXT
+.PP

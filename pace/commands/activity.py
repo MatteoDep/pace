@@ -1,11 +1,18 @@
 """Activity subcommands."""
 
+import asyncio
+from enum import Enum
+from pathlib import Path
+
 import typer
 
-from pace.api import paginate
+from garminconnect import Garmin
+from pace.api import paginate, safe_call
 from pace.commands._helpers import cache_for, cached_call, run
+from pace.dates import parse_date
 from pace.models.list import ListModel
 from pace.models.raw import RawData
+from pace.progress import named_node, progress_ui
 from pace.render import Format
 
 activity_app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
@@ -142,6 +149,96 @@ def last(
         return RawData.from_response(data)
 
     run(fetch, fmt)
+
+
+class ExportFormat(str, Enum):
+    GPX = "gpx"
+    TCX = "tcx"
+    KML = "kml"
+    ORIGINAL = "original"  # zip containing .fit
+
+
+_DL_FMT_MAP = {
+    ExportFormat.GPX: Garmin.ActivityDownloadFormat.GPX,
+    ExportFormat.TCX: Garmin.ActivityDownloadFormat.TCX,
+    ExportFormat.KML: Garmin.ActivityDownloadFormat.KML,
+    ExportFormat.ORIGINAL: Garmin.ActivityDownloadFormat.ORIGINAL,
+}
+
+
+def _ext_for(fmt: ExportFormat) -> str:
+    return ".zip" if fmt is ExportFormat.ORIGINAL else f".{fmt.value}"
+
+
+async def _download_one(activity_id: int, fmt: ExportFormat) -> bytes:
+    ok, data, err = await safe_call("download_activity", str(activity_id), _DL_FMT_MAP[fmt])
+    if not ok:
+        raise RuntimeError(err)
+    return data
+
+
+@activity_app.command("export")
+def export(
+    activity_id: int = typer.Argument(..., help="Activity ID."),
+    fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f", help="Export format."),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Output file (default: <activity_id>.<ext> in cwd).",
+    ),
+) -> None:
+    """Download an activity in GPX/TCX/KML/original format."""
+    try:
+        data = asyncio.run(_download_one(activity_id, fmt))
+    except RuntimeError as err:
+        typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from None
+    target = out or Path(f"{activity_id}{_ext_for(fmt)}")
+    target.write_bytes(data)
+    typer.secho(f"Wrote {len(data)} bytes -> {target}", fg=typer.colors.GREEN)
+
+
+@activity_app.command("export-range")
+def export_range(
+    from_: str = typer.Option(..., "--from", "-F", help="Start date (YYYY-MM-DD | -Nd)."),
+    to: str = typer.Option("today", "--to", "-T"),
+    fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f"),
+    out_dir: Path = typer.Option(Path("./activities"), "--out-dir", "-d"),
+    activity_type: str | None = typer.Option(None, "--type", "-t"),
+) -> None:
+    """Download every activity in a date range to `--out-dir`."""
+    async def go() -> int:
+        start_d = parse_date(from_).isoformat()
+        end_d = parse_date(to).isoformat()
+        ok, listing, err = await safe_call(
+            "get_activities_by_date", start_d, end_d, activity_type, 1000
+        )
+        if not ok:
+            raise RuntimeError(err)
+        listing = listing or []
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        async def fetch_one(aid: int) -> Path:
+            data = await _download_one(aid, fmt)
+            target = out_dir / f"{aid}{_ext_for(fmt)}"
+            target.write_bytes(data)
+            return target
+
+        async with progress_ui():
+            tasks = [
+                asyncio.create_task(named_node(f"act-{a['activityId']}", fetch_one)(a["activityId"]))
+                for a in listing
+            ]
+            await asyncio.gather(*tasks, return_exceptions=False)
+        return len(listing)
+
+    try:
+        n = asyncio.run(go())
+    except RuntimeError as err:
+        typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from None
+    typer.secho(f"Exported {n} activities to {out_dir}", fg=typer.colors.GREEN)
 
 
 def _flatten_activity(a: dict) -> dict:
