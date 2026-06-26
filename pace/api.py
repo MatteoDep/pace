@@ -1,6 +1,7 @@
 """Async wrapper around the sync Garmin Connect client."""
 
 import asyncio
+import logging
 from typing import Any
 
 from garth.exc import GarthHTTPError
@@ -13,6 +14,11 @@ from garminconnect import (
 )
 from pace import auth
 from pace.ratelimit import concurrency, limiter
+
+# The garminconnect library logs full tracebacks on every HTTP error (404, 400,
+# etc.) before raising. We catch and classify those errors in `safe_call`, so
+# silence the library's own logging to keep the CLI output clean.
+logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 _api: Garmin | None = None
 
