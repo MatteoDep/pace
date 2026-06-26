@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from garth.exc import GarthHTTPError
@@ -34,24 +35,34 @@ def get_api() -> Garmin:
     return _api
 
 
-def _classify_http_error(err: GarthHTTPError) -> str:
-    msg = str(err)
-    code = getattr(getattr(err, "response", None), "status_code", None)
-    if code == 400 or "400" in msg:
-        return "Endpoint not available (400) -- not enabled for your account"
-    if code == 401 or "401" in msg:
-        return "Auth required (401) -- re-authenticate"
-    if code == 403 or "403" in msg:
-        return "Access denied (403)"
-    if code == 404 or "404" in msg:
-        return "Endpoint not found (404)"
-    if code == 429 or "429" in msg:
-        return "Rate limit exceeded (429)"
-    if code == 500 or "500" in msg:
-        return "Server error (500)"
-    if code == 503 or "503" in msg:
-        return "Service unavailable (503)"
-    return f"HTTP error: {err}"
+_HTTP_LABELS = {
+    400: "Endpoint not available (400) -- not enabled for your account",
+    401: "Auth required (401) -- re-authenticate",
+    403: "Access denied (403)",
+    404: "Endpoint not found (404)",
+    429: "Rate limit exceeded (429)",
+    500: "Server error (500)",
+    503: "Service unavailable (503)",
+}
+
+
+def _status_from_text(msg: str) -> int | None:
+    """Pull an HTTP status code out of an error message.
+
+    garminconnect wraps HTTP failures as e.g. "API client error (404): ..."
+    without exposing the code as an attribute, so we recover it from the text.
+    """
+    paren = re.search(r"\((\d{3})\)", msg)
+    if paren:
+        return int(paren.group(1))
+    bare = re.search(r"\b([45]\d{2})\b", msg)
+    return int(bare.group(1)) if bare else None
+
+
+def _classify_http_error(code: int | None, msg: str) -> str:
+    if code in _HTTP_LABELS:
+        return _HTTP_LABELS[code]
+    return f"HTTP error: {msg}"
 
 
 async def safe_call(
@@ -68,12 +79,20 @@ async def safe_call(
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
         except GarthHTTPError as err:
-            return False, None, _classify_http_error(err)
+            code = getattr(getattr(err, "response", None), "status_code", None)
+            return False, None, _classify_http_error(code, str(err))
         except FileNotFoundError:
             return False, None, "No valid tokens. Run `pace auth login`."
         except GarminConnectAuthenticationError as err:
             return False, None, f"Auth issue: {err}"
         except GarminConnectConnectionError as err:
+            # garminconnect funnels HTTP client/server errors through this same
+            # exception type as genuine network failures; recover the status
+            # code from the message so an HTTP 404 isn't mislabelled a
+            # "Connection issue".
+            code = _status_from_text(str(err))
+            if code is not None:
+                return False, None, _classify_http_error(code, str(err))
             return False, None, f"Connection issue: {err}"
         except GarminConnectTooManyRequestsError as err:
             return False, None, f"Rate limit: {err}"
