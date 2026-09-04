@@ -20,12 +20,14 @@ Declare it in your `pyproject.toml`:
 3.
 Reuse pace's infrastructure where applicable:
 
-   - `pace.api.safe_call(method, ...)` -- rate-limited Garmin client.
-   - `pace.api.paginate(method, ...)` -- multi-page accumulator.
-   - `pace.cache.Cache` -- shared SQLite cache (per-key TTL).
-   - `pace.render.render(model, fmt)` -- table/json/csv/md output dispatch.
-   - `pace.commands._helpers.run(...)`, `cached_call(...)` -- standard
-     fetch + render boilerplate.
+   - `pace.api.safe_call(method, ...)` -- rate-limited Garmin client; returns `(ok, data, ApiError | None)`.
+   - `pace.commands._helpers.cached_call(method, *args, cache=, ttl=, tracker=)` -- cached call raising `PaceError`.
+   - `pace.envelope.run(command, args, work)` -- run an async `work() -> Result` and print the envelope.
+   - `pace.shape.apply(...)` -- prune, field selection, series bucketing.
+   - `pace.factory.FIELDS_OPT / BUCKET_OPT / RAW_OPT / NO_CACHE_OPT / FROM_OPT / TO_OPT / DAYS_OPT` -- the standard flags.
+   - `pace.factory.build_command(app, EndpointSpec(...))` -- declare an endpoint instead of writing a command.
+
+Plugins must print nothing to stdout except through `pace.envelope`.
 
 ## Minimal example
 

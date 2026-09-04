@@ -1,33 +1,10 @@
 """Shared helpers for command modules."""
 
-import asyncio
-import sys
-from collections.abc import Callable, Coroutine
 from typing import Any
-
-import typer
-from pydantic import BaseModel
 
 from pace.api import safe_call
 from pace.cache import Cache, CacheTracker
 from pace.envelope import PaceError, log
-from pace.render import Format, default_format, render
-
-
-def run(coro_factory: Callable[[], Coroutine[Any, Any, BaseModel]], fmt: Format | None) -> None:
-    """Run an async fetch+model coroutine and render the result.
-
-    Centralised error handling for command modules.
-    """
-    try:
-        model = asyncio.run(coro_factory())
-    except PaceError as err:
-        typer.secho(f"Error: {err.message}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None
-    except RuntimeError as err:
-        typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None
-    render(model, fmt or default_format(), sys.stdout)
 
 
 async def cached_call(
@@ -65,7 +42,3 @@ async def cached_call(
     if tracker is not None:
         tracker.add(hit, age)
     return value
-
-
-def cache_for(no_cache: bool) -> Cache | None:
-    return None if no_cache else Cache()
