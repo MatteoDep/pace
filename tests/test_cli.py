@@ -1,0 +1,70 @@
+import json
+
+import pytest
+from typer.testing import CliRunner
+
+from pace.cli import app, main
+
+runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _tmp_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("pace.config.PACE_HOME", tmp_path)
+    monkeypatch.setattr("pace.config.CACHE_DB", tmp_path / "cache.db")
+    monkeypatch.setattr("pace.config.CONFIG_FILE", tmp_path / "config.toml")
+    monkeypatch.setattr("pace.config.TOKEN_STORE", tmp_path / "tokens")
+    monkeypatch.setattr("pace.auth.TOKEN_STORE", tmp_path / "tokens")
+
+
+def test_usage_error_is_bad_args_envelope(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.argv", ["pace", "wellness", "sleep", "--nope"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]["code"] == "bad_args" and "--nope" in doc["error"]["message"]
+
+
+def test_unknown_command_is_bad_args(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.argv", ["pace", "frobnicate"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2 and json.loads(capsys.readouterr().out)["error"]["code"] == "bad_args"
+
+
+def test_auth_status_not_logged_in() -> None:
+    doc = json.loads(runner.invoke(app, ["auth", "status"]).stdout)
+    assert doc["ok"] and doc["data"]["logged_in"] is False
+
+
+def test_auth_logout_reports_removed(tmp_path) -> None:
+    (tmp_path / "tokens").mkdir()
+    doc = json.loads(runner.invoke(app, ["auth", "logout"]).stdout)
+    assert doc["data"] == {"removed": True}
+    doc = json.loads(runner.invoke(app, ["auth", "logout"]).stdout)
+    assert doc["data"] == {"removed": False}
+
+
+def test_cache_commands(tmp_path) -> None:
+    doc = json.loads(runner.invoke(app, ["cache", "stats"]).stdout)
+    assert doc["data"]["entries"] == 0 and doc["data"]["path"] == str(tmp_path / "cache.db")
+    doc = json.loads(runner.invoke(app, ["cache", "clear"]).stdout)
+    assert doc["data"] == {"removed": 0}
+    doc = json.loads(runner.invoke(app, ["cache", "path"]).stdout)
+    assert doc["data"] == {"path": str(tmp_path / "cache.db")}
+
+
+def test_config_show_and_path(tmp_path) -> None:
+    (tmp_path / "config.toml").write_text('[cache_ttl_overrides]\n"wellness.sleep" = 5\n')
+    from pace.config import load_config
+    load_config.cache_clear()
+    doc = json.loads(runner.invoke(app, ["config", "show"]).stdout)
+    assert doc["data"] == {"cache_ttl_overrides": {"wellness.sleep": 5}}
+    doc = json.loads(runner.invoke(app, ["config", "path"]).stdout)
+    assert doc["data"]["path"].endswith("config.toml")
+
+
+def test_version_flag() -> None:
+    res = runner.invoke(app, ["--version"])
+    assert res.exit_code == 0 and json.loads(res.stdout)["data"]["version"] == "2.0.0"

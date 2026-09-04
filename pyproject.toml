@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pace = "pace.cli:app"
+pace = "pace.cli:main"
 
 [dependency-groups]
 dev = [

@@ -13,6 +13,7 @@ from garminconnect import (
     GarminConnectAuthenticationError,
     GarminConnectConnectionError,
 )
+from pace import config
 from pace.config import TOKEN_STORE
 
 
@@ -79,17 +80,17 @@ def init_api() -> Garmin | None:
 def auth_status() -> dict[str, object]:
     """Return current token state."""
     return {
-        "authenticated": TOKEN_STORE.exists(),
-        "token_path": str(TOKEN_STORE),
+        "authenticated": config.TOKEN_STORE.exists(),
+        "token_path": str(config.TOKEN_STORE),
     }
 
 
 def logout() -> bool:
     """Delete cached tokens. Returns True if anything removed."""
-    if not TOKEN_STORE.exists():
+    if not config.TOKEN_STORE.exists():
         return False
-    if TOKEN_STORE.is_dir():
-        shutil.rmtree(TOKEN_STORE)
+    if config.TOKEN_STORE.is_dir():
+        shutil.rmtree(config.TOKEN_STORE)
     else:
-        TOKEN_STORE.unlink()
+        config.TOKEN_STORE.unlink()
     return True

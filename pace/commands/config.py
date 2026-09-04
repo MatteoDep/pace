@@ -1,26 +1,26 @@
-"""Config subcommands: show, path."""
-
-import sys
+"""Config commands: show, path."""
 
 import typer
 
-from pace.config import CONFIG_FILE, load_config
-from pace.models.raw import RawData
-from pace.render import Format, default_format, render
+from pace import config
+from pace.envelope import Result, run
 
-config_app = typer.Typer(no_args_is_help=True, help="Inspect the user configuration.")
-
-
-@config_app.command("show")
-def show(
-    fmt: Format = typer.Option(None, "--format", "-f"),
-) -> None:
-    """Display the current effective config."""
-    cfg = load_config()
-    render(RawData.from_response(cfg.model_dump()), fmt or default_format(), sys.stdout)
+app = typer.Typer(no_args_is_help=True, help="Inspect the user configuration.")
 
 
-@config_app.command("path")
+@app.command("show")
+def show() -> None:
+    """Effective configuration."""
+    async def work() -> Result:
+        return Result(config.load_config().model_dump())
+
+    run("config show", {}, work)
+
+
+@app.command("path")
 def path() -> None:
-    """Print the config file path."""
-    typer.echo(str(CONFIG_FILE))
+    """Config file path."""
+    async def work() -> Result:
+        return Result({"path": str(config.CONFIG_FILE)})
+
+    run("config path", {}, work)
