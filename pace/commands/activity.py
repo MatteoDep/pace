@@ -1,161 +1,246 @@
-"""Activity subcommands."""
+"""Activity commands: list, show, splits, details, weather, last, export."""
 
 import asyncio
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import typer
 
 from garminconnect import Garmin
 from pace.api import paginate, safe_call
-from pace.commands._helpers import cache_for, cached_call, run
-from pace.dates import parse_date
-from pace.envelope import PaceError
-from pace.models.list import ListModel
-from pace.models.raw import RawData
-from pace.render import Format
+from pace.cache import Cache, CacheTracker
+from pace.commands._helpers import cached_call
+from pace.dates import resolve_range
+from pace.envelope import PaceError, Result, fail, run
+from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
+from pace.shape import BUCKETS, apply, choose_bucket, prune, tz_offset_s
 
-activity_app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
+app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
 
 _LIST_TTL = 600
 _DETAIL_TTL = 86400
 
-_LIST_COLUMNS = [
-    "activityId",
-    "activityName",
-    "startTimeLocal",
-    "activityType",
-    "distance",
-    "duration",
-    "averageHR",
-]
+LIST_FIELDS: tuple[str, ...] = (
+    "activityId", "activityName", "activityType", "startTimeLocal", "duration", "distance",
+    "averageHR", "maxHR", "elevationGain", "averageSpeed", "aerobicTrainingEffect",
+    "anaerobicTrainingEffect", "activityTrainingLoad", "calories",
+)
+
+# Garmin per-sample metric key -> column name in `activity details`.
+DETAIL_METRICS: dict[str, str] = {
+    "directHeartRate": "hr",
+    "directSpeed": "speed_mps",
+    "sumDistance": "dist_m",
+    "directElevation": "elev_m",
+    "directRunCadence": "cadence",
+    "directBikeCadence": "cadence",
+    "directPower": "power_w",
+}
+_LAST_VALUE_COLS = {"dist_m"}
 
 
-@activity_app.command("list")
+def _flatten_type(a: dict) -> dict:
+    out = dict(a)
+    if isinstance(a.get("activityType"), dict):
+        out["activityType"] = a["activityType"].get("typeKey")
+    return out
+
+
+def _shaped_result(data: Any, tracker: CacheTracker, *, default_fields=(), fields, bucket, raw,
+                    truncated=False) -> Result:
+    shaped, report = apply(data, series=(), default_fields=default_fields, fields=fields, bucket=bucket,
+                            raw=raw, span_s=0)
+    return Result(shaped, tracker.report(), report, truncated)
+
+
+@app.command("list")
 def list_(
-    limit: int = typer.Option(20, "--limit", "-n", help="Max activities to return."),
-    type_: str | None = typer.Option(
-        None,
-        "--type",
-        "-t",
-        help="Filter by activity type (e.g. running, cycling).",
-    ),
-    fmt: Format = typer.Option(None, "--format", "-f"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
+    from_: str | None = FROM_OPT, to: str = TO_OPT, days: int | None = typer.Option(None, "--days", "-n"),
+    type_: str | None = typer.Option(None, "--type", "-t", help="running, cycling, swimming, ..."),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max activities returned (newest first)."),
+    fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT,
 ) -> None:
-    """List recent activities."""
-    async def fetch() -> ListModel:
-        cache = cache_for(no_cache)
+    """Recent activities, or every activity in a date range."""
+    cmd = "activity list"
+    ranged = from_ is not None or days is not None or to != "today"
+    args: dict[str, Any] = {"limit": limit, "type": type_}
+    try:
+        f, b, echo = shape_args(fields, bucket, raw)
+        if ranged:
+            start, end = resolve_range(from_, to, days or 1)
+            args.update({"from": start.isoformat(), "to": end.isoformat()})
+    except PaceError as err:
+        fail(cmd, err)
+    args.update(echo)
+
+    async def work() -> Result:
+        cache = Cache()
+        tracker = CacheTracker()
         try:
-            if type_:
-                async def fetch_page():
-                    return await paginate(
-                        "get_activities",
-                        page_size=min(limit, 1000),
-                        max_items=limit,
-                        activitytype=type_,
-                    )
+            if ranged:
+                rows = await cached_call("get_activities_by_date", args["from"], args["to"], type_,
+                                          cache=cache, ttl=_LIST_TTL, tracker=tracker, refresh=no_cache)
             else:
-                async def fetch_page():
-                    return await paginate(
-                        "get_activities",
-                        page_size=min(limit, 1000),
-                        max_items=limit,
-                    )
-            key = f"activities:limit={limit}:type={type_}"
-            if cache is None:
-                data = await fetch_page()
+                async def fetch_page() -> list:
+                    return await paginate("get_activities", page_size=min(limit + 1, 1000),
+                                           max_items=limit + 1, **({"activitytype": type_} if type_ else {}))
+
+                rows, hit, age = await cache.get_or_fetch(f"activities:{limit}:{type_}", fetch_page,
+                                                           ttl=_LIST_TTL, refresh=no_cache)
+                tracker.add(hit, age)
+        finally:
+            cache.close()
+        rows = rows or []
+        truncated = len(rows) > limit
+        rows = [_flatten_type(a) for a in rows[:limit]]
+        return _shaped_result(rows, tracker, default_fields=LIST_FIELDS, fields=f, bucket=b, raw=raw,
+                               truncated=truncated)
+
+    run(cmd, args, work)
+
+
+def _by_id(name: str, method: str, help_: str) -> None:
+    def command(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
+                fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT,
+                no_cache: bool = NO_CACHE_OPT) -> None:
+        cmd = f"activity {name}"
+        try:
+            f, b, echo = shape_args(fields, bucket, raw)
+        except PaceError as err:
+            fail(cmd, err)
+
+        async def work() -> Result:
+            cache = Cache()
+            tracker = CacheTracker()
+            try:
+                data = await cached_call(method, activity_id, cache=cache, ttl=_DETAIL_TTL, tracker=tracker,
+                                          refresh=no_cache)
+            finally:
+                cache.close()
+            return _shaped_result(data, tracker, fields=f, bucket=b, raw=raw)
+
+        run(cmd, {"activity_id": activity_id, **echo}, work)
+
+    command.__name__ = name
+    command.__doc__ = help_
+    app.command(name, help=help_)(command)
+
+
+_by_id("show", "get_activity", "One activity: summary metrics.")
+_by_id("splits", "get_activity_splits", "Laps / splits of one activity.")
+_by_id("weather", "get_activity_weather", "Weather during one activity.")
+
+
+@app.command("last")
+def last(fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT,
+          no_cache: bool = NO_CACHE_OPT) -> None:
+    """Most recent activity."""
+    try:
+        f, b, echo = shape_args(fields, bucket, raw)
+    except PaceError as err:
+        fail("activity last", err)
+
+    async def work() -> Result:
+        cache = Cache()
+        tracker = CacheTracker()
+        try:
+            data = await cached_call("get_last_activity", cache=cache, ttl=_LIST_TTL, tracker=tracker,
+                                      refresh=no_cache)
+        finally:
+            cache.close()
+        return _shaped_result(_flatten_type(data or {}), tracker, fields=f, bucket=b, raw=raw)
+
+    run("activity last", echo, work)
+
+
+def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
+    """Reshape Garmin per-sample metrics into one bucketed table. Returns (table, bucket_used)."""
+    index = {d.get("key"): d.get("metricsIndex") for d in payload.get("metricDescriptors", [])}
+    if "directTimestamp" not in index:
+        raise PaceError("not_found", "Activity has no per-sample metrics.")
+
+    cols_present: list[tuple[str, str]] = []
+    seen_cols: set[str] = set()
+    for key, col in DETAIL_METRICS.items():
+        if key in index and col not in seen_cols:
+            cols_present.append((key, col))
+            seen_cols.add(col)
+
+    samples = []
+    for row in payload.get("activityDetailMetrics", []):
+        m = row.get("metrics") or []
+        ts = m[index["directTimestamp"]] if index["directTimestamp"] < len(m) else None
+        if not isinstance(ts, (int, float)):
+            continue
+        samples.append((int(ts), [m[index[k]] if index[k] < len(m) else None for k, _ in cols_present]))
+    samples.sort()
+    span_s = (samples[-1][0] - samples[0][0]) // 1000 if len(samples) > 1 else 0
+    used = choose_bucket(span_s, len(samples)) if bucket == "auto" else bucket
+    offset = tz_offset_s(payload)
+    names = [c for _, c in cols_present]
+
+    def fmt(sec: int) -> str:
+        return datetime.fromtimestamp(sec + offset, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    if used == "none":
+        rows = [[fmt(ts // 1000), *vals] for ts, vals in samples]
+        return {"cols": ["t", *names], "rows": rows}, "none"
+
+    size = BUCKETS[used]
+    groups: dict[int, list[list]] = {}
+    for ts, vals in samples:
+        groups.setdefault((ts // 1000 // size) * size, []).append(vals)
+    rows = []
+    for start in sorted(groups):
+        agg = []
+        for i, name in enumerate(names):
+            col = [v[i] for v in groups[start] if isinstance(v[i], (int, float))]
+            if not col:
+                agg.append(None)
+            elif name in _LAST_VALUE_COLS:
+                agg.append(col[-1])
             else:
-                data = (await cache.get_or_fetch(key, fetch_page, ttl=_LIST_TTL))[0]
-        finally:
-            if cache is not None:
-                cache.close()
-        rows = [_flatten_activity(a) for a in data]
-        return ListModel(items=rows, columns=_LIST_COLUMNS, title="activities")
-
-    run(fetch, fmt)
+                agg.append(round(sum(col) / len(col), 1))
+        rows.append([fmt(start), *agg])
+    return {"cols": ["t", *names], "rows": rows}, used
 
 
-@activity_app.command("show")
-def show(
-    activity_id: int = typer.Argument(...),
-    fmt: Format = typer.Option(None, "--format", "-f"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-) -> None:
-    """Show one activity by ID."""
-    async def fetch() -> RawData:
-        cache = cache_for(no_cache)
+@app.command("details")
+def details(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
+            bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT) -> None:
+    """Per-sample HR / speed / distance / elevation / cadence / power as one bucketed table."""
+    cmd = "activity details"
+    try:
+        _, b, echo = shape_args("all", bucket, raw)
+    except PaceError as err:
+        fail(cmd, err)
+
+    async def work() -> Result:
+        cache = Cache()
+        tracker = CacheTracker()
         try:
-            data = await cached_call("get_activity", activity_id, cache=cache, ttl=_DETAIL_TTL)
+            payload = await cached_call("get_activity_details", activity_id, cache=cache, ttl=_DETAIL_TTL,
+                                         tracker=tracker, refresh=no_cache)
         finally:
-            if cache is not None:
-                cache.close()
-        return RawData.from_response(data)
+            cache.close()
+        if raw:
+            return Result(payload, tracker.report(), {"raw": True})
+        table, used = details_table(payload or {}, b)
+        summary = prune({k: (payload or {}).get(k) for k in ("activityId", "measurementCount", "totalMetricsCount")})
+        return Result({**summary, "table": table}, tracker.report(),
+                       {"bucket_used": used, "reduced_series": ["table"] if used != "none" else [],
+                        "fields": "all"})
 
-    run(fetch, fmt)
-
-
-@activity_app.command("splits")
-def splits(
-    activity_id: int = typer.Argument(...),
-    fmt: Format = typer.Option(None, "--format", "-f"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-) -> None:
-    """Show splits/laps for an activity."""
-    async def fetch() -> RawData:
-        cache = cache_for(no_cache)
-        try:
-            data = await cached_call("get_activity_splits", activity_id, cache=cache, ttl=_DETAIL_TTL)
-        finally:
-            if cache is not None:
-                cache.close()
-        return RawData.from_response(data)
-
-    run(fetch, fmt)
-
-
-@activity_app.command("weather")
-def weather(
-    activity_id: int = typer.Argument(...),
-    fmt: Format = typer.Option(None, "--format", "-f"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-) -> None:
-    """Weather conditions during an activity."""
-    async def fetch() -> RawData:
-        cache = cache_for(no_cache)
-        try:
-            data = await cached_call("get_activity_weather", activity_id, cache=cache, ttl=_DETAIL_TTL)
-        finally:
-            if cache is not None:
-                cache.close()
-        return RawData.from_response(data)
-
-    run(fetch, fmt)
-
-
-@activity_app.command("last")
-def last(
-    fmt: Format = typer.Option(None, "--format", "-f"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-) -> None:
-    """Show the most recent activity."""
-    async def fetch() -> RawData:
-        cache = cache_for(no_cache)
-        try:
-            data = await cached_call("get_last_activity", cache=cache, ttl=_LIST_TTL)
-        finally:
-            if cache is not None:
-                cache.close()
-        return RawData.from_response(data)
-
-    run(fetch, fmt)
+    run(cmd, {"activity_id": activity_id, **echo}, work)
 
 
 class ExportFormat(str, Enum):
     GPX = "gpx"
     TCX = "tcx"
     KML = "kml"
-    ORIGINAL = "original"  # zip containing .fit
+    ORIGINAL = "original"
 
 
 _DL_FMT_MAP = {
@@ -170,78 +255,50 @@ def _ext_for(fmt: ExportFormat) -> str:
     return ".zip" if fmt is ExportFormat.ORIGINAL else f".{fmt.value}"
 
 
-async def _download_one(activity_id: int, fmt: ExportFormat) -> bytes:
+async def _download(activity_id: int, fmt: ExportFormat, target: Path) -> dict[str, Any]:
     ok, data, err = await safe_call("download_activity", str(activity_id), _DL_FMT_MAP[fmt])
     if not ok:
-        raise RuntimeError(err.message)
-    return data
-
-
-@activity_app.command("export")
-def export(
-    activity_id: int = typer.Argument(..., help="Activity ID."),
-    fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f", help="Export format."),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        "-o",
-        help="Output file (default: <activity_id>.<ext> in cwd).",
-    ),
-) -> None:
-    """Download an activity in GPX/TCX/KML/original format."""
-    try:
-        data = asyncio.run(_download_one(activity_id, fmt))
-    except RuntimeError as err:
-        typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None
-    target = out or Path(f"{activity_id}{_ext_for(fmt)}")
+        assert err is not None
+        raise PaceError.from_api(err)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
-    typer.secho(f"Wrote {len(data)} bytes -> {target}", fg=typer.colors.GREEN)
+    return {"activityId": activity_id, "path": str(target), "bytes": len(data)}
 
 
-@activity_app.command("export-range")
-def export_range(
-    from_: str = typer.Option(..., "--from", "-F", help="Start date (YYYY-MM-DD | -Nd)."),
-    to: str = typer.Option("today", "--to", "-T"),
-    fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f"),
-    out_dir: Path = typer.Option(Path("./activities"), "--out-dir", "-d"),
-    activity_type: str | None = typer.Option(None, "--type", "-t"),
-) -> None:
-    """Download every activity in a date range to `--out-dir`."""
-    async def go() -> int:
-        start_d = parse_date(from_).isoformat()
-        end_d = parse_date(to).isoformat()
-        ok, listing, err = await safe_call(
-            "get_activities_by_date", start_d, end_d, activity_type, 1000
-        )
-        if not ok:
-            raise RuntimeError(err.message)
-        listing = listing or []
-        out_dir.mkdir(parents=True, exist_ok=True)
+@app.command("export")
+def export(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
+           fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f"),
+           out: Path | None = typer.Option(None, "--out", "-o", help="Default: <id>.<ext> in cwd.")) -> None:
+    """Download one activity file (gpx, tcx, kml, original zip)."""
+    target = out or Path(f"{activity_id}{_ext_for(fmt)}")
 
-        async def fetch_one(aid: int) -> Path:
-            data = await _download_one(aid, fmt)
-            target = out_dir / f"{aid}{_ext_for(fmt)}"
-            target.write_bytes(data)
-            return target
+    async def work() -> Result:
+        return Result({"files": [await _download(activity_id, fmt, target)]})
 
-        await asyncio.gather(*(fetch_one(a["activityId"]) for a in listing))
-        return len(listing)
+    run("activity export", {"activity_id": activity_id, "format": fmt.value, "out": str(target)}, work)
 
+
+@app.command("export-range")
+def export_range(from_: str = typer.Option(..., "--from", "-F"), to: str = TO_OPT,
+                  fmt: ExportFormat = typer.Option(ExportFormat.GPX, "--format", "-f"),
+                  out_dir: Path = typer.Option(Path("./activities"), "--out-dir", "-d"),
+                  type_: str | None = typer.Option(None, "--type", "-t")) -> None:
+    """Download every activity in a date range into --out-dir."""
+    cmd = "activity export-range"
     try:
-        n = asyncio.run(go())
+        start, end = resolve_range(from_, to, 1)
     except PaceError as err:
-        typer.secho(f"Error: {err.message}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None
-    except RuntimeError as err:
-        typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None
-    typer.secho(f"Exported {n} activities to {out_dir}", fg=typer.colors.GREEN)
+        fail(cmd, err)
+    args = {"from": start.isoformat(), "to": end.isoformat(), "format": fmt.value, "out_dir": str(out_dir),
+            "type": type_}
 
+    async def work() -> Result:
+        ok, listing, err = await safe_call("get_activities_by_date", args["from"], args["to"], type_)
+        if not ok:
+            assert err is not None
+            raise PaceError.from_api(err)
+        files = await asyncio.gather(*(
+            _download(a["activityId"], fmt, out_dir / f"{a['activityId']}{_ext_for(fmt)}") for a in listing or []))
+        return Result({"files": list(files)})
 
-def _flatten_activity(a: dict) -> dict:
-    """Lift commonly-needed nested fields into top-level columns."""
-    out = dict(a)
-    if isinstance(a.get("activityType"), dict):
-        out["activityType"] = a["activityType"].get("typeKey")
-    return out
+    run(cmd, args, work)

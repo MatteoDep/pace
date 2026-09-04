@@ -3,8 +3,7 @@
 import typer
 
 from pace import __version__
-from pace.commands import device, gear, goal, profile, training, wellness
-from pace.commands.activity import activity_app
+from pace.commands import activity, device, gear, goal, profile, training, wellness
 from pace.commands.auth import auth_app
 from pace.commands.cache import cache_app
 from pace.commands.config import config_app
@@ -17,7 +16,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-app.add_typer(activity_app, name="activity", help="Workouts and activity history.")
+app.add_typer(activity.app, name="activity")
 app.add_typer(auth_app, name="auth", help="Authentication and token management.")
 app.add_typer(cache_app, name="cache", help="Manage the local response cache.")
 app.add_typer(config_app, name="config", help="Inspect the user configuration.")
