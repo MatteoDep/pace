@@ -76,6 +76,19 @@ def test_tracker_report() -> None:
     assert t2.report() == {"hit": False, "oldest_age_s": 0}
 
 
+@pytest.mark.asyncio
+async def test_refresh_skips_read_and_overwrites(tmp_path) -> None:
+    cache = Cache(tmp_path / "c.db")
+    await cache.get_or_fetch("k", lambda: _ret(1), ttl=60)
+
+    v, hit, age = await cache.get_or_fetch("k", lambda: _ret(2), ttl=60, refresh=True)
+    assert (v, hit, age) == (2, False, 0)
+
+    v, hit, age = await cache.get_or_fetch("k", lambda: _ret(3), ttl=60)
+    assert v == 2 and hit is True
+    cache.close()
+
+
 def test_ttl_for_day() -> None:
     today = date(2026, 9, 4)
     assert ttl_for_day(today, 300, today) == 300

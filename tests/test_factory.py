@@ -1,16 +1,17 @@
 """Factory-built commands: flags, fan-out, shaping, envelope."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 from pace.api import ApiError
-from pace.factory import build_command
+from pace.cache import Cache
+from pace.factory import build_command, build_group
 from pace.shape import SeriesSpec
-from pace.spec import EndpointSpec
+from pace.spec import GROUPS, EndpointSpec, specs_for
 
 runner = CliRunner()
 MS = 1000
@@ -21,6 +22,17 @@ def _tmp_home(tmp_path, monkeypatch):
     monkeypatch.setattr("pace.config.PACE_HOME", tmp_path)
     monkeypatch.setattr("pace.config.CACHE_DB", tmp_path / "cache.db")
     monkeypatch.setattr("pace.config.CONFIG_FILE", tmp_path / "config.toml")
+
+
+@pytest.fixture
+def _clear_config_cache():
+    """load_config() is a bare functools.cache -- clear it around tests that write
+    config.toml so overrides don't leak into (or out of) other tests."""
+    from pace.config import load_config
+
+    load_config.cache_clear()
+    yield
+    load_config.cache_clear()
 
 
 @pytest.fixture
@@ -111,11 +123,14 @@ def test_id_arg_and_upn_resolver(fake_api) -> None:
     assert fake_api["calls"][-1] == ("get_gear_stats", ("42", "abc-uuid"))
 
 
-def test_no_cache_flag_skips_store(fake_api) -> None:
+def test_no_cache_bypasses_read_but_writes(fake_api) -> None:
     app = _app(DATED)
-    _invoke(app, "--to", "2026-01-03", "--no-cache")
-    _invoke(app, "--to", "2026-01-03", "--no-cache")
-    assert len(fake_api["calls"]) == 2
+    _, doc1, _ = _invoke(app, "--to", "2026-01-03", "--no-cache")
+    assert len(fake_api["calls"]) == 1
+    assert doc1["cache"]["hit"] is False
+    _, doc2, _ = _invoke(app, "--to", "2026-01-03")
+    assert doc2["cache"]["hit"] is True
+    assert len(fake_api["calls"]) == 1
 
 
 def test_bad_bucket_and_days_are_bad_args(fake_api) -> None:
@@ -141,3 +156,66 @@ def test_verbose_logs_to_stderr(fake_api) -> None:
     finally:
         envelope.set_verbose(False)
     assert "miss get_heart_rates:2026-01-03" in res.stderr
+
+
+def test_payload_date_field_does_not_override_requested_date(fake_api) -> None:
+    fake_api["payload"] = lambda m, a: {"date": "1999-01-01", "x": 1}
+    _, doc, _ = _invoke(_app(DATED), "--to", "2026-01-03")
+    assert doc["data"][0]["date"] == "2026-01-03"
+    assert doc["data"][0]["x"] == 1
+
+
+def test_ttl_by_day_age_and_config_override(fake_api, tmp_path, monkeypatch, _clear_config_cache) -> None:
+    from pace import factory
+    from pace.config import load_config
+
+    original_ttl_for_day = factory.ttl_for_day
+    ttl_calls: list[tuple[date, int, int]] = []
+
+    def spy_ttl_for_day(day, today_ttl):
+        result = original_ttl_for_day(day, today_ttl)
+        ttl_calls.append((day, today_ttl, result))
+        return result
+
+    original_get_or_fetch = Cache.get_or_fetch
+    ttl_by_key: dict[str, int] = {}
+
+    async def spy_get_or_fetch(self, key, fetch, ttl, refresh=False):
+        ttl_by_key[key] = ttl
+        return await original_get_or_fetch(self, key, fetch, ttl, refresh=refresh)
+
+    monkeypatch.setattr(factory, "ttl_for_day", spy_ttl_for_day)
+    monkeypatch.setattr(Cache, "get_or_fetch", spy_get_or_fetch)
+    (tmp_path / "config.toml").write_text('[cache_ttl_overrides]\n"wellness.hr" = 42\n')
+    load_config.cache_clear()
+
+    code, doc, _ = _invoke(_app(DATED), "--days", "3")
+
+    assert code == 0 and doc["ok"] is True
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    two_days_ago = today - timedelta(days=2)
+
+    by_day = {d: (arg_ttl, ret_ttl) for d, arg_ttl, ret_ttl in ttl_calls}
+    assert set(by_day) == {today, yesterday, two_days_ago}
+    assert all(arg_ttl == 42 for arg_ttl, _ in by_day.values()), "config override must reach ttl_for_day"
+
+    assert ttl_by_key[f"get_heart_rates:{today.isoformat()}"] == 42
+    assert ttl_by_key[f"get_heart_rates:{yesterday.isoformat()}"] == 86400
+    assert ttl_by_key[f"get_heart_rates:{two_days_ago.isoformat()}"] == 604800
+
+
+@pytest.mark.parametrize("group", sorted(GROUPS))
+def test_every_registry_group_builds_and_renders_help(group) -> None:
+    app = build_group(group)
+    specs = specs_for(group)
+    assert specs, f"group {group!r} has no specs"
+    for spec in specs:
+        res = runner.invoke(app, [spec.name, "--help"])
+        assert res.exit_code == 0, res.stdout
+        assert "--fields" in res.stdout
+        if spec.dated is not None:
+            assert "--from" in res.stdout
+        if spec.id_arg is not None:
+            assert spec.id_arg in res.stdout

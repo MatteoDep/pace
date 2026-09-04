@@ -60,12 +60,14 @@ class Cache:
         key: str,
         fetch: Callable[[], Awaitable[Any]],
         ttl: int,
+        refresh: bool = False,
     ) -> tuple[Any, bool, int]:
-        """Return (value, hit, age_s)."""
-        async with self._lock:
-            cached = self._get(key)
-            if cached is not None:
-                return cached[0], True, cached[1]
+        """Return (value, hit, age_s). `refresh` skips the read and always fetches + stores."""
+        if not refresh:
+            async with self._lock:
+                cached = self._get(key)
+                if cached is not None:
+                    return cached[0], True, cached[1]
         value = await fetch()
         async with self._lock:
             self._put(key, value, ttl)

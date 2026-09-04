@@ -36,9 +36,14 @@ async def cached_call(
     cache: Cache | None,
     ttl: int,
     tracker: CacheTracker | None = None,
+    refresh: bool = False,
     **kwargs: Any,
 ) -> Any:
-    """Call a Garmin method through `safe_call`, optionally via the cache. Raises PaceError."""
+    """Call a Garmin method through `safe_call`, optionally via the cache. Raises PaceError.
+
+    `refresh` bypasses the cache read but still writes the fresh result (used by --no-cache,
+    which refreshes rather than fully disabling the cache); it is ignored when `cache is None`.
+    """
     async def fetch() -> Any:
         ok, data, err = await safe_call(method, *args, **kwargs)
         if not ok:
@@ -55,7 +60,7 @@ async def cached_call(
     key_parts = [method, *(str(a) for a in args)]
     if kwargs:
         key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
-    value, hit, age = await cache.get_or_fetch(":".join(key_parts), fetch, ttl=ttl)
+    value, hit, age = await cache.get_or_fetch(":".join(key_parts), fetch, ttl=ttl, refresh=refresh)
     log(f"{'hit ' if hit else 'miss'} {':'.join(key_parts)} age={age}s")
     if tracker is not None:
         tracker.add(hit, age)

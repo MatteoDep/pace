@@ -2,7 +2,6 @@
 
 import asyncio
 import inspect
-from collections.abc import Callable
 from datetime import date
 from typing import Any
 
@@ -22,7 +21,7 @@ DAY_S = 86400
 FIELDS_OPT = typer.Option("default", "--fields", help="default | all | comma-separated dotted paths.")
 BUCKET_OPT = typer.Option("auto", "--bucket", help="Time-series resolution: auto | none | 1m 5m 15m 1h 3h 1d.")
 RAW_OPT = typer.Option(False, "--raw", help="Garmin JSON verbatim (no pruning, fields, bucketing).")
-NO_CACHE_OPT = typer.Option(False, "--no-cache", help="Bypass the local cache for this call.")
+NO_CACHE_OPT = typer.Option(False, "--no-cache", help="Bypass the cache read for this call (still writes the fresh result).")
 FROM_OPT = typer.Option(None, "--from", "-F", help="Start date (YYYY-MM-DD | today | yesterday | -Nd). Overrides --days.")
 TO_OPT = typer.Option("today", "--to", "-T", help="End date (inclusive).")
 DAYS_OPT = typer.Option(1, "--days", "-n", help="Number of days ending at --to.")
@@ -38,8 +37,8 @@ def today_ttl(spec: EndpointSpec) -> int:
     return load_config().cache_ttl_overrides.get(f"{spec.group}.{spec.name}", spec.ttl)
 
 
-async def resolve_upn(cache: Cache | None, tracker: CacheTracker) -> str:
-    data = await cached_call("get_device_last_used", cache=cache, ttl=604800, tracker=tracker)
+async def resolve_upn(cache: Cache | None, tracker: CacheTracker, refresh: bool = False) -> str:
+    data = await cached_call("get_device_last_used", cache=cache, ttl=604800, tracker=tracker, refresh=refresh)
     upn = (data or {}).get("userProfileNumber") if isinstance(data, dict) else None
     if upn is None:
         raise PaceError("internal", "Cannot resolve userProfileNumber from the last-used device.")
@@ -60,51 +59,57 @@ def _shape_kwargs(spec: EndpointSpec, fields, bucket, raw) -> dict[str, Any]:
 async def fetch_spec(spec: EndpointSpec, *, ident: Any = None, dates: list[date] | None = None,
                      no_cache: bool = False, fields: str | list[str] = "default",
                      bucket: str = "auto", raw: bool = False) -> Result:
-    cache = None if no_cache else Cache()
+    # `no_cache` means "refresh": always open the cache so a fresh result is still written,
+    # just skip the read on this call. It never leaves the DB unopened.
+    cache = Cache()
     tracker = CacheTracker()
     try:
         prefix: list[Any] = []
         if spec.resolver == "upn":
-            prefix.append(await resolve_upn(cache, tracker))
+            prefix.append(await resolve_upn(cache, tracker, refresh=no_cache))
         if spec.id_arg is not None:
             prefix.append(ident)
         ttl = today_ttl(spec)
 
         if spec.dated is None:
-            data = _unwrap(spec, await cached_call(spec.method, *prefix, cache=cache, ttl=ttl, tracker=tracker))
+            data = _unwrap(spec, await cached_call(spec.method, *prefix, cache=cache, ttl=ttl,
+                                                    tracker=tracker, refresh=no_cache))
             shaped, report = apply(data, **_shape_kwargs(spec, fields, bucket, raw))
             return Result(shaped, tracker.report(), report)
 
-        assert dates is not None
+        if dates is None:
+            raise PaceError("internal", "dated spec called without dates")
 
         async def one(d: date) -> tuple[date, Any, PaceError | None]:
             iso = d.isoformat()
             dargs = (iso,) if spec.dated == "single" else (iso, iso)
             try:
                 payload = await cached_call(spec.method, *prefix, *dargs, cache=cache,
-                                            ttl=ttl_for_day(d, ttl), tracker=tracker)
+                                            ttl=ttl_for_day(d, ttl), tracker=tracker, refresh=no_cache)
             except PaceError as err:
                 return d, None, err
             return d, _unwrap(spec, payload), None
 
         results = await asyncio.gather(*(one(d) for d in dates))
     finally:
-        if cache is not None:
-            cache.close()
+        cache.close()
 
     errors = [e for _, _, e in results if e is not None]
     if errors and len(errors) == len(results):
         raise errors[0]
 
-    good = [p if isinstance(p, dict) else {"value": p} for _, p, e in results if e is None]
+    good_positions = [i for i, (_, _, e) in enumerate(results) if e is None]
+    good = [results[i][1] if isinstance(results[i][1], dict) else {"value": results[i][1]} for i in good_positions]
     shaped_good, report = apply(good, **_shape_kwargs(spec, fields, bucket, raw))
-    shaped_iter = iter(shaped_good)
+    shaped_by_pos = dict(zip(good_positions, shaped_good, strict=True))
     items = []
-    for d, _, err in results:
+    for i, (d, _, err) in enumerate(results):
         if err is not None:
             items.append({"date": d.isoformat(), "error": {"code": err.code, "message": err.message}})
         else:
-            items.append({"date": d.isoformat(), **next(shaped_iter)})
+            # Spread the payload first so a "date" field it may carry never overrides
+            # the actually-requested day.
+            items.append({**shaped_by_pos[i], "date": d.isoformat()})
     return Result(items, tracker.report(), report)
 
 
