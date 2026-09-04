@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from pace.config import CACHE_DB, ensure_home
+from pace import config
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -22,10 +22,10 @@ CREATE TABLE IF NOT EXISTS cache (
 
 
 class Cache:
-    def __init__(self, path: Path = CACHE_DB) -> None:
-        self.path = path
-        ensure_home()
-        self._conn = sqlite3.connect(str(path))
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or config.CACHE_DB
+        config.ensure_home()
+        self._conn = sqlite3.connect(str(self.path))
         self._conn.execute(_SCHEMA)
         self._conn.commit()
         self._lock = asyncio.Lock()

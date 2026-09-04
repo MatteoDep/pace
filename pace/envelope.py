@@ -5,7 +5,7 @@ import json
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 
@@ -86,14 +86,16 @@ def emit(doc: dict[str, Any]) -> None:
     sys.stdout.write("\n")
 
 
+def fail(command: str, err: PaceError) -> NoReturn:
+    emit(error(command, err))
+    raise typer.Exit(exit_code(err.code))
+
+
 def run(command: str, args: dict[str, Any], work: Callable[[], Awaitable[Result]]) -> None:
     try:
         result = asyncio.run(work())
     except PaceError as err:
-        emit(error(command, err))
-        raise typer.Exit(exit_code(err.code)) from None
+        fail(command, err)
     except Exception as exc:  # noqa: BLE001 -- every failure must still produce JSON
-        err = PaceError("internal", f"{type(exc).__name__}: {exc}")
-        emit(error(command, err))
-        raise typer.Exit(1) from None
+        fail(command, PaceError("internal", f"{type(exc).__name__}: {exc}"))
     emit(ok(command, args, result))
