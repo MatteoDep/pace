@@ -5,6 +5,7 @@ from typing import Any
 import typer
 
 from pace import __version__
+from pace.commands.activity import LIST_FIELDS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 
@@ -29,9 +30,7 @@ GLOBAL_FLAGS = {
 STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "activity list", "help": "Recent activities, or every activity in a date range.", "keyed": "date",
      "args": [], "flags": RANGE_FLAGS + ["--type", "--limit"] + SHAPE_FLAGS,
-     "default_fields": ["activityId", "activityName", "activityType", "startTimeLocal", "duration", "distance",
-                        "averageHR", "maxHR", "elevationGain", "averageSpeed", "aerobicTrainingEffect",
-                        "anaerobicTrainingEffect", "activityTrainingLoad", "calories"],
+     "default_fields": list(LIST_FIELDS),
      "series": [], "ttl_s": 600},
     {"name": "activity show", "help": "One activity: summary metrics.", "keyed": "id", "args": ["ACTIVITY_ID"],
      "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
