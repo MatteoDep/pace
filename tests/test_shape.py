@@ -110,3 +110,28 @@ def test_apply_on_list_payload_shapes_each_item() -> None:
     items = [{"a": 1, "b": None}, {"a": 2, "c": 3}]
     data, _ = apply(items, series=(), default_fields=("a",), fields="default", bucket="auto", raw=False, span_s=0)
     assert data == [{"a": 1}, {"a": 2}]
+
+
+def test_apply_does_not_mutate_nested_input() -> None:
+    src = {"sleepDTO": {"levels": [[i * 60 * MS, 1] for i in range(1440)]}}
+    data, _ = apply(
+        src,
+        series=(SeriesSpec("sleepDTO.levels", "pairs"),),
+        default_fields=(), fields="all", bucket="auto", raw=False, span_s=86400,
+    )
+    assert isinstance(src["sleepDTO"]["levels"], list) and len(src["sleepDTO"]["levels"]) == 1440
+    assert "cols" in data["sleepDTO"]["levels"]
+
+
+def test_apply_list_uses_one_bucket_per_series() -> None:
+    item1 = {"heartRateValues": [[i * 60 * MS, 60] for i in range(60)]}
+    item2 = {"heartRateValues": [[i * 60 * MS, 60] for i in range(1440)]}
+    data, shape = apply(
+        [item1, item2],
+        series=(SeriesSpec("heartRateValues", "pairs"),),
+        default_fields=(), fields="all", bucket="auto", raw=False, span_s=86400,
+    )
+    assert shape["bucket_used"] == "15m"
+    assert shape["reduced_series"] == ["heartRateValues"]
+    assert len(data[0]["heartRateValues"]["rows"]) == 4
+    assert data[1]["heartRateValues"]["cols"][0] == "t"

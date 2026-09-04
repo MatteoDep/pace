@@ -66,7 +66,9 @@ def _set_path(obj: dict, path: str, value: Any) -> None:
     parts = path.split(".")
     cur = obj
     for part in parts[:-1]:
-        cur = cur.setdefault(part, {})
+        nxt = cur.get(part)
+        cur[part] = dict(nxt) if isinstance(nxt, dict) else {}
+        cur = cur[part]
     cur[parts[-1]] = value
 
 
@@ -95,7 +97,7 @@ def _to_ms(t: Any) -> int | None:
         return int(t)
     if isinstance(t, str):
         try:
-            dt = datetime.fromisoformat(t.replace(".0", "") if t.endswith(".0") else t)
+            dt = datetime.fromisoformat(t)
         except ValueError:
             return None
         if dt.tzinfo is None:
@@ -150,7 +152,7 @@ def tz_offset_s(data: Any) -> int:
     return -time.timezone if not time.localtime().tm_isdst else -time.altzone
 
 
-def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, report) -> Any:
+def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, report, resolved=None) -> Any:
     if not isinstance(item, dict):
         return prune(item)
     offset = tz_offset_s(item)
@@ -160,7 +162,10 @@ def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, rep
         if not found or not isinstance(seq, list):
             continue
         pts = extract_points(seq, s)
-        chosen = choose_bucket(span_s, len(pts)) if bucket == "auto" else bucket
+        if resolved is not None:
+            chosen = resolved.get(s.path, "none")
+        else:
+            chosen = choose_bucket(span_s, len(pts)) if bucket == "auto" else bucket
         if chosen == "none":
             continue
         _set_path(out, s.path, bucket_series(pts, BUCKETS[chosen], offset))
@@ -174,12 +179,37 @@ def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, rep
     return prune(out)
 
 
+def _resolve_list_buckets(data: list, series: tuple[SeriesSpec, ...], span_s: int) -> dict[str, str]:
+    """Pick one bucket per series across all list items: the coarsest any item would
+    choose on its own, so every item ends up with the same, homogeneous row grid.
+    "none" only if every item independently chooses "none"."""
+    order = list(BUCKETS)
+    resolved: dict[str, str] = {}
+    for s in series:
+        best = "none"
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            found, seq = _get_path(item, s.path)
+            if not found or not isinstance(seq, list):
+                continue
+            choice = choose_bucket(span_s, len(extract_points(seq, s)))
+            if choice == "none":
+                continue
+            if best == "none" or order.index(choice) > order.index(best):
+                best = choice
+        resolved[s.path] = best
+    return resolved
+
+
 def apply(data: Any, *, series: tuple[SeriesSpec, ...], default_fields: tuple[str, ...],
           fields: str | list[str], bucket: str, raw: bool, span_s: int) -> tuple[Any, dict]:
     if raw:
         return data, {"raw": True}
     report: dict[str, Any] = {"bucket_used": "none", "reduced_series": [], "fields": fields}
-    kw = dict(series=series, default_fields=default_fields, fields=fields, bucket=bucket, span_s=span_s, report=report)
+    resolved = _resolve_list_buckets(data, series, span_s) if isinstance(data, list) and bucket == "auto" and series else None
+    kw = dict(series=series, default_fields=default_fields, fields=fields, bucket=bucket, span_s=span_s,
+              report=report, resolved=resolved)
     if isinstance(data, list):
         return [_shape_one(i, **kw) for i in data], report
     return _shape_one(data, **kw), report
