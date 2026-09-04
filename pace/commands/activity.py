@@ -12,7 +12,6 @@ from pace.commands._helpers import cache_for, cached_call, run
 from pace.dates import parse_date
 from pace.models.list import ListModel
 from pace.models.raw import RawData
-from pace.progress import named_node, progress_ui
 from pace.render import Format
 
 activity_app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
@@ -225,12 +224,7 @@ def export_range(
             target.write_bytes(data)
             return target
 
-        async with progress_ui():
-            tasks = [
-                asyncio.create_task(named_node(f"act-{a['activityId']}", fetch_one)(a["activityId"]))
-                for a in listing
-            ]
-            await asyncio.gather(*tasks, return_exceptions=False)
+        await asyncio.gather(*(fetch_one(a["activityId"]) for a in listing))
         return len(listing)
 
     try:

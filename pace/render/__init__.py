@@ -27,15 +27,7 @@ def register(name: str) -> Callable[[Renderer], Renderer]:
 
 
 def default_format() -> Format:
-    from pace.config import load_config
-
-    cfg_value = load_config().default_format
-    if cfg_value:
-        try:
-            return Format(cfg_value)
-        except ValueError:
-            pass
-    return Format.TABLE if sys.stdout.isatty() else Format.JSON
+    return Format.JSON
 
 
 def render(model: BaseModel, fmt: Format | None = None, stream: IO | None = None) -> None:

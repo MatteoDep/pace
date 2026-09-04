@@ -23,9 +23,7 @@ class PaceConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    default_format: str | None = None
     cache_ttl_overrides: dict[str, int] = {}
-    dashboard_panels: list[str] = []
 
 
 @cache
