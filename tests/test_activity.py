@@ -57,6 +57,14 @@ def test_list_range_uses_by_date_and_truncates(fake_api) -> None:
     assert doc["args"]["from"] == "2026-01-01"
 
 
+def test_list_default_api_error_keeps_code(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: ApiError("auth_required", "no tokens", 401)
+    res = runner.invoke(app, ["list"])
+    doc = json.loads(res.stdout)
+    assert res.exit_code == 3
+    assert doc["error"]["code"] == "auth_required" and doc["error"]["http"] == 401
+
+
 def test_show_and_splits_pass_id(fake_api) -> None:
     fake_api["payload"] = lambda m, a, kw: {"activityId": a[0], "x": None}
     doc = json.loads(runner.invoke(app, ["show", "123"]).stdout)
@@ -80,6 +88,31 @@ def test_details_table_buckets_all_metrics() -> None:
     assert table["cols"] == ["t", "hr", "speed_mps", "dist_m", "elev_m"]
     assert table["rows"][0][3] == 177.0   # dist_m is the last sample in the bucket (59 * 3)
     assert table["rows"][0][1] == 142.0   # hr avg of 140..144 pattern
+
+
+def test_details_table_handles_duplicate_timestamps_with_none_metric() -> None:
+    keys = ["directTimestamp", "directHeartRate", "directSpeed", "sumDistance", "directElevation"]
+    payload = {
+        "activityId": 1,
+        "metricDescriptors": [{"metricsIndex": i, "key": k} for i, k in enumerate(keys)],
+        "activityDetailMetrics": [
+            {"metrics": [0, 140, 3.0, 0.0, 100.0]},
+            {"metrics": [0, None, 3.0, 1.0, 100.0]},
+        ],
+    }
+    table, used = details_table(payload, "none")
+    assert used == "none" and len(table["rows"]) == 2
+
+
+def test_details_missing_timestamp_index_is_not_found(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: {
+        "activityId": 1,
+        "metricDescriptors": [{"key": "directTimestamp"}, {"metricsIndex": 1, "key": "directHeartRate"}],
+        "activityDetailMetrics": [{"metrics": [0, 140]}],
+    }
+    res = runner.invoke(app, ["details", "1"])
+    doc = json.loads(res.stdout)
+    assert res.exit_code == 1 and doc["error"]["code"] == "not_found"
 
 
 def test_details_command(fake_api) -> None:

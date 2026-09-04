@@ -12,7 +12,7 @@ from garminconnect import Garmin
 from pace.api import paginate, safe_call
 from pace.cache import Cache, CacheTracker
 from pace.commands._helpers import cached_call
-from pace.dates import resolve_range
+from pace.dates import parse_date, resolve_range
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
 from pace.shape import BUCKETS, apply, choose_bucket, prune, tz_offset_s
@@ -69,8 +69,10 @@ def list_(
     try:
         f, b, echo = shape_args(fields, bucket, raw)
         if ranged:
-            start, end = resolve_range(from_, to, days or 1)
+            start, end = resolve_range(from_, to, days if days is not None else 1)
             args.update({"from": start.isoformat(), "to": end.isoformat()})
+        else:
+            args["to"] = parse_date(to).isoformat()
     except PaceError as err:
         fail(cmd, err)
     args.update(echo)
@@ -150,14 +152,19 @@ def last(fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT
                                       refresh=no_cache)
         finally:
             cache.close()
-        return _shaped_result(_flatten_type(data or {}), tracker, fields=f, bucket=b, raw=raw)
+        return _shaped_result(_flatten_type(data or {}), tracker, default_fields=LIST_FIELDS,
+                               fields=f, bucket=b, raw=raw)
 
     run("activity last", echo, work)
 
 
 def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
     """Reshape Garmin per-sample metrics into one bucketed table. Returns (table, bucket_used)."""
-    index = {d.get("key"): d.get("metricsIndex") for d in payload.get("metricDescriptors", [])}
+    index = {
+        d.get("key"): d.get("metricsIndex")
+        for d in payload.get("metricDescriptors", [])
+        if isinstance(d.get("key"), str) and isinstance(d.get("metricsIndex"), int)
+    }
     if "directTimestamp" not in index:
         raise PaceError("not_found", "Activity has no per-sample metrics.")
 
@@ -175,17 +182,20 @@ def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
         if not isinstance(ts, (int, float)):
             continue
         samples.append((int(ts), [m[index[k]] if index[k] < len(m) else None for k, _ in cols_present]))
-    samples.sort()
+    samples.sort(key=lambda s: s[0])
     span_s = (samples[-1][0] - samples[0][0]) // 1000 if len(samples) > 1 else 0
     used = choose_bucket(span_s, len(samples)) if bucket == "auto" else bucket
     offset = tz_offset_s(payload)
     names = [c for _, c in cols_present]
 
-    def fmt(sec: int) -> str:
+    def fmt_exact(sec: int) -> str:
         return datetime.fromtimestamp(sec + offset, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
+    def fmt_minute(sec: int) -> str:
+        return datetime.fromtimestamp(sec + offset, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
     if used == "none":
-        rows = [[fmt(ts // 1000), *vals] for ts, vals in samples]
+        rows = [[fmt_exact(ts // 1000), *vals] for ts, vals in samples]
         return {"cols": ["t", *names], "rows": rows}, "none"
 
     size = BUCKETS[used]
@@ -203,7 +213,7 @@ def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
                 agg.append(col[-1])
             else:
                 agg.append(round(sum(col) / len(col), 1))
-        rows.append([fmt(start), *agg])
+        rows.append([fmt_minute(start), *agg])
     return {"cols": ["t", *names], "rows": rows}, used
 
 

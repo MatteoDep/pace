@@ -119,7 +119,11 @@ async def paginate(
     while True:
         ok, page, err = await safe_call(method_name, start, page_size, **kwargs)
         if not ok:
-            raise RuntimeError(err.message)
+            assert err is not None
+            # Local import: pace.envelope imports pace.api (for ApiError), so importing
+            # PaceError at module scope here would be a circular import.
+            from pace.envelope import PaceError
+            raise PaceError.from_api(err)
         if not page:
             break
         out.extend(page)
