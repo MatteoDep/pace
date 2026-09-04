@@ -39,13 +39,24 @@ def _root(
     envelope.set_verbose(verbose)
 
 
+def _cmd() -> str:
+    return " ".join(a for a in sys.argv[1:3] if not a.startswith("-"))
+
+
 def main() -> None:
-    """Console entry point: usage errors become bad_args envelopes."""
+    """Console entry point: usage errors become bad_args envelopes.
+
+    With `standalone_mode=False`, click *returns* the exit code of a
+    `typer.Exit` raised inside a command (e.g. by `envelope.fail()`) rather
+    than raising it -- so that exit code must be propagated explicitly via
+    `sys.exit(rv)`, not just assumed to be 0.
+    """
     try:
-        app(standalone_mode=False)
-    except click.UsageError as err:
-        cmd = " ".join(sys.argv[1:2])
-        envelope.emit(envelope.error(cmd, envelope.PaceError("bad_args", err.format_message())))
+        rv = app(standalone_mode=False)
+    except click.exceptions.Abort:
+        envelope.emit(envelope.error(_cmd(), envelope.PaceError("internal", "Aborted by user.")))
+        sys.exit(130)
+    except click.ClickException as err:  # UsageError and friends
+        envelope.emit(envelope.error(_cmd(), envelope.PaceError("bad_args", err.format_message())))
         sys.exit(2)
-    except click.exceptions.Exit as err:
-        sys.exit(err.exit_code)
+    sys.exit(rv if isinstance(rv, int) else 0)

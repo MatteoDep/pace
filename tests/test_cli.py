@@ -1,5 +1,6 @@
 import json
 
+import click.exceptions
 import pytest
 from typer.testing import CliRunner
 
@@ -24,6 +25,7 @@ def test_usage_error_is_bad_args_envelope(monkeypatch, capsys) -> None:
     assert exc.value.code == 2
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] is False and doc["error"]["code"] == "bad_args" and "--nope" in doc["error"]["message"]
+    assert doc["command"] == "wellness sleep"
 
 
 def test_unknown_command_is_bad_args(monkeypatch, capsys) -> None:
@@ -31,6 +33,33 @@ def test_unknown_command_is_bad_args(monkeypatch, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == 2 and json.loads(capsys.readouterr().out)["error"]["code"] == "bad_args"
+
+
+def test_command_failure_exit_code_propagates(monkeypatch, capsys) -> None:
+    """A `typer.Exit` raised inside a command (via `envelope.fail`) must still
+    set the process exit code when `main()` runs the app with
+    `standalone_mode=False` -- click returns that exit code instead of
+    raising it, so `main()` must propagate the return value explicitly.
+    """
+    monkeypatch.setattr("sys.argv", ["pace", "wellness", "sleep", "--bucket", "7m"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]["code"] == "bad_args"
+    assert doc["command"] == "wellness sleep"
+
+
+def test_abort_is_envelope_130(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.argv", ["pace", "cache", "path"])
+    monkeypatch.setattr(
+        "pace.commands.cache.run", lambda *a, **k: (_ for _ in ()).throw(click.exceptions.Abort())
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 130
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]["code"] == "internal"
 
 
 def test_auth_status_not_logged_in() -> None:
