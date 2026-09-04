@@ -6,7 +6,7 @@ import click
 import typer
 
 from pace import __version__, envelope
-from pace.commands import activity, auth, cache, config, device, gear, goal, profile, training, wellness
+from pace.commands import activity, auth, cache, config, device, gear, goal, profile, schema, training, wellness
 from pace.plugins import load_plugins
 
 app = typer.Typer(
@@ -22,6 +22,7 @@ for module, name in (
     (gear, "gear"), (goal, "goal"), (profile, "profile"), (training, "training"), (wellness, "wellness"),
 ):
     app.add_typer(module.app, name=name)
+app.command("schema", help="Machine-readable command manifest.")(schema.schema)
 load_plugins(app)
 
 
