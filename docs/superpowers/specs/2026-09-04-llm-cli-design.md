@@ -11,7 +11,8 @@ A Claude Code skill teaches the LLM how to call `pace`, how to read its output, 
 
 Out of scope for this pass: derived training metrics (load ratios, baselines, CTL/ATL).
 Those come later, once the coaching skill has been exercised.
-Out of scope permanently: MCP server, mutations of Garmin data.
+Out of scope permanently: MCP server.
+Mutations of Garmin data are in scope for a restricted set (structured workouts, health logs); see section 7.
 
 ## Decisions taken
 
@@ -26,6 +27,8 @@ Out of scope permanently: MCP server, mutations of Garmin data.
 | Ranges | Every date-keyed command takes `--from/--to/--days`. |
 | Discovery | `pace schema` manifest + condensed copy in the skill. |
 | Exports | Kept (`activity export`, `export-range`). |
+| Mutations | Workouts (push/schedule/delete) and health logs (weight, hydration, blood pressure) now; activity edit/delete never. |
+| Diary | CLI-managed athlete diary (`pace diary`) in `$PACE_HOME/diary.json`, read at session start, written after coaching decisions. |
 | Skill scope | Two sections: data access (full) and coaching (minimal v0). |
 | Skill home | Repo `.claude/skills/pace/`, symlinked into `~/.claude/skills/pace`. |
 | Architecture | Spec registry drives simple commands and the schema; irregular commands hand-written. |
@@ -60,6 +63,8 @@ pace/
   factory.py      EndpointSpec -> Typer command (range flags, fan-out, shaping, envelope)
   shape.py        prune, select_fields, bucket_series, auto bucket ladder
   envelope.py     ok()/error() builders, exit codes, emit()
+  workout.py      compact workout DSL -> garminconnect typed workout model
+  diary.py        diary.json load/save, entry ids, profile keys
   dates.py        parse_date, date_range, resolve_range(from, to, days)
   api.py          unchanged except error -> (code, http, message) classification
   cache.py        get_or_fetch returns (value, hit, age_s)
@@ -69,6 +74,9 @@ pace/
     cache.py      stats, clear, path
     config.py     show, path
     schema.py     schema [GROUP]
+    workout.py    list, show, push, schedule, delete
+    log.py        weight (add/list/delete), hydration, bp (add/list)
+    diary.py      show, set, add, remove
     wellness.py, training.py, device.py, gear.py, goal.py, profile.py
                   each: build Typer group from REGISTRY entries for that group
 .claude/skills/pace/SKILL.md
@@ -260,6 +268,8 @@ Where a spec needs a non-standard positional (e.g. a uuid string instead of int 
   `status` returns `{"logged_in": bool, "token_store": path, "expires_at": ...}` where known.
 - `cache stats|clear|path`, `config show|path`: envelope-wrapped.
 - `schema [GROUP]`: see section 4.
+- `workout *`, `log *`: see section 7.
+- `diary *`: see section 8.
 
 ## 4. `pace schema`
 
@@ -281,6 +291,7 @@ Emits, inside the standard envelope:
 ```
 
 Generated from `REGISTRY` plus a static list describing the hand-written commands.
+The static part also carries the workout DSL reference (section 7) and the diary entry kinds (section 8).
 `pace schema wellness` filters to one group.
 A test walks the Typer tree and asserts every command is present in the schema output, so the manifest cannot drift.
 
@@ -305,7 +316,12 @@ Frontmatter: `name: pace`; description triggers on Garmin, training, running, cy
    Convert for the user: km, min/km (or km/h for cycling), h:mm for durations, bpm, m.
    Use `*Local` timestamps.
 6. Errors: `rate_limited` -> wait 60 s, retry once, then stop and say so; `endpoint_unavailable` -> feature not enabled on the account, do not retry.
-7. Presentation contract (identical for every data answer):
+7. Session start: run `pace auth status` and `pace diary show` together; use the diary profile before asking the user anything.
+8. Writes (`workout push/schedule/delete`, `log *`): never unprompted, never during a check-in the user did not ask to act on.
+   Show the planned write as a table, get an explicit yes, then call.
+   Use `--dry-run` when unsure the DSL translation is right.
+   After any write, `pace diary add --kind plan`.
+9. Presentation contract (identical for every data answer):
    - Line 1: scope and freshness, e.g. `Sleep, 2026-08-20 to 2026-09-02 (data 12 min old)`.
    - One markdown table.
      Fixed column orders per domain, defined in the skill: activities, sleep, daily wellness, training status, workout detail.
@@ -317,7 +333,9 @@ Frontmatter: `name: pace`; description triggers on Garmin, training, running, cy
 ### B. Coaching (v0, minimal)
 
 - Before advising, know the user's goal or event and date, weekly availability, injuries or constraints.
-  Ask once if unknown; remember within the session.
+  Read them from `pace diary show`; ask only for empty profile fields or when the user mentions a change, then `pace diary set` / `pace diary add --kind constraint|injury`.
+- After each coaching decision, `pace diary add --kind recommendation`; when the user reports how a session felt, `--kind feedback`.
+  Next session starts by reading these back, so recommendations stay consistent across sessions.
 - Weekly check-in recipe: `activity list --days 7`, `wellness sleep --days 7`, `wellness hrv --days 7`, `wellness summary --days 7`, `training status`, `training readiness`.
   Compare with the prior 7 days by requesting `--days 14`.
 - Framing: observations -> one main recommendation -> what to watch next week.
@@ -338,6 +356,9 @@ Documented in README.
 - `test_envelope.py`: success and error shapes, exit codes per error code, Typer usage error becomes `bad_args` envelope on stdout, stderr empty without `--verbose`.
 - `test_factory.py` (Typer `CliRunner`, `safe_call` monkeypatched to fixtures): `--days` vs `--from/--to` resolution, single day yields list of one, ascending order, partial-failure day entry, all-fail -> `ok: false`, TTL by day age, `id`-keyed positional.
 - `test_schema.py`: valid JSON, every Typer command present, group filter.
+- `test_workout.py`: DSL -> Garmin payload for every step type, repeat groups, each end condition and target kind, pace range to m/s, hr zone vs bpm range, invalid DSL -> `bad_args` with the offending path.
+- `test_log.py`: argument mapping to garminconnect calls (weigh_in vs body_composition selection), `--dry-run` payload, cache invalidation for the date.
+- `test_diary.py`: empty file bootstrap, set dotted keys, add/remove with incrementing ids, `show` filters, active constraints listing, corrupt file -> `internal` error not crash.
 - `test_cache.py`: `(value, hit, age_s)` accounting; existing TTL tests kept.
 - `test_api_errors.py`, `test_ratelimit.py`: kept, adapted to the new error tuple.
 - Fixtures: one recorded `--raw` payload per endpoint under `tests/fixtures/`, sanitized (ids, names, coordinates, device serials).
@@ -350,9 +371,97 @@ Documented in README.
 - `docs/PLUGINS.md`: `render` references replaced by `envelope`/`shape`/`factory` helpers.
 - Version bumped to `2.0.0` in `pyproject.toml` and `pace/__init__.py`.
 
+## 7. Mutations
+
+### Safety contract
+
+- Write commands never read or write the response cache; a successful write invalidates cache keys for the affected resource and date (e.g. `get_hydration_data:<date>`).
+- Every write command accepts `--dry-run`: no network call, `ok: true`, `data: {"dry_run": true, "payload": <exact Garmin payload>}`.
+- Success envelope: `data: {"action": "create" | "delete", "resource": "workout" | "weight" | "hydration" | "bp", "id": ..., "echo": <compact input as parsed>}`.
+- Deletes are allowed only for resources this CLI creates: workouts, weigh-ins, blood pressure readings.
+- Permanently excluded: activity delete or edit, gear assignment, manual activity creation, activity file upload.
+- No `--yes` flag.
+  Confirmation is the skill's job (show the planned write, get an explicit yes) because an agent would always pass a flag.
+
+### `workout` group
+
+| command | garminconnect | notes |
+|---|---|---|
+| `workout list [--limit]` | `get_workouts` | curated fields: id, name, sport, estimated duration, updated |
+| `workout show ID` | `get_workout_by_id` | pruned full payload |
+| `workout push FILE\|-` | `upload_workout` | input is the compact DSL below; `-` reads stdin |
+| `workout schedule ID DATE` | `connectapi POST /workout-service/schedule/{id}` with `{"date": "YYYY-MM-DD"}` | endpoint not wrapped by the library; verify during implementation, drop the command if Garmin refuses |
+| `workout delete ID` | `connectapi DELETE /workout-service/workout/{id}` | same caveat |
+
+Compact workout DSL (input JSON):
+
+```json
+{"name": "Tempo 3x10", "sport": "running",
+ "steps": [
+   {"type": "warmup", "duration": "15m"},
+   {"repeat": 3, "steps": [
+     {"type": "interval", "duration": "10m", "target": {"pace": "4:15-4:25"}},
+     {"type": "recovery", "duration": "3m"}]},
+   {"type": "cooldown", "distance": "1km"}]}
+```
+
+- `sport`: `running | cycling | swimming | walking | hiking`.
+- Step `type`: `warmup | interval | recovery | rest | cooldown`; `{"repeat": N, "steps": [...]}` nests.
+- End condition, exactly one of: `duration` (`45s`, `10m`, `1h`, `1h30m`), `distance` (`400m`, `1km`, `5.5km`), `"open": true` (lap button).
+- `target`, optional, exactly one of: `pace` (`"4:15-4:25"` min/km, converted to m/s speed range), `hr` (`"z2"` zone or `"140-150"` bpm), `power` (`"200-220"` W), `cadence` (`"170-180"`).
+- Translation in `pace/workout.py` produces a `garminconnect.workout` typed model (`RunningWorkout` etc.) and lets the library serialise it.
+  `estimatedDurationInSecs` is computed from durations; distance-only steps contribute an estimate from the target pace when present, otherwise 0.
+- Invalid DSL -> `bad_args` with `error.message` naming the JSON path (`steps[1].steps[0].target`).
+- The DSL reference is emitted by `pace schema` under `workout_dsl` and reproduced in the skill.
+
+### `log` group
+
+| command | garminconnect |
+|---|---|
+| `log weight KG [--date D] [--fat PCT] [--muscle KG] [--water PCT] [--bone KG] [--bmi X]` | `add_weigh_in` when only weight; `add_body_composition` when any extra field |
+| `log weight list --from --to` | `get_weigh_ins` |
+| `log weight delete PK --date D` | `delete_weigh_in` |
+| `log hydration ML [--date D]` | `add_hydration_data` |
+| `log bp SYS DIA PULSE [--notes T] [--date D]` | `set_blood_pressure` |
+| `log bp list --from --to` | `get_blood_pressure` |
+
+`--date` accepts the usual date forms; default today.
+List commands are read commands and follow the normal shaping and caching rules.
+
+## 8. Athlete diary
+
+Purpose: persist what the coach must remember across sessions (goal, event, availability, constraints, past recommendations, athlete feedback) without depending on Claude Code memory.
+
+Storage: `$PACE_HOME/diary.json`, no Garmin access, works offline.
+
+```json
+{"profile": {"goal": "sub-1:45 half", "event": {"name": "Verona HM", "date": "2026-11-15"},
+             "availability": "5 sessions/wk, long run Sunday", "updated": "2026-09-04"},
+ "entries": [
+   {"id": 7, "date": "2026-09-04", "kind": "recommendation",
+    "text": "Keep Tue quality session, swap Thu tempo for easy run: HRV down 3 days.", "tags": ["hrv"]}]}
+```
+
+- Entry `kind`: `note | plan | recommendation | feedback | constraint | injury`.
+  Constraints and injuries are entries that stay active until removed; there is no separate list.
+- `id` is an incrementing integer; never reused.
+
+Commands (all envelope-wrapped, listed in `pace schema`):
+
+| command | effect |
+|---|---|
+| `diary show [--since D] [--kind K] [--limit N]` | `data: {"profile": ..., "active": [constraint/injury entries], "entries": [recent, newest first]}`; default limit 20 |
+| `diary set KEY VALUE` | dotted profile keys: `goal`, `event.name`, `event.date`, `availability`; sets `profile.updated` |
+| `diary add --kind K [--date D] [--tag T ...] TEXT` | appends an entry, returns it |
+| `diary remove ID` | removes one entry, returns it |
+
+Corrupt or unreadable file -> `internal` error envelope with the path in `hint`; never overwrite a corrupt file silently.
+
 ## Implementation notes
 
 - Fixture recording requires the user's logged-in tokens; run each command once with `--raw`, sanitize, commit.
   Default field curation is done against those fixtures.
 - The garminconnect method signatures for `device solar`, `gear list`, `get_activity_details`, and `get_activities_by_date` must be checked in `scripts/garmin_api_reference.py` before wiring specs.
 - Keep `pace.api.safe_call` returning a structured error `(code, http, message)` instead of a bare string so `envelope.error` does not re-parse text.
+- `workout schedule` and `workout delete` use `api.connectapi` directly; confirm the endpoints against a real workout created by `workout push --dry-run` then pushed, before keeping them in the schema.
+- Local dev: `uv run` needs the private index token; use `bash -ic 'update_aws_token && uv ...'` or run `.venv/bin/python` directly.
