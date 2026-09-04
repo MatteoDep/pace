@@ -61,9 +61,10 @@ def test_run_error_exits_with_code(capsys) -> None:
     with pytest.raises(typer.Exit) as exc:
         run("cmd", {}, work)
     assert exc.value.exit_code == 4
-    doc = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    doc = json.loads(captured.out)
     assert doc["ok"] is False and doc["error"]["code"] == "rate_limited"
-    assert capsys.readouterr().err == ""
+    assert captured.err == ""
 
 
 def test_run_unexpected_exception_becomes_internal(capsys) -> None:
@@ -73,5 +74,7 @@ def test_run_unexpected_exception_becomes_internal(capsys) -> None:
     with pytest.raises(typer.Exit) as exc:
         run("cmd", {}, work)
     assert exc.value.exit_code == 1
-    doc = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    doc = json.loads(captured.out)
     assert doc["error"]["code"] == "internal" and "boom" in doc["error"]["message"]
+    assert captured.err == ""
