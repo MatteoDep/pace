@@ -1,12 +1,12 @@
-"""Date parsing and Typer option helpers."""
+"""Date parsing and range resolution."""
 
 import re
 from collections.abc import Iterator
 from datetime import date, timedelta
 
-import typer
+from pace.envelope import PaceError
 
-__all__ = ["parse_date", "date_range"]
+__all__ = ["parse_date", "date_range", "resolve_range"]
 
 _RELATIVE = re.compile(r"^([+-]?\d+)d$")
 
@@ -22,20 +22,23 @@ def parse_date(value: str | None) -> date:
         return date.today() + timedelta(days=int(m.group(1)))
     try:
         return date.fromisoformat(value)
-    except ValueError as err:
-        raise typer.BadParameter(
-            f"Invalid date {value!r}. Use YYYY-MM-DD, today, yesterday, or -Nd."
-        ) from err
+    except ValueError:
+        raise PaceError("bad_args", f"Invalid date {value!r}. Use YYYY-MM-DD, today, yesterday, or -Nd.") from None
 
 
 def date_range(start: date, end: date) -> Iterator[date]:
-    if start > end:
-        return
     cur = start
     while cur <= end:
         yield cur
         cur += timedelta(days=1)
 
 
-# Option factories deferred: commands use typer.Option(...) inline so Typer's
-# signature inspection sees the OptionInfo at the right spot.
+def resolve_range(from_: str | None, to: str, days: int) -> tuple[date, date]:
+    """Resolve --from/--to/--days into an inclusive (start, end). --from wins over --days."""
+    if days < 1:
+        raise PaceError("bad_args", "--days must be >= 1.")
+    end = parse_date(to)
+    start = parse_date(from_) if from_ else end - timedelta(days=days - 1)
+    if start > end:
+        start, end = end, start
+    return start, end

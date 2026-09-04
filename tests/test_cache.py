@@ -1,8 +1,10 @@
 """Tests for the SQLite cache."""
 
+from datetime import date, timedelta
+
 import pytest
 
-from pace.cache import Cache
+from pace.cache import Cache, CacheTracker, ttl_for_day
 
 
 @pytest.mark.asyncio
@@ -15,8 +17,8 @@ async def test_miss_then_hit(tmp_path) -> None:
         calls += 1
         return {"x": 1}
 
-    assert await cache.get_or_fetch("k", fetch, ttl=60) == {"x": 1}
-    assert await cache.get_or_fetch("k", fetch, ttl=60) == {"x": 1}
+    assert (await cache.get_or_fetch("k", fetch, ttl=60))[0] == {"x": 1}
+    assert (await cache.get_or_fetch("k", fetch, ttl=60))[0] == {"x": 1}
     assert calls == 1
     cache.close()
 
@@ -50,3 +52,32 @@ async def test_clear(tmp_path) -> None:
 
 async def _ret(v):
     return v
+
+
+@pytest.mark.asyncio
+async def test_get_or_fetch_reports_hit_and_age(tmp_path) -> None:
+    cache = Cache(tmp_path / "c.db")
+    v, hit, age = await cache.get_or_fetch("k", lambda: _ret(1), ttl=60)
+    assert (v, hit, age) == (1, False, 0)
+    v, hit, age = await cache.get_or_fetch("k", lambda: _ret(2), ttl=60)
+    assert v == 1 and hit is True and 0 <= age < 5
+    cache.close()
+
+
+def test_tracker_report() -> None:
+    t = CacheTracker()
+    assert t.report() is None
+    t.add(True, 30)
+    assert t.report() == {"hit": True, "oldest_age_s": 30}
+    t.add(False, 0)
+    assert t.report() == {"hit": "partial", "oldest_age_s": 30}
+    t2 = CacheTracker()
+    t2.add(False, 0)
+    assert t2.report() == {"hit": False, "oldest_age_s": 0}
+
+
+def test_ttl_for_day() -> None:
+    today = date(2026, 9, 4)
+    assert ttl_for_day(today, 300, today) == 300
+    assert ttl_for_day(today - timedelta(days=1), 300, today) == 86400
+    assert ttl_for_day(today - timedelta(days=2), 300, today) == 604800

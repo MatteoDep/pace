@@ -10,6 +10,7 @@ from garminconnect import Garmin
 from pace.api import paginate, safe_call
 from pace.commands._helpers import cache_for, cached_call, run
 from pace.dates import parse_date
+from pace.envelope import PaceError
 from pace.models.list import ListModel
 from pace.models.raw import RawData
 from pace.render import Format
@@ -65,7 +66,7 @@ def list_(
             if cache is None:
                 data = await fetch_page()
             else:
-                data = await cache.get_or_fetch(key, fetch_page, ttl=_LIST_TTL)
+                data = (await cache.get_or_fetch(key, fetch_page, ttl=_LIST_TTL))[0]
         finally:
             if cache is not None:
                 cache.close()
@@ -229,6 +230,9 @@ def export_range(
 
     try:
         n = asyncio.run(go())
+    except PaceError as err:
+        typer.secho(f"Error: {err.message}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from None
     except RuntimeError as err:
         typer.secho(f"Error: {err}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from None
