@@ -40,7 +40,7 @@ async def cached_call(
     async def fetch() -> Any:
         ok, data, err = await safe_call(method, *args, **kwargs)
         if not ok:
-            raise RuntimeError(err)
+            raise RuntimeError(err.message)
         return data
 
     if cache is None:

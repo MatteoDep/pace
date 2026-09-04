@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from garth.exc import GarthHTTPError
@@ -21,6 +22,13 @@ from pace.ratelimit import concurrency, limiter
 # silence the library's own logging to keep the CLI output clean.
 logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
+@dataclass(frozen=True)
+class ApiError:
+    code: str
+    message: str
+    http: int | None = None
+
+
 _api: Garmin | None = None
 
 
@@ -35,14 +43,12 @@ def get_api() -> Garmin:
     return _api
 
 
-_HTTP_LABELS = {
-    400: "Endpoint not available (400) -- not enabled for your account",
-    401: "Auth required (401) -- re-authenticate",
-    403: "Access denied (403)",
-    404: "Endpoint not found (404)",
-    429: "Rate limit exceeded (429)",
-    500: "Server error (500)",
-    503: "Service unavailable (503)",
+_HTTP_CODES: dict[int, tuple[str, str]] = {
+    400: ("endpoint_unavailable", "Endpoint not available (400) -- not enabled for your account"),
+    401: ("auth_required", "Auth required (401) -- re-authenticate"),
+    403: ("endpoint_unavailable", "Access denied (403)"),
+    404: ("not_found", "Endpoint not found (404)"),
+    429: ("rate_limited", "Rate limit exceeded (429)"),
 }
 
 
@@ -59,19 +65,19 @@ def _status_from_text(msg: str) -> int | None:
     return int(bare.group(1)) if bare else None
 
 
-def _classify_http_error(code: int | None, msg: str) -> str:
-    if code in _HTTP_LABELS:
-        return _HTTP_LABELS[code]
-    return f"HTTP error: {msg}"
+def classify_http(code: int | None, msg: str) -> ApiError:
+    if code in _HTTP_CODES:
+        kind, label = _HTTP_CODES[code]
+        return ApiError(kind, label, code)
+    if code is not None and 500 <= code < 600:
+        return ApiError("network", f"Server error ({code})", code)
+    return ApiError("internal", f"HTTP error: {msg}", code)
 
 
 async def safe_call(
     method_name: str, *args: Any, **kwargs: Any
-) -> tuple[bool, Any, str | None]:
-    """Rate-limited async wrapper.
-
-    Returns (success, result, error_message).
-    """
+) -> tuple[bool, Any, ApiError | None]:
+    """Rate-limited async wrapper. Returns (success, result, error)."""
     await limiter.acquire()
     async with concurrency:
         try:
@@ -80,24 +86,20 @@ async def safe_call(
             return True, result, None
         except GarthHTTPError as err:
             code = getattr(getattr(err, "response", None), "status_code", None)
-            return False, None, _classify_http_error(code, str(err))
+            return False, None, classify_http(code, str(err))
         except FileNotFoundError:
-            return False, None, "No valid tokens. Run `pace auth login`."
+            return False, None, ApiError("auth_required", "No valid tokens. Run `pace auth login`.")
         except GarminConnectAuthenticationError as err:
-            return False, None, f"Auth issue: {err}"
+            return False, None, ApiError("auth_required", f"Auth issue: {err}")
         except GarminConnectConnectionError as err:
-            # garminconnect funnels HTTP client/server errors through this same
-            # exception type as genuine network failures; recover the status
-            # code from the message so an HTTP 404 isn't mislabelled a
-            # "Connection issue".
             code = _status_from_text(str(err))
             if code is not None:
-                return False, None, _classify_http_error(code, str(err))
-            return False, None, f"Connection issue: {err}"
+                return False, None, classify_http(code, str(err))
+            return False, None, ApiError("network", f"Connection issue: {err}")
         except GarminConnectTooManyRequestsError as err:
-            return False, None, f"Rate limit: {err}"
+            return False, None, ApiError("rate_limited", f"Rate limit: {err}")
         except Exception as err:
-            return False, None, f"Unexpected error: {err}"
+            return False, None, ApiError("internal", f"Unexpected error: {err}")
 
 
 async def paginate(
@@ -117,7 +119,7 @@ async def paginate(
     while True:
         ok, page, err = await safe_call(method_name, start, page_size, **kwargs)
         if not ok:
-            raise RuntimeError(err)
+            raise RuntimeError(err.message)
         if not page:
             break
         out.extend(page)

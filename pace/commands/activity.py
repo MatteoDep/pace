@@ -172,7 +172,7 @@ def _ext_for(fmt: ExportFormat) -> str:
 async def _download_one(activity_id: int, fmt: ExportFormat) -> bytes:
     ok, data, err = await safe_call("download_activity", str(activity_id), _DL_FMT_MAP[fmt])
     if not ok:
-        raise RuntimeError(err)
+        raise RuntimeError(err.message)
     return data
 
 
@@ -214,7 +214,7 @@ def export_range(
             "get_activities_by_date", start_d, end_d, activity_type, 1000
         )
         if not ok:
-            raise RuntimeError(err)
+            raise RuntimeError(err.message)
         listing = listing or []
         out_dir.mkdir(parents=True, exist_ok=True)
 
