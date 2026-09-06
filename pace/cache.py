@@ -84,6 +84,15 @@ class Cache:
         size = self.path.stat().st_size if self.path.exists() else 0
         return {"entries": entries, "size_bytes": size}
 
+    def invalidate(self, prefix: str) -> int:
+        """Delete every entry whose key starts with `prefix`. Returns rows removed."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cur = self._conn.execute(
+            "DELETE FROM cache WHERE key LIKE ? ESCAPE '\\'", (escaped + "%",)
+        )
+        self._conn.commit()
+        return cur.rowcount
+
 
 class CacheTracker:
     """Accumulates per-call hit/age so a fan-out can report one cache block."""

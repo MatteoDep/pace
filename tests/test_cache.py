@@ -94,3 +94,27 @@ def test_ttl_for_day() -> None:
     assert ttl_for_day(today, 300, today) == 300
     assert ttl_for_day(today - timedelta(days=1), 300, today) == 86400
     assert ttl_for_day(today - timedelta(days=2), 300, today) == 604800
+
+
+@pytest.mark.asyncio
+async def test_invalidate_prefix_only(tmp_path) -> None:
+    cache = Cache(tmp_path / "c.db")
+    await cache.get_or_fetch("get_hydration_data:2026-09-06", lambda: _ret(1), ttl=600)
+    await cache.get_or_fetch("get_hydration_data:2026-09-05", lambda: _ret(2), ttl=600)
+    await cache.get_or_fetch("get_weigh_ins:2026-09-01:2026-09-06", lambda: _ret(3), ttl=600)
+    assert cache.invalidate("get_hydration_data:2026-09-06") == 1
+    assert cache.invalidate("get_weigh_ins:") == 1
+    assert cache.stats()["entries"] == 1
+    v, hit, _ = await cache.get_or_fetch("get_hydration_data:2026-09-05", lambda: _ret(9), ttl=600)
+    assert v == 2 and hit is True
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_escapes_like_wildcards(tmp_path) -> None:
+    cache = Cache(tmp_path / "c.db")
+    await cache.get_or_fetch("a_b:1", lambda: _ret(1), ttl=600)
+    await cache.get_or_fetch("axb:1", lambda: _ret(2), ttl=600)
+    assert cache.invalidate("a_b") == 1          # `_` must not act as a wildcard
+    assert cache.stats()["entries"] == 1
+    cache.close()
