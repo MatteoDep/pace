@@ -57,7 +57,9 @@ def _shaped_result(data: Any, tracker: CacheTracker, *, default_fields=(), field
 
 @app.command("list")
 def list_(
-    from_: str | None = FROM_OPT, to: str = TO_OPT, days: int | None = typer.Option(None, "--days", "-n"),
+    from_: str | None = FROM_OPT, to: str = TO_OPT,
+    days: int | None = typer.Option(None, "--days", "-n",
+                                    help="Number of days ending at --to (enables range mode)."),
     type_: str | None = typer.Option(None, "--type", "-t", help="running, cycling, swimming, ..."),
     limit: int = typer.Option(20, "--limit", "-l", help="Max activities returned (newest first)."),
     fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT,
@@ -185,7 +187,7 @@ def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
     samples.sort(key=lambda s: s[0])
     span_s = (samples[-1][0] - samples[0][0]) // 1000 if len(samples) > 1 else 0
     used = choose_bucket(span_s, len(samples)) if bucket == "auto" else bucket
-    offset = tz_offset_s(payload)
+    offset = tz_offset_s(payload, samples[0][0] if samples else None)
     names = [c for _, c in cols_present]
 
     def fmt_exact(sec: int) -> str:
@@ -210,7 +212,7 @@ def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
             if not col:
                 agg.append(None)
             elif name in _LAST_VALUE_COLS:
-                agg.append(col[-1])
+                agg.append(round(col[-1], 1))
             else:
                 agg.append(round(sum(col) / len(col), 1))
         rows.append([fmt_minute(start), *agg])

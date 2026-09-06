@@ -20,7 +20,7 @@ HINTS: dict[str, str] = {
     "not_found": "The id or date does not exist on Garmin Connect.",
     "endpoint_unavailable": "Feature not enabled for this account or device; do not retry.",
     "network": "Transient. Retry once after a few seconds.",
-    "internal": "Unexpected. Re-run with --verbose and report the stderr output.",
+    "internal": "Unexpected. Re-run with --verbose for cache/fetch logs and report the message.",
 }
 
 VERBOSE = False

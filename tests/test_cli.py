@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import click.exceptions
 import pytest
@@ -26,6 +27,14 @@ def test_usage_error_is_bad_args_envelope(monkeypatch, capsys) -> None:
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] is False and doc["error"]["code"] == "bad_args" and "--nope" in doc["error"]["message"]
     assert doc["command"] == "wellness sleep"
+
+
+def test_root_flag_does_not_hide_the_command_name(monkeypatch, capsys) -> None:
+    """Flags are filtered before the first two tokens are taken."""
+    monkeypatch.setattr("sys.argv", ["pace", "-v", "wellness", "sleep", "--nope"])
+    with pytest.raises(SystemExit):
+        main()
+    assert json.loads(capsys.readouterr().out)["command"] == "wellness sleep"
 
 
 def test_unknown_command_is_bad_args(monkeypatch, capsys) -> None:
@@ -65,6 +74,27 @@ def test_abort_is_envelope_130(monkeypatch, capsys) -> None:
 def test_auth_status_not_logged_in() -> None:
     doc = json.loads(runner.invoke(app, ["auth", "status"]).stdout)
     assert doc["ok"] and doc["data"]["logged_in"] is False
+    assert doc["data"].get("oauth2_expires_at") is None
+
+
+def test_auth_status_reports_oauth2_expiry(tmp_path) -> None:
+    """garth refreshes oauth2 from oauth1, so the expiry is informational -- but an agent
+    should be able to see it without reading the token store itself."""
+    store = tmp_path / "tokens"
+    store.mkdir()
+    (store / "oauth2_token.json").write_text(json.dumps({"expires_at": 1788595260, "access_token": "x"}))
+    doc = json.loads(runner.invoke(app, ["auth", "status"]).stdout)
+    assert doc["data"]["logged_in"] is True
+    assert doc["data"]["oauth2_expires_at"].startswith(
+        datetime.fromtimestamp(1788595260).astimezone().isoformat()[:19])
+
+
+def test_auth_status_survives_a_corrupt_oauth2_token(tmp_path) -> None:
+    store = tmp_path / "tokens"
+    store.mkdir()
+    (store / "oauth2_token.json").write_text("not json")
+    doc = json.loads(runner.invoke(app, ["auth", "status"]).stdout)
+    assert doc["ok"] and doc["data"]["logged_in"] is True and doc["data"]["oauth2_expires_at"] is None
 
 
 def test_auth_logout_reports_removed(tmp_path) -> None:

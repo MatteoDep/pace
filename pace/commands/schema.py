@@ -7,13 +7,35 @@ import typer
 from pace import __version__
 from pace.commands.activity import LIST_FIELDS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
+from pace.factory import MAX_DAYS
+from pace.ratelimit import CONCURRENCY, limiter
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 
 UNITS = {
     "distance": "m", "elevation": "m", "duration": "s", "speed": "m/s", "heart_rate": "bpm",
     "timestamps": "epoch ms GMT; fields ending in Local are ISO local time",
     "note": "Garmin returns SI regardless of the user's display preferences.",
+    "sentinels": "Garmin encodes missing/off-wrist stress and body battery as -1/-2; "
+                 "pace drops them from bucketed series",
 }
+
+#: What a caller can plan around before it starts a long fan-out.
+LIMITS: dict[str, Any] = {
+    "calls_per_minute": limiter.per_minute,
+    "min_interval_s": int(limiter.min_interval) if float(limiter.min_interval).is_integer()
+                      else limiter.min_interval,
+    "concurrency": CONCURRENCY,
+    "max_days": MAX_DAYS,
+    # The per-minute cap, not the interval or the concurrency, is what a cold range costs.
+    "cold_cache_seconds_per_day": round(60 / limiter.per_minute),
+}
+
+NOTES: list[str] = [
+    "empty default_fields means all fields",
+    "--from/--to swapped if inverted",
+    "--help prints plain text (not JSON)",
+    "auto buckets are scored against the whole requested range, not one day",
+]
 
 SHAPE_FLAGS = ["--fields", "--bucket", "--raw", "--no-cache"]
 RANGE_FLAGS = ["--from", "--to", "--days"]
@@ -25,6 +47,7 @@ GLOBAL_FLAGS = {
     "--no-cache": "bypass the local cache for this call",
     "--verbose": "(root) log fetch/cache events to stderr",
     "--from/--to/--days": "date-keyed commands; --from overrides --days; dates: YYYY-MM-DD | today | yesterday | -Nd",
+    "--help": "plain-text usage, not JSON; exit 0",
 }
 
 STATIC_COMMANDS: list[dict[str, Any]] = [
@@ -89,9 +112,12 @@ def build_schema(group: str | None) -> dict[str, Any]:
     return {
         "version": __version__,
         "units": UNITS,
-        "exit_codes": {"0": "ok", "1": "api or internal error", **{str(v): k for k, v in EXIT_CODES.items()}},
+        "exit_codes": {"0": "ok", "1": "api or internal error",
+                       **{str(v): k for k, v in EXIT_CODES.items()}, "130": "aborted by user"},
         "error_codes": list(HINTS),
+        "limits": LIMITS,
         "global_flags": GLOBAL_FLAGS,
+        "notes": NOTES,
         "groups": {**GROUPS, "activity": "Workouts and activity history.", "auth": "Authentication.",
                    "cache": "Local cache.", "config": "User configuration."},
         "commands": commands,

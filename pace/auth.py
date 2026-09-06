@@ -1,8 +1,10 @@
 """Garmin Connect authentication and token management."""
 
+import json
 import os
 import shutil
 import sys
+from datetime import datetime
 from getpass import getpass
 
 import requests
@@ -77,11 +79,28 @@ def init_api() -> Garmin | None:
             return None
 
 
+def oauth2_expires_at() -> str | None:
+    """Expiry of the cached oauth2 token as an ISO local string, or None if unreadable.
+
+    Not the same thing as being logged out: garth mints a new oauth2 token from the
+    long-lived oauth1 token, so an expired one still means `logged_in`.
+    """
+    try:
+        data = json.loads((config.TOKEN_STORE / "oauth2_token.json").read_text())
+    except (OSError, ValueError):
+        return None
+    expires_at = data.get("expires_at") if isinstance(data, dict) else None
+    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+        return None
+    return datetime.fromtimestamp(expires_at).astimezone().isoformat()
+
+
 def auth_status() -> dict[str, object]:
     """Return current token state."""
     return {
         "authenticated": config.TOKEN_STORE.exists(),
         "token_path": str(config.TOKEN_STORE),
+        "oauth2_expires_at": oauth2_expires_at(),
     }
 
 

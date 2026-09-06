@@ -65,5 +65,8 @@ class RateLimiter:
             self._history.append(self._last_call)
 
 
+#: Maximum Garmin calls in flight at once (a day fan-out is gathered, not serialized).
+CONCURRENCY = 3
+
 limiter = RateLimiter()
-concurrency = asyncio.Semaphore(3)
+concurrency = asyncio.Semaphore(CONCURRENCY)

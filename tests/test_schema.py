@@ -39,6 +39,21 @@ def test_schema_command_output_and_group_filter() -> None:
     assert names and all(n.startswith("wellness ") for n in names)
 
 
+def test_limits_exit_codes_and_notes_are_declared() -> None:
+    """An agent plans a fan-out from these, so they must track the code, not literals."""
+    from pace.factory import MAX_DAYS
+    from pace.ratelimit import CONCURRENCY, limiter
+
+    doc = build_schema(None)
+    assert doc["limits"] == {"calls_per_minute": limiter.per_minute, "min_interval_s": 2,
+                             "concurrency": CONCURRENCY, "max_days": MAX_DAYS,
+                             "cold_cache_seconds_per_day": 6}
+    assert doc["exit_codes"]["130"] == "aborted by user"
+    assert "--help" in doc["global_flags"]
+    assert any("default_fields" in n for n in doc["notes"])
+    assert "-1/-2" in doc["units"]["sentinels"]
+
+
 def test_dated_entries_expose_range_flags() -> None:
     sleep = next(c for c in build_schema(None)["commands"] if c["name"] == "wellness sleep")
     assert sleep["keyed"] == "date" and {"--from", "--to", "--days"} <= set(sleep["flags"])

@@ -13,7 +13,8 @@ def status() -> None:
     """Whether cached Garmin tokens exist."""
     async def work() -> Result:
         s = auth_mod.auth_status()
-        return Result({"logged_in": bool(s["authenticated"]), "token_store": str(s["token_path"])})
+        return Result({"logged_in": bool(s["authenticated"]), "token_store": str(s["token_path"]),
+                       "oauth2_expires_at": s["oauth2_expires_at"]})
 
     run("auth status", {}, work)
 

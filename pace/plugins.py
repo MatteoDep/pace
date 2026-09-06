@@ -5,14 +5,15 @@ A plugin's pyproject.toml declares:
     [project.entry-points."pace.commands"]
     myplugin = "myplugin.cli:app"
 
-The referenced object must be a `typer.Typer`. Import errors are reported on
-stderr but never abort startup.
+The referenced object must be a `typer.Typer`. Import errors are logged (visible with
+`--verbose`) but never abort startup, and never break the one-JSON-document contract.
 """
 
-import sys
 from importlib.metadata import entry_points
 
 import typer
+
+from pace.envelope import log
 
 _GROUP = "pace.commands"
 
@@ -23,14 +24,11 @@ def load_plugins(app: typer.Typer) -> None:
         try:
             obj = ep.load()
         except Exception as err:
-            print(f"pace: plugin {ep.name!r} failed to load: {err}", file=sys.stderr)
+            log(f"pace: plugin {ep.name!r} failed to load: {err}")
             continue
 
         if not isinstance(obj, typer.Typer):
-            print(
-                f"pace: plugin {ep.name!r} did not expose a typer.Typer instance.",
-                file=sys.stderr,
-            )
+            log(f"pace: plugin {ep.name!r} did not expose a typer.Typer instance.")
             continue
 
         app.add_typer(obj, name=ep.name, help=f"[plugin] {ep.value}")

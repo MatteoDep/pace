@@ -12,6 +12,9 @@ MS = 1000
 
 @pytest.fixture(autouse=True)
 def _tmp_home(tmp_path, monkeypatch):
+    # PACE_HOME too: Cache() calls ensure_home(), which would otherwise mkdir the
+    # developer's real ~/.pace during a test run.
+    monkeypatch.setattr("pace.config.PACE_HOME", tmp_path)
     monkeypatch.setattr("pace.config.CACHE_DB", tmp_path / "cache.db")
 
 
@@ -88,6 +91,19 @@ def test_details_table_buckets_all_metrics() -> None:
     assert table["cols"] == ["t", "hr", "speed_mps", "dist_m", "elev_m"]
     assert table["rows"][0][3] == 177.0   # dist_m is the last sample in the bucket (59 * 3)
     assert table["rows"][0][1] == 142.0   # hr avg of 140..144 pattern
+
+
+def test_details_table_rounds_last_value_columns() -> None:
+    """dist_m is carried through as the bucket's last sample; Garmin's float noise
+    (13 decimals) must be rounded like every averaged column."""
+    keys = ["directTimestamp", "sumDistance"]
+    payload = {
+        "metricDescriptors": [{"metricsIndex": i, "key": k} for i, k in enumerate(keys)],
+        "activityDetailMetrics": [{"metrics": [i * MS, i * 3.3333333333333]} for i in range(200)],
+    }
+    table, used = details_table(payload, "1m")
+    assert table["cols"] == ["t", "dist_m"]
+    assert table["rows"][0][1] == 196.7
 
 
 def test_details_table_handles_duplicate_timestamps_with_none_metric() -> None:

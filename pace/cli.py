@@ -41,7 +41,11 @@ def _root(
 
 
 def _cmd() -> str:
-    return " ".join(a for a in sys.argv[1:3] if not a.startswith("-"))
+    """The group + command the user meant, for an envelope built outside any command.
+
+    Flags are dropped *before* the first two tokens are taken, so a root flag
+    (`pace -v wellness sleep`) does not push the command name out of view."""
+    return " ".join([a for a in sys.argv[1:] if not a.startswith("-")][:2])
 
 
 def main() -> None:
