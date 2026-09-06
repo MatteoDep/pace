@@ -46,6 +46,21 @@ def test_parse_pace_and_range() -> None:
         parse_pace("4-15", "p")
 
 
+def test_parse_pace_rejects_out_of_range_seconds() -> None:
+    for bad in ("4:75", "0:60"):
+        with pytest.raises(PaceError) as exc:
+            parse_pace(bad, "p")
+        assert exc.value.code == "bad_args"
+
+
+def test_parse_duration_rejects_zero() -> None:
+    for bad in ("0s", "0m"):
+        with pytest.raises(PaceError) as exc:
+            parse_duration(bad, "p")
+        assert exc.value.code == "bad_args"
+        assert exc.value.message == "p: duration must be positive"
+
+
 def _dsl():
     return {
         "name": "Tempo 3x10", "sport": "running",
@@ -92,6 +107,57 @@ def test_pace_target_faster_bound_first() -> None:
     assert iv["zoneNumber"] is None
 
 
+def test_pace_target_faster_bound_first_regardless_of_input_order() -> None:
+    dsl = {"name": "x", "sport": "running", "steps": [
+        {"type": "interval", "duration": "1m", "target": {"pace": "4:25-4:15"}}]}
+    iv = build_workout(dsl)["workoutSegments"][0]["workoutSteps"][0]
+    assert iv["targetValueOne"] > iv["targetValueTwo"]
+    assert iv["targetValueOne"] == pytest.approx(1000 / 255)
+    assert iv["targetValueTwo"] == pytest.approx(1000 / 265)
+
+
+def test_pace_target_single_value_gives_equal_bounds() -> None:
+    dsl = {"name": "x", "sport": "running", "steps": [
+        {"type": "interval", "duration": "1m", "target": {"pace": "4:30"}}]}
+    iv = build_workout(dsl)["workoutSegments"][0]["workoutSteps"][0]
+    assert iv["targetValueOne"] == iv["targetValueTwo"] == pytest.approx(1000 / 270)
+
+
+def test_note_maps_to_description() -> None:
+    dsl = {"name": "x", "sport": "running", "steps": [
+        {"type": "warmup", "duration": "1m", "note": "easy does it"}]}
+    step = build_workout(dsl)["workoutSegments"][0]["workoutSteps"][0]
+    assert step["description"] == "easy does it"
+
+
+def test_nested_repeat_stepOrder_is_depth_first_contiguous() -> None:
+    dsl = {"name": "x", "sport": "running", "steps": [
+        {"type": "warmup", "duration": "1m"},
+        {"repeat": 2, "steps": [
+            {"repeat": 2, "steps": [
+                {"type": "interval", "duration": "1m"},
+                {"type": "recovery", "duration": "1m"},
+            ]},
+            {"type": "interval", "duration": "1m"},
+        ]},
+        {"type": "cooldown", "duration": "1m"},
+    ]}
+    steps = build_workout(dsl)["workoutSegments"][0]["workoutSteps"]
+
+    seen: list[tuple[str, int]] = []
+
+    def walk(items: list[dict]) -> None:
+        for s in items:
+            kind = "repeat" if s["type"] == "RepeatGroupDTO" else "exec"
+            seen.append((kind, s["stepOrder"]))
+            if kind == "repeat":
+                walk(s["workoutSteps"])
+
+    walk(steps)
+    assert [order for _, order in seen] == [1, 2, 3, 4, 5, 6, 7]
+    assert [kind for kind, _ in seen] == ["exec", "repeat", "repeat", "exec", "exec", "exec", "exec"]
+
+
 def test_other_targets_and_open_end() -> None:
     dsl = {"name": "mix", "sport": "cycling", "steps": [
         {"type": "interval", "open": True, "target": {"hr": "z2"}},
@@ -130,12 +196,33 @@ def test_estimate_duration() -> None:
     ({"name": "x", "sport": "running", "steps": [{"type": "warmup", "duration": "1m", "target": {"hr": "z9"}}]}, "steps[0].target.hr"),
     ({"name": "x", "sport": "running", "steps": [{"repeat": 0, "steps": [{"type": "interval", "duration": "1m"}]}]}, "steps[0].repeat"),
     ({"name": "x", "sport": "running", "steps": [{"repeat": 2, "steps": [{"type": "interval", "duration": "1x"}]}]}, "steps[0].steps[0].duration"),
+    ({"nme": "x", "sport": "running", "steps": [{"type": "warmup", "duration": "1m"}]}, "<root>"),
+    ({"name": "x", "sport": "running", "steps": [{"type": "interval", "duration": "5m", "targets": {"pace": "4:00"}}]}, "steps[0]"),
+    ({"name": "x", "sport": "running", "steps": [{"type": "warmup", "duration": "1m", "target": {"paace": "4:00"}}]}, "steps[0].target"),
+    ({"name": "x", "sport": "running", "steps": [{"repeat": 2, "steps": [{"type": "interval", "duration": "1m"}], "bogus": 1}]}, "steps[0]"),
 ])
 def test_invalid_dsl_names_path(dsl, path) -> None:
     with pytest.raises(PaceError) as exc:
         build_workout(dsl)
     assert exc.value.code == "bad_args"
     assert exc.value.message.startswith(path), exc.value.message
+
+
+def test_unknown_key_message_names_the_offending_key_step() -> None:
+    dsl = {"name": "x", "sport": "running", "steps": [
+        {"type": "interval", "duration": "5m", "targets": {"pace": "4:00"}}]}
+    with pytest.raises(PaceError) as exc:
+        build_workout(dsl)
+    assert exc.value.message.startswith("steps[0]")
+    assert "'targets'" in exc.value.message
+
+
+def test_unknown_key_message_names_the_offending_key_top_level() -> None:
+    dsl = {"nme": "x", "sport": "running", "steps": [{"type": "warmup", "duration": "1m"}]}
+    with pytest.raises(PaceError) as exc:
+        build_workout(dsl)
+    assert exc.value.message.startswith("<root>")
+    assert "'nme'" in exc.value.message
 
 
 def test_dsl_reference_is_json_friendly() -> None:

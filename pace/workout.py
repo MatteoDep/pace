@@ -1,8 +1,9 @@
 """Compact workout DSL -> Garmin Connect workout JSON.
 
 IDs and keys below were read from a real workout on the user's account
-(2026-09-06); the garminconnect ConditionType constants are NOT used because
-they disagree with Garmin for `distance` and `lap.button`.
+(2026-09-06); the garminconnect `ConditionType` and `TargetType` constants
+are NOT used because they disagree with Garmin: `ConditionType` for
+`distance`/`lap.button`, and `TargetType` for the pace/target zone keys.
 """
 
 import re
@@ -20,10 +21,13 @@ END = {"lap.button": 1, "time": 2, "distance": 3, "iterations": 7}
 TARGET = {"no.target": 1, "power.zone": 2, "cadence.zone": 3, "heart.rate.zone": 4, "speed.zone": 5, "pace.zone": 6}
 TARGET_KEYS = ("pace", "hr", "power", "cadence")
 END_KEYS = ("duration", "distance", "open")
+TOP_KEYS = {"name", "sport", "description", "steps"}
+EXEC_KEYS = {"type", "duration", "distance", "open", "target", "note"}
+REPEAT_KEYS = {"repeat", "steps", "note"}
 
 _DURATION = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _DISTANCE = re.compile(r"^(\d+(?:\.\d+)?)\s*(m|km)$")
-_PACE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_PACE = re.compile(r"^(\d{1,2}):([0-5]\d)$")
 _RANGE = re.compile(r"^(\d+(?:\.\d+)?)(?:\s*-\s*(\d+(?:\.\d+)?))?$")
 _ZONE = re.compile(r"^z([1-5])$", re.IGNORECASE)
 
@@ -32,12 +36,21 @@ def _bad(path: str, why: str) -> PaceError:
     return PaceError("bad_args", f"{path}: {why}")
 
 
+def _check_keys(obj: dict, allowed: set[str], path: str) -> None:
+    for key in obj:
+        if key not in allowed:
+            raise _bad(path, f"unknown key {key!r}")
+
+
 def parse_duration(text: str, path: str) -> int:
     m = _DURATION.match(str(text).strip()) if text else None
     if not m or not any(m.groups()):
         raise _bad(path, f"invalid duration {text!r}; use 45s, 10m, 1h, 1h30m")
     h, mi, s = (int(g) if g else 0 for g in m.groups())
-    return h * 3600 + mi * 60 + s
+    total = h * 3600 + mi * 60 + s
+    if total <= 0:
+        raise _bad(path, "duration must be positive")
+    return total
 
 
 def parse_distance(text: str, path: str) -> float:
@@ -84,6 +97,7 @@ def _target(step: dict, path: str) -> dict[str, Any]:
         return {"targetType": _ttype("no.target"), "targetValueOne": None, "targetValueTwo": None, "zoneNumber": None}
     if not isinstance(tgt, dict):
         raise _bad(f"{path}.target", "must be an object")
+    _check_keys(tgt, set(TARGET_KEYS), f"{path}.target")
     keys = [k for k in TARGET_KEYS if k in tgt]
     if len(keys) != 1:
         raise _bad(f"{path}.target", f"exactly one of {', '.join(TARGET_KEYS)}")
@@ -141,6 +155,7 @@ def _steps(items: Any, path: str, order: list[int]) -> list[dict[str, Any]]:
         if not isinstance(step, dict):
             raise _bad(p, "must be an object")
         if "repeat" in step:
+            _check_keys(step, REPEAT_KEYS, p)
             n = step["repeat"]
             if not isinstance(n, int) or isinstance(n, bool) or n < 1:
                 raise _bad(f"{p}.repeat", "must be an integer >= 1")
@@ -155,6 +170,7 @@ def _steps(items: Any, path: str, order: list[int]) -> list[dict[str, Any]]:
                 "smartRepeat": False, "childStepId": None,
             })
             continue
+        _check_keys(step, EXEC_KEYS, p)
         kind = step.get("type")
         if kind not in STEP_TYPES:
             raise _bad(f"{p}.type", f"unknown step type {kind!r}; one of {', '.join(STEP_TYPES)}")
@@ -189,7 +205,8 @@ def estimate_duration_s(dsl_steps: list[dict]) -> int:
 
 def build_workout(dsl: Any) -> dict[str, Any]:
     if not isinstance(dsl, dict):
-        raise _bad("", "workout must be a JSON object")
+        raise _bad("<root>", "workout must be a JSON object")
+    _check_keys(dsl, TOP_KEYS, "<root>")
     name = dsl.get("name")
     if not isinstance(name, str) or not name.strip():
         raise _bad("name", "required non-empty string")
