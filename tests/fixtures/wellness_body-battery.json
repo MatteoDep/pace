@@ -1,0 +1,47 @@
+[
+ {
+  "bodyBatteryValueDescriptorDTOList": [
+   {
+    "bodyBatteryValueDescriptorIndex": 0,
+    "bodyBatteryValueDescriptorKey": "timestamp"
+   },
+   {
+    "bodyBatteryValueDescriptorIndex": 1,
+    "bodyBatteryValueDescriptorKey": "bodyBatteryLevel"
+   }
+  ],
+  "bodyBatteryValuesArray": [
+   [
+    1788559200000,
+    7
+   ],
+   [
+    1788587640000,
+    83
+   ],
+   [
+    1788588000000,
+    83
+   ],
+   [
+    1788615900000,
+    21
+   ],
+   [
+    1788621480000,
+    25
+   ],
+   [
+    1788642900000,
+    10
+   ]
+  ],
+  "charged": 82,
+  "date": "2026-09-05",
+  "drained": 77,
+  "endTimestampGMT": "2026-09-05T22:00:00.0",
+  "endTimestampLocal": "2026-09-06T00:00:00.0",
+  "startTimestampGMT": "2026-09-04T22:00:00.0",
+  "startTimestampLocal": "2026-09-05T00:00:00.0"
+ }
+]

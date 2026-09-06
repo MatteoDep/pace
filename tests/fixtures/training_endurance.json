@@ -1,0 +1,18 @@
+[
+ {
+  "avg": null,
+  "date": "2026-09-05",
+  "endDate": "2026-09-05",
+  "enduranceScoreDTO": null,
+  "groupMap": {
+   "2026-08-30": {
+    "enduranceContributorDTOList": [],
+    "groupAverage": null,
+    "groupMax": null
+   }
+  },
+  "max": null,
+  "startDate": "2026-09-05",
+  "userProfilePK": "REDACTED"
+ }
+]

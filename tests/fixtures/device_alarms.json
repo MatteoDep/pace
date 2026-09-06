@@ -1,0 +1,188 @@
+[
+ {
+  "alarmDays": [
+   "M",
+   "Tu",
+   "W",
+   "Th",
+   "F",
+   "Sa",
+   "Su"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000001,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 420,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "M",
+   "Tu",
+   "W",
+   "Th",
+   "F",
+   "Sa",
+   "Su"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000002,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 450,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "M",
+   "Tu",
+   "W",
+   "Th",
+   "F",
+   "Sa",
+   "Su"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000003,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 480,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "M",
+   "Tu",
+   "W",
+   "Th",
+   "F"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000004,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 400,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "M",
+   "Tu",
+   "W",
+   "Th",
+   "F"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000005,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 410,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "ONCE"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000006,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 360,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "ONCE"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000007,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 350,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "ONCE"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000008,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 540,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "ONCE"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000009,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "TONE_AND_VIBRATION",
+  "alarmTime": 390,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ },
+ {
+  "alarmDays": [
+   "ONCE"
+  ],
+  "alarmIcon": null,
+  "alarmId": 1100000010,
+  "alarmImageId": null,
+  "alarmMessage": null,
+  "alarmMode": "OFF",
+  "alarmSound": "VIBRATION",
+  "alarmTime": 530,
+  "alarmType": null,
+  "backlight": "ON",
+  "changeState": "UNCHANGED",
+  "enabled": null
+ }
+]

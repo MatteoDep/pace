@@ -1,0 +1,47 @@
+[
+ {
+  "activityTypePk": 6,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 1,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 7,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 8,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 18,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 153,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 154,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 156,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ },
+ {
+  "activityTypePk": 181,
+  "defaultGear": true,
+  "uuid": "REDACTED"
+ }
+]
