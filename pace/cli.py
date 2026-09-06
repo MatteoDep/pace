@@ -6,7 +6,7 @@ import click
 import typer
 
 from pace import __version__, envelope
-from pace.commands import activity, auth, cache, config, device, gear, goal, profile, schema, training, wellness, workout
+from pace.commands import activity, auth, cache, config, device, gear, goal, log, profile, schema, training, wellness, workout
 from pace.plugins import load_plugins
 
 app = typer.Typer(
@@ -19,7 +19,7 @@ app = typer.Typer(
 
 for module, name in (
     (activity, "activity"), (auth, "auth"), (cache, "cache"), (config, "config"), (device, "device"),
-    (gear, "gear"), (goal, "goal"), (profile, "profile"), (training, "training"), (wellness, "wellness"),
+    (gear, "gear"), (goal, "goal"), (log, "log"), (profile, "profile"), (training, "training"), (wellness, "wellness"),
     (workout, "workout"),
 ):
     app.add_typer(module.app, name=name)
