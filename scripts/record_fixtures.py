@@ -17,7 +17,8 @@ REDACT_KEYS = {"userProfileNumber", "userProfilePk", "userProfileId", "displayNa
                "lastName", "emailAddress", "profileImageUrlLarge", "profileImageUrlMedium", "profileImageUrlSmall",
                "userName", "ownerDisplayName", "ownerFullName", "ownerProfileImageUrlLarge", "ownerProfileImageUrlMedium",
                "ownerProfileImageUrlSmall", "deviceId", "unitId", "serialNumber", "uuid", "gearUuid", "locationName",
-               "startLatitude", "startLongitude", "endLatitude", "endLongitude"}
+               "startLatitude", "startLongitude", "endLatitude", "endLongitude",
+               "latitude", "longitude", "lat", "lon"}
 
 
 def sanitize(obj):
@@ -32,7 +33,11 @@ def sanitize(obj):
 
 def record(name: str, argv: list[str]) -> None:
     out = subprocess.run([*PACE, *argv, "--raw", "--no-cache"], capture_output=True, text=True)
-    doc = json.loads(out.stdout)
+    try:
+        doc = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        print(f"skip {name}: non-JSON output (rc={out.returncode}): {out.stderr[:200]}")
+        return
     if not doc["ok"]:
         print(f"skip {name}: {doc['error']['code']} {doc['error']['message']}")
         return
@@ -59,11 +64,18 @@ def main() -> None:
     record("activity_list", ["activity", "list", "--limit", "5"])
     aid = ns.activity_id
     if aid is None:
-        listing = json.loads((FIXTURES / "activity_list.json").read_text())
-        aid = str(listing[0]["activityId"]) if listing else None
+        path = FIXTURES / "activity_list.json"
+        if path.exists():
+            listing = json.loads(path.read_text())
+            aid = str(listing[0]["activityId"]) if listing else None
+        else:
+            aid = None
     if aid:
         for name in ("show", "splits", "weather", "details"):
             record(f"activity_{name}", ["activity", name, aid])
+    else:
+        for name in ("show", "splits", "weather", "details"):
+            print(f"skip activity_{name}: no activity id available")
 
 
 if __name__ == "__main__":
