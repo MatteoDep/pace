@@ -13,7 +13,7 @@ from pace.config import load_config
 from pace.dates import date_range, resolve_range
 from pace.envelope import PaceError, Result, fail, run
 from pace.shape import apply, parse_bucket, parse_fields
-from pace.spec import GROUPS, EndpointSpec, specs_for
+from pace.spec import GROUPS, TTL_STATIC, EndpointSpec, specs_for
 
 MAX_DAYS = 366
 DAY_S = 86400
@@ -38,7 +38,9 @@ def today_ttl(spec: EndpointSpec) -> int:
 
 
 async def resolve_upn(cache: Cache | None, tracker: CacheTracker, refresh: bool = False) -> str:
-    data = await cached_call("get_device_last_used", cache=cache, ttl=604800, tracker=tracker, refresh=refresh)
+    # Same cache key as `device last-used`, so it must use that command's TTL: a longer one
+    # here would poison the entry and freeze `device last-used` for a week.
+    data = await cached_call("get_device_last_used", cache=cache, ttl=TTL_STATIC, tracker=tracker, refresh=refresh)
     upn = (data or {}).get("userProfileNumber") if isinstance(data, dict) else None
     if upn is None:
         raise PaceError("internal", "Cannot resolve userProfileNumber from the last-used device.")
@@ -51,9 +53,9 @@ def _unwrap(spec: EndpointSpec, data: Any) -> Any:
     return data
 
 
-def _shape_kwargs(spec: EndpointSpec, fields, bucket, raw) -> dict[str, Any]:
+def _shape_kwargs(spec: EndpointSpec, fields, bucket, raw, span_s: int = DAY_S) -> dict[str, Any]:
     return dict(series=spec.series, default_fields=spec.default_fields, fields=fields,
-                bucket=bucket, raw=raw, span_s=DAY_S)
+                bucket=bucket, raw=raw, span_s=span_s)
 
 
 async def fetch_spec(spec: EndpointSpec, *, ident: Any = None, dates: list[date] | None = None,
@@ -100,7 +102,9 @@ async def fetch_spec(spec: EndpointSpec, *, ident: Any = None, dates: list[date]
 
     good_positions = [i for i, (_, _, e) in enumerate(results) if e is None]
     good = [results[i][1] if isinstance(results[i][1], dict) else {"value": results[i][1]} for i in good_positions]
-    shaped_good, report = apply(good, **_shape_kwargs(spec, fields, bucket, raw))
+    # `auto` is scored against the whole requested range, not one day, so a week of days
+    # gets one coarse grid instead of seven fine ones.
+    shaped_good, report = apply(good, **_shape_kwargs(spec, fields, bucket, raw, len(dates) * DAY_S))
     shaped_by_pos = dict(zip(good_positions, shaped_good, strict=True))
     items = []
     for i, (d, _, err) in enumerate(results):

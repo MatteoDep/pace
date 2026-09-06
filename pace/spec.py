@@ -135,9 +135,10 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "stressValuesArray",
                      "bodyBatteryValuesArray",
                  ),
-                 series=(_pairs("stressValuesArray"),
+                 # Garmin writes -1 / -2 for "no reading" / "off wrist"; they are not levels.
+                 series=(SeriesSpec("stressValuesArray", "pairs", min_value=0),
                          # [timestamp, status, level, version] -- the level is at index 2.
-                         SeriesSpec("bodyBatteryValuesArray", "pairs", "0", "2"))),
+                         SeriesSpec("bodyBatteryValuesArray", "pairs", "0", "2", min_value=0))),
     EndpointSpec("wellness", "body-battery", "Body battery (energy) through the day.", "get_body_battery",
                  TTL_LIVE, dated="range", unwrap="first",
                  default_fields=(
@@ -145,7 +146,7 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "drained",
                      "bodyBatteryValuesArray",
                  ),
-                 series=(_pairs("bodyBatteryValuesArray"),)),
+                 series=(SeriesSpec("bodyBatteryValuesArray", "pairs", min_value=0),)),
     EndpointSpec("wellness", "hrv", "Overnight heart rate variability.", "get_hrv_data", TTL_LIVE,
                  dated="single",
                  # Unverified: account has no hrv data; field names from garminconnect docs.

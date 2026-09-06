@@ -23,3 +23,15 @@ def test_series_paths_are_dotted_strings() -> None:
     for s in REGISTRY:
         for ser in s.series:
             assert ser.path and " " not in ser.path
+
+
+def test_sentinel_series_declare_min_value() -> None:
+    """Stress and body battery carry -1 / -2 sentinels; they must never reach a bucket."""
+    sentinel_paths = {"stressValuesArray", "bodyBatteryValuesArray"}
+    checked = 0
+    for spec in REGISTRY:
+        for ser in spec.series:
+            if ser.path in sentinel_paths:
+                assert ser.min_value == 0, f"{spec.command} {ser.path} has no min_value"
+                checked += 1
+    assert checked == 3

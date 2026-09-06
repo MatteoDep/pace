@@ -1,5 +1,7 @@
 """Pruning, field selection, and time-series bucketing."""
 
+import time
+
 import pytest
 
 from pace.envelope import PaceError
@@ -52,10 +54,16 @@ def test_extract_points_pairs_and_records() -> None:
 
 
 def test_bucket_series_math_and_local_time() -> None:
-    pts = [(HOUR, 60.0), (HOUR + 60 * MS, 70.0), (HOUR + 15 * 60 * MS, 50.0)]
+    pts = [(HOUR, 60), (HOUR + 60 * MS, 70), (HOUR + 15 * 60 * MS, 50)]
     out = bucket_series(pts, bucket_s=900, tz_offset_s=3600)
     assert out["cols"] == ["t", "avg", "min", "max", "n"]
-    assert out["rows"] == [["1970-01-01T02:00", 65.0, 60.0, 70.0, 2], ["1970-01-01T02:15", 50.0, 50.0, 50.0, 1]]
+    assert out["rows"] == [["1970-01-01T02:00", 65, 60, 70, 2], ["1970-01-01T02:15", 50, 50, 50, 1]]
+    # int sources stay ints and an integral average loses its ".0" -- 65, not 65.0.
+    assert [type(v) for v in out["rows"][0][1:]] == [int, int, int, int]
+    frac = bucket_series([(HOUR, 60), (HOUR + MS, 61)], bucket_s=900, tz_offset_s=0)
+    assert frac["rows"][0][1] == 60.5
+    floats = bucket_series([(HOUR, 60.5), (HOUR + MS, 61.5)], bucket_s=900, tz_offset_s=0)
+    assert floats["rows"][0][2] == 60.5 and floats["rows"][0][3] == 61.5
 
 
 def test_tz_offset_from_gmt_local_pair() -> None:
@@ -63,6 +71,36 @@ def test_tz_offset_from_gmt_local_pair() -> None:
     assert tz_offset_s(d) == 7200
     d2 = {"sleepStartTimestampGMT": 1_700_000_000_000, "sleepStartTimestampLocal": 1_700_003_600_000}
     assert tz_offset_s(d2) == 3600
+
+
+def test_tz_offset_from_nested_pair() -> None:
+    """Sleep hides its only GMT/Local pair one level down, in dailySleepDTO."""
+    d = {"date": "2026-09-05",
+         "dailySleepDTO": {"autoSleepStartTimestampGMT": 1788557520000,   # no matching *Local
+                           "sleepStartTimestampGMT": 1788561480000,
+                           "sleepStartTimestampLocal": 1788568680000}}
+    assert tz_offset_s(d) == 7200
+
+
+def test_tz_offset_fallback_follows_the_samples_dst(monkeypatch) -> None:
+    """With no GMT/Local pair, the offset comes from the series' own first sample, so a
+    January payload gets CET and a July payload CEST -- not whatever the host is in today."""
+    jan_ms, jul_ms = 1768478400000, 1784116800000   # 2026-01-15 / 2026-07-15, 12:00 UTC
+    monkeypatch.setenv("TZ", "Europe/Rome")
+    time.tzset()
+    try:
+        assert tz_offset_s({}, jan_ms) == 3600
+        assert tz_offset_s({}, jul_ms) == 7200
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_extract_points_drops_values_below_min_value() -> None:
+    """Garmin encodes missing / off-wrist stress and body battery as -1 / -2."""
+    pairs = [[HOUR, -2], [HOUR + MS, 30], [HOUR + 2 * MS, -1], [HOUR + 3 * MS, 0]]
+    got = extract_points(pairs, SeriesSpec("x", "pairs", min_value=0))
+    assert got == [(HOUR + MS, 30), (HOUR + 3 * MS, 0)]
 
 
 def test_parse_bucket() -> None:
@@ -124,14 +162,41 @@ def test_apply_does_not_mutate_nested_input() -> None:
 
 
 def test_apply_list_uses_one_bucket_per_series() -> None:
+    """`auto` is scored against the whole requested range (here 2 days), not one day."""
     item1 = {"heartRateValues": [[i * 60 * MS, 60] for i in range(60)]}
     item2 = {"heartRateValues": [[i * 60 * MS, 60] for i in range(1440)]}
+    data, shape = apply(
+        [item1, item2],
+        series=(SeriesSpec("heartRateValues", "pairs"),),
+        default_fields=(), fields="all", bucket="auto", raw=False, span_s=2 * 86400,
+    )
+    assert shape["bucket_used"] == "1h"
+    assert shape["reduced_series"] == ["heartRateValues"]
+    assert len(data[0]["heartRateValues"]["rows"]) == 1
+    assert data[1]["heartRateValues"]["cols"][0] == "t"
+
+
+def test_reduced_series_only_lists_series_that_survive_field_selection() -> None:
+    data, shape = apply(
+        _hr_day(),
+        series=(SeriesSpec("heartRateValues", "pairs"),),
+        default_fields=("restingHeartRate",), fields="default", bucket="auto", raw=False, span_s=86400,
+    )
+    assert "heartRateValues" not in data
+    assert shape["reduced_series"] == []
+    # ... and a bucket that --fields threw away was not applied to anything.
+    assert shape["bucket_used"] == "none"
+
+
+def test_item_without_samples_omits_the_series_key() -> None:
+    """A bucket resolved from a sibling day must not leave an empty headers-only table."""
+    item1 = {"heartRateValues": [[i * 60 * MS, 60] for i in range(1440)]}
+    item2 = {"heartRateValues": [[i * 60 * MS, None] for i in range(5)]}
     data, shape = apply(
         [item1, item2],
         series=(SeriesSpec("heartRateValues", "pairs"),),
         default_fields=(), fields="all", bucket="auto", raw=False, span_s=86400,
     )
     assert shape["bucket_used"] == "15m"
-    assert shape["reduced_series"] == ["heartRateValues"]
-    assert len(data[0]["heartRateValues"]["rows"]) == 4
-    assert data[1]["heartRateValues"]["cols"][0] == "t"
+    assert data[0]["heartRateValues"]["rows"]
+    assert "heartRateValues" not in data[1]

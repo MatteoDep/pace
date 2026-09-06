@@ -18,6 +18,8 @@ class SeriesSpec:
     kind: Literal["pairs", "records"]
     t_key: str = "0"
     v_key: str = "1"
+    #: Values below this are sentinels, not readings, and never reach a bucket.
+    min_value: float | None = None
 
 
 def prune(obj: Any) -> Any:
@@ -123,7 +125,10 @@ def extract_points(seq: list, spec: SeriesSpec) -> list[tuple[int, float]]:
         ms = _to_ms(t)
         if ms is None or not isinstance(v, (int, float)) or isinstance(v, bool):
             continue
-        pts.append((ms, float(v)))
+        if spec.min_value is not None and v < spec.min_value:
+            continue
+        # Keep the source type: an int series must not grow ".0" on every min/max.
+        pts.append((ms, v if isinstance(v, int) else float(v)))
     return pts
 
 
@@ -136,27 +141,47 @@ def bucket_series(points: list[tuple[int, float]], bucket_s: int, tz_offset_s: i
     for start in sorted(groups):
         vals = groups[start]
         local = datetime.fromtimestamp(start + tz_offset_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
-        rows.append([local, round(sum(vals) / len(vals), 1), min(vals), max(vals), len(vals)])
+        avg = round(sum(vals) / len(vals), 1)
+        rows.append([local, int(avg) if avg == int(avg) else avg, min(vals), max(vals), len(vals)])
     return {"cols": COLS, "rows": rows}
 
 
-def tz_offset_s(data: Any) -> int:
-    if isinstance(data, dict):
-        for key, gmt in data.items():
-            if not key.endswith("GMT"):
-                continue
-            local = data.get(key[:-3] + "Local")
-            g, loc = _to_ms(gmt), _to_ms(local)
-            if g is not None and loc is not None:
-                return int((loc - g) // 1000)
-    return -time.timezone if not time.localtime().tm_isdst else -time.altzone
+def _gmt_local_offset(data: Any, depth: int = 3) -> int | None:
+    """Offset in seconds from the first `<X>GMT` / `<X>Local` pair, searching nested dicts
+    (sleep buries its only pair in `dailySleepDTO`)."""
+    if not isinstance(data, dict):
+        return None
+    for key, gmt in data.items():
+        if not key.endswith("GMT"):
+            continue
+        g, loc = _to_ms(gmt), _to_ms(data.get(key[:-3] + "Local"))
+        if g is not None and loc is not None:
+            return int((loc - g) // 1000)
+    if depth <= 1:
+        return None
+    for value in data.values():
+        found = _gmt_local_offset(value, depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+def tz_offset_s(data: Any, sample_ms: int | None = None) -> int:
+    """Local UTC offset for a payload. Garmin's own GMT/Local pair wins; otherwise the host
+    zone *as of the sample*, so a payload from the other side of a DST switch is not shifted."""
+    found = _gmt_local_offset(data)
+    if found is not None:
+        return found
+    when = sample_ms / 1000 if sample_ms is not None else time.time()
+    offset = datetime.fromtimestamp(when).astimezone().utcoffset()
+    return int(offset.total_seconds()) if offset is not None else 0
 
 
 def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, report, resolved=None) -> Any:
     if not isinstance(item, dict):
         return prune(item)
-    offset = tz_offset_s(item)
     out = dict(item)
+    bucketed: list[tuple[str, str]] = []
     for s in series:
         found, seq = _get_path(out, s.path)
         if not found or not isinstance(seq, list):
@@ -168,14 +193,25 @@ def _shape_one(item: Any, *, series, default_fields, fields, bucket, span_s, rep
             chosen = choose_bucket(span_s, len(pts)) if bucket == "auto" else bucket
         if chosen == "none":
             continue
-        _set_path(out, s.path, bucket_series(pts, BUCKETS[chosen], offset))
-        report["bucket_used"] = chosen
-        if s.path not in report["reduced_series"]:
-            report["reduced_series"].append(s.path)
+        if not pts:
+            # The bucket came from a sibling day; this one has no samples, so drop the key
+            # instead of emitting a headers-only table. `prune` removes the None.
+            _set_path(out, s.path, None)
+            continue
+        _set_path(out, s.path, bucket_series(pts, BUCKETS[chosen], tz_offset_s(item, pts[0][0])))
+        bucketed.append((s.path, chosen))
     if fields == "default" and default_fields:
         out = select_fields(out, list(default_fields))
     elif isinstance(fields, list):
         out = select_fields(out, fields)
+    # Only series that survived field selection are actually reduced in the payload; a
+    # bucket that --fields threw away was not "used".
+    for path, chosen in bucketed:
+        if not _get_path(out, path)[0]:
+            continue
+        report["bucket_used"] = chosen
+        if path not in report["reduced_series"]:
+            report["reduced_series"].append(path)
     return prune(out)
 
 

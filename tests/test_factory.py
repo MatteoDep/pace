@@ -107,6 +107,31 @@ def test_series_bucketed_and_reported(fake_api) -> None:
     assert doc["shape"] == {"bucket_used": "15m", "reduced_series": ["heartRateValues"], "fields": "default"}
 
 
+def test_auto_bucket_is_scored_against_the_whole_range(fake_api) -> None:
+    """3 days x 1440 samples: `auto` must pick one grid for the range (1h), not per day (15m)."""
+    fake_api["payload"] = lambda m, a: {"heartRateValues": [[i * 60 * MS, 60] for i in range(1440)]}
+    _, doc, _ = _invoke(_app(DATED), "--to", "2026-01-03", "--days", "3")
+    assert doc["shape"]["bucket_used"] == "1h"
+    assert all(len(d["heartRateValues"]["rows"]) == 24 for d in doc["data"])
+
+
+def test_upn_resolution_uses_the_device_ttl(fake_api, monkeypatch) -> None:
+    """resolve_upn shares `device last-used`'s cache key, so it must share its TTL."""
+    ttl_by_key: dict[str, int] = {}
+    original = Cache.get_or_fetch
+
+    async def spy(self, key, fetch, ttl, refresh=False):
+        ttl_by_key[key] = ttl
+        return await original(self, key, fetch, ttl, refresh=refresh)
+
+    monkeypatch.setattr(Cache, "get_or_fetch", spy)
+    spec = EndpointSpec("gear", "list", "h", "get_gear", 86400, resolver="upn")
+    fake_api["payload"] = lambda m, a: {"userProfileNumber": 42} if m == "get_device_last_used" else [{"x": 1}]
+    code, _, _ = _invoke(_app(spec))
+    assert code == 0
+    assert ttl_by_key["get_device_last_used"] == 86400
+
+
 def test_range_method_gets_start_and_end(fake_api) -> None:
     spec = EndpointSpec("wellness", "body-battery", "h", "get_body_battery", 300, dated="range", unwrap="first")
     fake_api["payload"] = lambda m, a: [{"charged": 40}]
@@ -189,13 +214,15 @@ def test_ttl_by_day_age_and_config_override(fake_api, tmp_path, monkeypatch, _cl
     (tmp_path / "config.toml").write_text('[cache_ttl_overrides]\n"wellness.hr" = 42\n')
     load_config.cache_clear()
 
-    code, doc, _ = _invoke(_app(DATED), "--days", "3")
-
-    assert code == 0 and doc["ok"] is True
-
+    # Captured before the run: a midnight rollover between here and the assertions would
+    # otherwise compare the fan-out's days against a different "today".
     today = date.today()
     yesterday = today - timedelta(days=1)
     two_days_ago = today - timedelta(days=2)
+
+    code, doc, _ = _invoke(_app(DATED), "--days", "3")
+
+    assert code == 0 and doc["ok"] is True
 
     by_day = {d: (arg_ttl, ret_ttl) for d, arg_ttl, ret_ttl in ttl_calls}
     assert set(by_day) == {today, yesterday, two_days_ago}
