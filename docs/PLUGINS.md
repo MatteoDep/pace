@@ -45,19 +45,29 @@ hello = "pace_hello.cli:app"
 # pace_hello/cli.py
 import typer
 
+from pace.envelope import Result, run
+
 app = typer.Typer(help="Demo plugin.")
 
 @app.command("world")
 def world() -> None:
-    typer.echo("hello from a pace plugin")
+    """One JSON envelope on stdout, like every other pace command."""
+    async def work() -> Result:
+        return Result({"greeting": "hello from a pace plugin"})
+
+    run("hello world", {}, work)
 ```
+
+`typer.echo` / `print` would put bare text on stdout and break the one-JSON-document
+contract; use `pace.envelope.run` (or `pace.envelope.fail` for an error) instead.
 
 After `pip install -e .`, the subcommand appears in `pace --help` and runs
 as `pace hello world`.
 
 ## Error handling
 
-Load failures are reported to stderr but never abort pace startup; the
+Load failures are logged through `pace.envelope.log` -- visible only with `--verbose`,
+so stdout and stderr both stay clean -- and never abort pace startup; the
 broken plugin is silently dropped from the command list.
 Make sure your top-level imports are cheap -- they run on every pace
 invocation.

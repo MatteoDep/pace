@@ -10,6 +10,9 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _tmp_home(tmp_path, monkeypatch):
+    # PACE_HOME too: Cache() calls ensure_home(), which would otherwise mkdir the
+    # developer's real ~/.pace during a test run.
+    monkeypatch.setattr("pace.config.PACE_HOME", tmp_path)
     monkeypatch.setattr("pace.config.CACHE_DB", tmp_path / "cache.db")
 
 

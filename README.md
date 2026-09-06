@@ -37,7 +37,7 @@ pace training readiness
 ```
 
 Output contract: `docs/CONTRACT.md`.
-Skill for Claude Code: `.claude/skills/pace/SKILL.md` (install with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`).
+Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.
 
 ## Cache and config
 
@@ -50,6 +50,9 @@ TTL for today's data is short (5 min wellness, 1 h training); yesterday 1 day; o
 "wellness.sleep" = 60
 ```
 
+An override applies to today's TTL of one registry command (`<group>.<name>`); yesterday and older days keep their fixed 1-day / 7-day TTLs.
+`profile show` is hand-written and its 7-day TTL is fixed, not overridable.
+
 ## Development
 
 ```bash
@@ -58,3 +61,4 @@ TTL for today's data is short (5 min wellness, 1 h training); yesterday 1 day; o
 ```
 
 `scripts/garmin_api_reference.py` is the upstream interactive demo, kept as a reference for method names and payload shapes.
+It is not part of the dependency set: running it needs `readchar` installed by hand (`.venv/bin/pip install readchar`).

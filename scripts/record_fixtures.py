@@ -26,7 +26,8 @@ REDACT_KEYS = {"userProfileNumber", "userProfilePk", "userProfileId", "displayNa
                "startPoint", "endPoint", "polyline", "weatherStationDTO",
                "activityId", "activityUUID", "activityName", "lastUsedDeviceName",
                "birthDate", "gender", "height", "weight",
-               "userId", "userProfilePK", "userDailySummaryId", "ownerId", "fullname", "displayname"}
+               "userId", "userProfilePK", "userDailySummaryId", "ownerId", "fullname", "displayname",
+               "gearPk", "alarmId", "timeZone"}
 
 EMAIL_RE = re.compile(r"^[\w.+-]+@[\w-]+\.[\w.]+$")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

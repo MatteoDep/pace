@@ -465,3 +465,14 @@ Corrupt or unreadable file -> `internal` error envelope with the path in `hint`;
 - Keep `pace.api.safe_call` returning a structured error `(code, http, message)` instead of a bare string so `envelope.error` does not re-parse text.
 - `workout schedule` and `workout delete` use `api.connectapi` directly; confirm the endpoints against a real workout created by `workout push --dry-run` then pushed, before keeping them in the schema.
 - Local dev: `uv run` needs the private index token; use `bash -ic 'update_aws_token && uv ...'` or run `.venv/bin/python` directly.
+
+## Implementation notes (post-hoc)
+
+Where the shipped core CLI departs from, or pins down, the design above:
+
+- `auto` buckets are scored against the whole requested range (`days x 86400 s`), not one day, so `--days 7` returns a coarser grid than `--days 1` on the same endpoint.
+  Section 2's "at most 120 rows" is per series per request, not per day.
+- The registry's `method` names are authoritative in `pace schema`; the spec table in section 3 records intent, and a few method names were corrected against `garminconnect` while wiring the specs.
+- `auth status` also reports `oauth2_expires_at` (ISO local, read from the token store) alongside `logged_in`.
+  `logged_in` still means only "a token store exists": garth mints a fresh oauth2 token from the long-lived oauth1 one, so an expired oauth2 token is not a logged-out account.
+- `stressValuesArray` and `bodyBatteryValuesArray` declare `min_value=0`: Garmin's `-1` / `-2` sentinels are dropped before bucketing.

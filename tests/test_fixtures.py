@@ -30,11 +30,14 @@ def _load(spec):
 
 def _has_payload(data) -> bool:
     """The recorded day is empty when Garmin returned nothing: the runner still stamps
-    `date`, and wraps a non-dict payload (usually null) as {"value": ...}."""
+    `date`, and wraps a non-dict payload (usually null) as {"value": ...}.
+
+    A fixture whose only surviving values are the recorder's "REDACTED" placeholders
+    carries no real payload either -- shaping it would pass vacuously."""
     for item in _items(data):
         if not isinstance(item, dict):
             return True
-        if any(v is not None for k, v in item.items() if k != "date"):
+        if any(v is not None and v != "REDACTED" for k, v in item.items() if k != "date"):
             return True
     return False
 
