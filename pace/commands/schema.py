@@ -108,7 +108,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "args": ["KG"], "flags": ["--date", "--fat", "--water", "--muscle", "--bone", "--bmi", "--dry-run"],
      "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "log weight list", "help": "Weigh-ins in a date range (one Garmin call).", "keyed": "date", "args": [],
-     "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["dateWeightList", "totalAverage"], "series": [], "ttl_s": 600},
+     "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["dailyWeightSummaries", "totalAverage"], "series": [], "ttl_s": 600},
     {"name": "log weight delete", "help": "Delete one weigh-in.", "keyed": "id+date", "args": ["SAMPLE_PK"],
      "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "log hydration", "help": "Add water intake for a day.", "keyed": "date", "args": ["ML"],

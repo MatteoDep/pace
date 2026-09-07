@@ -4,6 +4,7 @@ from typing import Any
 
 import typer
 
+from pace.api import safe_call
 from pace.cache import Cache, CacheTracker
 from pace.commands._helpers import cached_call
 from pace.commands.workout import DRY_RUN_OPT
@@ -32,6 +33,23 @@ def _check(name: str, value: float, lo: float, hi: float, inclusive: bool = Fals
 def _noon(date_str: str) -> tuple[str, str]:
     d = parse_date(date_str).isoformat()
     return d, f"{d}T12:00:00"
+
+
+async def _resolve_weight_id(d: str) -> Any:
+    """`add_weigh_in` / `add_body_composition` responses carry no samplePk, so look the new
+    entry up: the day's just-written weigh-in is the one with the greatest samplePk. Never
+    raises -- a failed or empty lookup just leaves the id null."""
+    try:
+        ok, data, err = await safe_call("get_daily_weigh_ins", d)
+    except Exception:  # noqa: BLE001 -- id resolution is best-effort, never fatal
+        return None
+    if not ok or err is not None or not isinstance(data, dict):
+        return None
+    entries = data.get("dateWeightList")
+    if not isinstance(entries, list) or not entries:
+        return None
+    pks = [e.get("samplePk") for e in entries if isinstance(e, dict) and isinstance(e.get("samplePk"), (int, float))]
+    return max(pks) if pks else None
 
 
 def _ranged_read(cmd: str, method: str, default_fields: tuple[str, ...], from_: str | None, to: str, days: int,
@@ -87,14 +105,21 @@ def weight_add(kg: float = typer.Argument(..., metavar="KG"), date: str = DATE_O
                      payload={"method": method, **kwargs}, echo=echo,
                      invalidate=("get_weigh_ins:", f"get_daily_weigh_ins:{d}"),
                      id_of=lambda r: r.get("samplePk") if isinstance(r, dict) else None)
-    run(cmd, {**echo, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
+
+    async def work() -> Result:
+        result = await run_write(spec, dry_run=dry_run)
+        if not dry_run:
+            result.data["id"] = await _resolve_weight_id(d)
+        return result
+
+    run(cmd, {**echo, "dry_run": dry_run}, work)
 
 
 @weight_app.command("list")
 def weight_list(from_: str | None = FROM_OPT, to: str = TO_OPT, days: int = DAYS_OPT, fields: str = FIELDS_OPT,
                 bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT) -> None:
     """Weigh-ins in a date range (one Garmin call)."""
-    _ranged_read("log weight list", "get_weigh_ins", ("dateWeightList", "totalAverage"),
+    _ranged_read("log weight list", "get_weigh_ins", ("dailyWeightSummaries", "totalAverage"),
                  from_, to, days, fields, bucket, raw, no_cache)
 
 

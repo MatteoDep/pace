@@ -20,10 +20,16 @@ def fake_api(monkeypatch):
 
     async def safe_call(method_name, *args, **kwargs):
         state["calls"].append((method_name, args, kwargs))
+        if method_name == "get_daily_weigh_ins":
+            # `weight add`'s post-write samplePk lookup: derive it from state["resp"]
+            # so existing tests that assert an id keep working unchanged.
+            pk = state["resp"].get("samplePk") if isinstance(state["resp"], dict) else None
+            return True, ({"dateWeightList": [{"samplePk": pk}]} if pk is not None else {}), None
         return True, state["resp"], None
 
     monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
     monkeypatch.setattr("pace.writes.safe_call", safe_call)
+    monkeypatch.setattr("pace.commands.log.safe_call", safe_call)
     return state
 
 
@@ -60,11 +66,41 @@ def test_weight_validation(fake_api) -> None:
 
 
 def test_weight_list_single_range_call(fake_api) -> None:
-    fake_api["resp"] = {"dateWeightList": [{"weight": 66300, "samplePk": 1, "x": None}], "totalAverage": {"weight": 66300}, "junk": 1}
+    fake_api["resp"] = {
+        "dailyWeightSummaries": [{"summaryDate": "2026-09-06", "latestWeight": {"weight": 66300, "samplePk": 1}, "x": None}],
+        "totalAverage": {"weight": 66300},
+        "dateWeightList": None,
+        "junk": 1,
+    }
     doc = _doc(runner.invoke(app, ["weight", "list", "--to", "2026-09-06", "--days", "7"]))
     assert fake_api["calls"][0] == ("get_weigh_ins", ("2026-08-31", "2026-09-06"), {})
-    assert doc["data"] == {"dateWeightList": [{"weight": 66300, "samplePk": 1}], "totalAverage": {"weight": 66300}}
+    assert doc["data"] == {
+        "dailyWeightSummaries": [{"summaryDate": "2026-09-06", "latestWeight": {"weight": 66300, "samplePk": 1}}],
+        "totalAverage": {"weight": 66300},
+    }
     assert doc["args"]["from"] == "2026-08-31" and doc["command"] == "log weight list"
+
+
+def test_weight_add_resolves_samplepk_via_daily_lookup(monkeypatch) -> None:
+    calls = []
+
+    async def safe_call(method_name, *args, **kwargs):
+        calls.append(method_name)
+        if method_name == "get_daily_weigh_ins":
+            return True, {"dateWeightList": [{"samplePk": 1}, {"samplePk": 5}]}, None
+        return True, {}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    monkeypatch.setattr("pace.writes.safe_call", safe_call)
+    monkeypatch.setattr("pace.commands.log.safe_call", safe_call)
+
+    doc = _doc(runner.invoke(app, ["weight", "add", "70", "--date", "2026-09-06"]))
+    assert doc["data"]["id"] == 5
+    assert calls.count("get_daily_weigh_ins") == 1
+
+    calls.clear()
+    _doc(runner.invoke(app, ["weight", "add", "70", "--date", "2026-09-06", "--dry-run"]))
+    assert calls == []
 
 
 def test_weight_delete(fake_api) -> None:
