@@ -30,11 +30,16 @@ async def run_write(spec: WriteSpec, *, dry_run: bool) -> Result:
         assert err is not None
         raise PaceError.from_api(err)
     if spec.invalidate:
-        cache = Cache()
+        # The write already landed on Garmin, so a cache failure must never report it as
+        # `ok: false` -- a stale local row is the lesser evil, and it is logged.
         try:
-            for prefix in spec.invalidate:
-                log(f"invalidate {prefix}* -> {cache.invalidate(prefix)} rows")
-        finally:
-            cache.close()
+            cache = Cache()
+            try:
+                for prefix in spec.invalidate:
+                    log(f"invalidate {prefix}* -> {cache.invalidate(prefix)} rows")
+            finally:
+                cache.close()
+        except Exception as exc:  # noqa: BLE001 -- see above; never fatal
+            log(f"invalidate failed: {exc}")
     ident = spec.id_of(resp) if spec.id_of is not None and resp is not None else None
     return Result({"action": spec.action, "resource": spec.resource, "id": ident, "echo": spec.echo})

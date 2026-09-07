@@ -35,10 +35,15 @@ def _noon(date_str: str) -> tuple[str, str]:
     return d, f"{d}T12:00:00"
 
 
-async def _resolve_weight_id(d: str) -> Any:
+async def _resolve_weight_id(d: str, kg: float) -> Any:
     """`add_weigh_in` / `add_body_composition` responses carry no samplePk, so look the new
-    entry up: the day's just-written weigh-in is the one with the greatest samplePk. Never
-    raises -- a failed or empty lookup just leaves the id null."""
+    entry up in the day view.
+
+    Only entries that match the weight just written (Garmin stores grams, so within 100 g)
+    and that Garmin attributes to a manual entry are candidates: a scale sync or an earlier
+    weigh-in on the same day must not hand back its id. Of those the greatest samplePk is
+    the newest, i.e. ours. Never raises -- a failed, empty or ambiguous lookup leaves the
+    id null, which the caller can still resolve with `log weight list`."""
     try:
         ok, data, err = await safe_call("get_daily_weigh_ins", d)
     except Exception:  # noqa: BLE001 -- id resolution is best-effort, never fatal
@@ -46,9 +51,19 @@ async def _resolve_weight_id(d: str) -> Any:
     if not ok or err is not None or not isinstance(data, dict):
         return None
     entries = data.get("dateWeightList")
-    if not isinstance(entries, list) or not entries:
+    if not isinstance(entries, list):
         return None
-    pks = [e.get("samplePk") for e in entries if isinstance(e, dict) and isinstance(e.get("samplePk"), (int, float))]
+    pks = []
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("samplePk"), (int, float)):
+            continue
+        grams = e.get("weight")
+        if not isinstance(grams, (int, float)) or abs(float(grams) - kg * 1000) > 100:
+            continue
+        source = e.get("sourceType")
+        if source is not None and source != "MANUAL":
+            continue
+        pks.append(e["samplePk"])
     return max(pks) if pks else None
 
 
@@ -89,6 +104,9 @@ def weight_add(kg: float = typer.Argument(..., metavar="KG"), date: str = DATE_O
         for name, v in (("fat", fat), ("water", water)):
             if v is not None:
                 _check(name, v, 0, 100, inclusive=True)
+        for name, v, lo, hi in (("muscle", muscle, 0, 200), ("bone", bone, 0, 20), ("bmi", bmi, 5, 100)):
+            if v is not None:
+                _check(name, v, lo, hi)
         d, ts = _noon(date)
     except PaceError as err:
         fail(cmd, err)
@@ -109,7 +127,7 @@ def weight_add(kg: float = typer.Argument(..., metavar="KG"), date: str = DATE_O
     async def work() -> Result:
         result = await run_write(spec, dry_run=dry_run)
         if not dry_run:
-            result.data["id"] = await _resolve_weight_id(d)
+            result.data["id"] = result.data["id"] or await _resolve_weight_id(d, kg)
         return result
 
     run(cmd, {**echo, "dry_run": dry_run}, work)
@@ -148,7 +166,7 @@ def hydration(ml: float = typer.Argument(..., metavar="ML", help="Millilitres; n
     try:
         if ml == 0:
             raise PaceError("bad_args", "ML must be non-zero")
-        _check("ML", ml, -5000, 5000)
+        _check("ML", ml, -5000, 5000, inclusive=True)
         d = parse_date(date).isoformat()
     except PaceError as err:
         fail(cmd, err)
@@ -166,9 +184,11 @@ def bp_add(systolic: int = typer.Argument(..., metavar="SYS"), diastolic: int = 
     """Record a blood pressure reading."""
     cmd = "log bp add"
     try:
-        _check("SYS", systolic, 30, 300)
-        _check("DIA", diastolic, 30, 300)
-        _check("PULSE", pulse, 20, 250)
+        # Bounds are garminconnect's own (`set_blood_pressure` raises ValueError
+        # outside them), so a --dry-run that passes here also passes live.
+        _check("SYS", systolic, 70, 260, inclusive=True)
+        _check("DIA", diastolic, 40, 150, inclusive=True)
+        _check("PULSE", pulse, 20, 250, inclusive=True)
         d, ts = _noon(date)
     except PaceError as err:
         fail(cmd, err)

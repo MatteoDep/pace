@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from pace.api import ApiError
 from pace.commands.workout import app
+from pace.ratelimit import RateLimiter
 
 runner = CliRunner()
 
@@ -99,3 +100,18 @@ def test_write_error_maps_code(fake_api) -> None:
     fake_api["err"] = ApiError("auth_required", "nope", 401)
     res = runner.invoke(app, ["delete", "77"])
     assert res.exit_code == 3 and _doc(res)["error"]["code"] == "auth_required"
+
+
+def test_library_validation_error_exits_2(monkeypatch) -> None:
+    """`--limit 0` fails garminconnect's own `_validate_positive_integer` with a
+    ValueError; `safe_call` classifies that as bad_args, so the CLI exits 2, not 1."""
+    class FakeApi:
+        def get_workouts(self, start, limit):
+            raise ValueError("limit must be a positive integer")
+
+    monkeypatch.setattr("pace.api.get_api", lambda: FakeApi())
+    monkeypatch.setattr("pace.api.limiter", RateLimiter(min_interval=0.0))
+    res = runner.invoke(app, ["list", "--limit", "0"])
+    doc = _doc(res)
+    assert res.exit_code == 2 and doc["error"]["code"] == "bad_args"
+    assert "limit" in doc["error"]["message"]

@@ -98,6 +98,12 @@ async def safe_call(
             return False, None, ApiError("network", f"Connection issue: {err}")
         except GarminConnectTooManyRequestsError as err:
             return False, None, ApiError("rate_limited", f"Rate limit: {err}")
+        except (ValueError, TypeError) as err:
+            # garminconnect validates its own arguments (blood-pressure bounds,
+            # get_workouts(limit<=0), unit keys, timestamp format) and raises
+            # ValueError/TypeError. That is the caller's mistake, not an internal
+            # failure, so it must surface as bad_args / exit 2.
+            return False, None, ApiError("bad_args", f"Invalid argument: {err}")
         except Exception as err:
             return False, None, ApiError("internal", f"Unexpected error: {err}")
 

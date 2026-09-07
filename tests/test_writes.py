@@ -1,5 +1,7 @@
 """Write runner: dry-run, call, invalidate, result."""
 
+import sqlite3
+
 import pytest
 
 from pace.api import ApiError
@@ -79,3 +81,15 @@ async def test_delete_without_id_extractor(fake_api) -> None:
 
 async def _ret(v):
     return v
+
+
+@pytest.mark.asyncio
+async def test_cache_failure_does_not_fail_a_completed_write(fake_api, monkeypatch) -> None:
+    """Invalidation runs after Garmin already accepted the write, so a cache error must
+    not be reported back as a failed write."""
+    def boom(self, prefix):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(Cache, "invalidate", boom)
+    res = await run_write(_spec(), dry_run=False)
+    assert res.data == {"action": "create", "resource": "workout", "id": 77, "echo": {"name": "x"}}
