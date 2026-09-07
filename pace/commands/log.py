@@ -182,6 +182,24 @@ def bp_add(systolic: int = typer.Argument(..., metavar="SYS"), diastolic: int = 
     run(cmd, {**echo, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
 
 
+@bp_app.command("delete")
+def bp_delete(version: str = typer.Argument(..., metavar="VERSION",
+                                            help="measurementSummaries[].measurements[].version from `log bp list`."),
+              date: str = typer.Option(..., "--date", "-d", help="Date of the reading."),
+              dry_run: bool = DRY_RUN_OPT) -> None:
+    """Delete one blood pressure reading."""
+    cmd = "log bp delete"
+    try:
+        d = parse_date(date).isoformat()
+    except PaceError as err:
+        fail(cmd, err)
+    kwargs = {"version": version, "cdate": d}
+    spec = WriteSpec(resource="bp", action="delete", method="delete_blood_pressure", kwargs=kwargs,
+                     payload={"method": "delete_blood_pressure", **kwargs}, echo={"version": version, "date": d},
+                     invalidate=("get_blood_pressure:",))
+    run(cmd, {"version": version, "date": d, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
+
+
 @bp_app.command("list")
 def bp_list(from_: str | None = FROM_OPT, to: str = TO_OPT, days: int = DAYS_OPT, fields: str = FIELDS_OPT,
             bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT) -> None:

@@ -128,3 +128,10 @@ def test_bp_add_and_list(fake_api) -> None:
     assert fake_api["calls"][1] == ("get_blood_pressure", ("2026-09-06", "2026-09-06"), {})
     assert doc["data"] == {"measurementSummaries": [{"systolic": 118}]}
     assert runner.invoke(app, ["bp", "add", "400", "76", "52"]).exit_code == 2
+
+
+def test_bp_delete(fake_api) -> None:
+    fake_api["resp"] = None
+    doc = _doc(runner.invoke(app, ["bp", "delete", "9", "--date", "2026-09-06"]))
+    assert doc["data"] == {"action": "delete", "resource": "bp", "id": None, "echo": {"version": "9", "date": "2026-09-06"}}
+    assert fake_api["calls"][0] == ("delete_blood_pressure", (), {"version": "9", "cdate": "2026-09-06"})

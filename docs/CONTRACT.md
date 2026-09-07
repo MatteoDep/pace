@@ -133,7 +133,7 @@ Documented in `pace schema` and the skill; never repeated per response.
 
 ### Writes
 
-Seven commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`.
+Eight commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`.
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
 `--dry-run` makes no network call.
@@ -150,6 +150,9 @@ A successful write drops the cache keys it affects (`data.writes.invalidation` i
 Write commands themselves never read the cache: every write always calls Garmin directly.
 
 DSL reference for `workout push`: `pace schema` -> `workout_dsl`.
+
+Live-verified 2026-09-07: `workout push` returns `workoutId`; `workout schedule` returns `workoutScheduleId`; deleting a workout also removes its calendar entries.
+`log weight add` resolves the created `samplePk` with one extra day-view read because Garmin's add response carries no id.
 
 ## Keeping this file honest
 
