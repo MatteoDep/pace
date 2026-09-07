@@ -51,7 +51,7 @@ def _cmd() -> str:
     Only tokens that actually resolve in the click tree are kept, walking it level by
     level and stopping at the first token that is not a sub-group or command. So the
     three-level `pace log weight add` (missing KG) names all three levels, while a
-    positional value (`pace activity show 123`) is not mistaken for a fourth."""
+    positional value (`pace activity show 123`) is not mistaken for a third."""
     node: click.Command = get_command(app)
     out: list[str] = []
     for token in [a for a in sys.argv[1:] if not a.startswith("-")][:3]:

@@ -45,7 +45,7 @@
 
 | code | exit | when |
 |---|---|---|
-| `bad_args` | 2 | Typer usage error, invalid date, unknown field/bucket |
+| `bad_args` | 2 | Typer usage error, invalid date, unknown field/bucket, argument rejected by garminconnect's own validation |
 | `auth_required` | 3 | no tokens, 401, garminconnect auth error |
 | `rate_limited` | 4 | 429 or garminconnect too-many-requests |
 | `not_found` | 1 | 404 |
@@ -138,7 +138,7 @@ Every one of them takes `--dry-run`; `pace schema` marks each with `"write": tru
 
 `--dry-run` makes no network call.
 It returns `{"dry_run": true, "payload": ...}`: the exact call pace will make, so a caller can inspect precisely what would be sent before committing to it.
-The payload is the HTTP body for the `workout-service` endpoints pace calls directly (`workout schedule`, `workout delete`), and the garminconnect method plus its arguments for the library-mediated writes (everything else) -- there the HTTP body is the library's to build.
+The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands show `{"method": ..., ...arguments}` for the garminconnect call.
 
 `--date D` on `log weight add` and `log bp add` timestamps the entry at 12:00 local time of D, not midnight, so a day's entry cannot land in the neighbouring day once Garmin converts it to GMT.
 `log hydration` and the two deletes take a plain date (`cdate`) instead.
