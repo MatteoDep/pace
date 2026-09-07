@@ -18,12 +18,15 @@ SPORTS: dict[str, tuple[int, str]] = {
 STEP_TYPES = {"warmup": 1, "cooldown": 2, "interval": 3, "recovery": 4, "rest": 5}
 REPEAT_TYPE = 6
 END = {"lap.button": 1, "time": 2, "distance": 3, "iterations": 7}
-TARGET = {"no.target": 1, "power.zone": 2, "cadence.zone": 3, "heart.rate.zone": 4, "speed.zone": 5, "pace.zone": 6}
+TARGET = {"no.target": 1, "power.zone": 2, "cadence.zone": 3, "heart.rate.zone": 4,
+          "speed.zone": 5,  # reserved: Garmin's id, but no DSL target key maps to it
+          "pace.zone": 6}
 TARGET_KEYS = ("pace", "hr", "power", "cadence")
 END_KEYS = ("duration", "distance", "open")
 TOP_KEYS = {"name", "sport", "description", "steps"}
 EXEC_KEYS = {"type", "duration", "distance", "open", "target", "note"}
-REPEAT_KEYS = {"repeat", "steps", "note"}
+# No `note`: a RepeatGroupDTO carries no description, so accepting one would drop it silently.
+REPEAT_KEYS = {"repeat", "steps"}
 
 _DURATION = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _DISTANCE = re.compile(r"^(\d+(?:\.\d+)?)\s*(m|km)$")
@@ -230,7 +233,9 @@ DSL_REFERENCE: dict[str, Any] = {
     "target": {"optional_exactly_one_of": ["pace", "hr", "power", "cadence"],
                "pace": "min:sec per km, single or range, e.g. 4:15-4:25",
                "hr": "z1..z5 or bpm range 140-150", "power": "W range 200-220", "cadence": "range 170-180"},
-    "optional": {"description": "workout description", "note": "per-step description"},
+    "optional": {"description": "workout description", "note": "per-step description (executable steps only)"},
+    "verified": "running with pace/hr-zone targets round-tripped live; other sports and "
+                "power/cadence/bpm-range targets are untested",
     "example": {
         "name": "Tempo 3x10", "sport": "running",
         "steps": [

@@ -1,9 +1,11 @@
+import asyncio
 import json
 
 import pytest
 from typer.testing import CliRunner
 
 from pace.api import ApiError
+from pace.cache import Cache
 from pace.commands.workout import app
 from pace.ratelimit import RateLimiter
 
@@ -115,3 +117,31 @@ def test_library_validation_error_exits_2(monkeypatch) -> None:
     doc = _doc(res)
     assert res.exit_code == 2 and doc["error"]["code"] == "bad_args"
     assert "limit" in doc["error"]["message"]
+
+
+def test_schedule_and_delete_dry_run_make_no_call(fake_api) -> None:
+    doc = _doc(runner.invoke(app, ["schedule", "77", "2026-09-10", "--dry-run"]))
+    assert doc["data"] == {"dry_run": True,
+                           "payload": {"path": "/workout-service/schedule/77", "json": {"date": "2026-09-10"}}}
+    doc = _doc(runner.invoke(app, ["delete", "77", "--dry-run"]))
+    assert doc["data"] == {"dry_run": True, "payload": {"path": "/workout-service/workout/77"}}
+    assert fake_api["calls"] == []
+
+
+def test_push_ignores_a_warm_cache_and_then_drops_it(fake_api) -> None:
+    """A write must always reach Garmin: a warm `workout list` entry may neither
+    short-circuit the push nor survive it (a following list would be stale)."""
+    async def stale():
+        return [{"workoutId": 1}]
+
+    cache = Cache()
+    asyncio.run(cache.get_or_fetch("get_workouts:0:50", stale, ttl=600))
+    assert cache.stats()["entries"] == 1
+    cache.close()
+
+    doc = _doc(runner.invoke(app, ["push", "-"], input=json.dumps(DSL)))
+    assert doc["data"]["id"] == 77
+    assert [c[0] for c in fake_api["calls"]] == ["upload_workout"]
+    cache = Cache()
+    assert cache.stats()["entries"] == 0
+    cache.close()

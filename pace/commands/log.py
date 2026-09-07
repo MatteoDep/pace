@@ -7,12 +7,11 @@ import typer
 from pace.api import safe_call
 from pace.cache import Cache, CacheTracker
 from pace.commands._helpers import cached_call
-from pace.commands.workout import DRY_RUN_OPT
 from pace.dates import parse_date, resolve_range
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, DAYS_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
 from pace.shape import apply
-from pace.writes import WriteSpec, run_write
+from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
 app = typer.Typer(no_args_is_help=True, help="Health logs written to Garmin Connect: weight, hydration, blood pressure.")
 weight_app = typer.Typer(no_args_is_help=True, help="Weigh-ins and body composition.")
@@ -142,7 +141,9 @@ def weight_list(from_: str | None = FROM_OPT, to: str = TO_OPT, days: int = DAYS
 
 
 @weight_app.command("delete")
-def weight_delete(sample_pk: str = typer.Argument(..., metavar="SAMPLE_PK", help="samplePk from `log weight list`."),
+def weight_delete(sample_pk: str = typer.Argument(
+                      ..., metavar="SAMPLE_PK",
+                      help="samplePk from `log weight list` (dailyWeightSummaries[].allWeightMetrics[].samplePk)."),
                   date: str = typer.Option(..., "--date", "-d", help="Date of the weigh-in."),
                   dry_run: bool = DRY_RUN_OPT) -> None:
     """Delete one weigh-in."""

@@ -127,3 +127,23 @@ def test_config_show_and_path(tmp_path) -> None:
 def test_version_flag() -> None:
     res = runner.invoke(app, ["--version"])
     assert res.exit_code == 0 and json.loads(res.stdout)["data"]["version"] == "2.0.0"
+
+
+def test_three_level_command_name_is_reported(monkeypatch, capsys) -> None:
+    """`log weight add` is three levels deep, so a missing KG must still name the command
+    the user meant -- not just its first two tokens."""
+    monkeypatch.setattr("sys.argv", ["pace", "log", "weight", "add"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["error"]["code"] == "bad_args" and doc["command"] == "log weight add"
+
+
+def test_command_name_stops_at_the_first_non_command_token(monkeypatch, capsys) -> None:
+    """Only tokens that resolve in the click tree count, so a positional value cannot
+    be mistaken for a third command level."""
+    monkeypatch.setattr("sys.argv", ["pace", "activity", "show", "12345", "--nope"])
+    with pytest.raises(SystemExit):
+        main()
+    assert json.loads(capsys.readouterr().out)["command"] == "activity show"

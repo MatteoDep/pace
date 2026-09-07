@@ -69,7 +69,8 @@ def test_unknown_group_is_bad_args() -> None:
 def test_writes_and_dsl_in_schema() -> None:
     data = build_schema(None)
     assert data["workout_dsl"]["example"]["name"]
-    assert set(data["writes"]) == {"dry_run", "result", "invalidation", "confirm"}
+    assert set(data["writes"]) == {"dry_run", "result", "invalidation", "idempotency", "confirm"}
+    assert "not idempotent" in data["writes"]["idempotency"]
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete"}
@@ -77,3 +78,23 @@ def test_writes_and_dsl_in_schema() -> None:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]
     assert {"workout", "log"} <= set(data["groups"])
+
+
+def test_required_flags_are_declared() -> None:
+    """A required option is indistinguishable from an optional one in a flat flag list,
+    so an agent needs it spelled out."""
+    entries = {c["name"]: c for c in build_schema(None)["commands"]}
+    assert entries["log weight delete"]["required_flags"] == ["--date"]
+    assert entries["log bp delete"]["required_flags"] == ["--date"]
+    assert entries["activity export-range"]["required_flags"] == ["--from"]
+    for name, entry in entries.items():
+        for flag in entry.get("required_flags", []):
+            assert flag in entry["flags"], name
+    assert any("required_flags" in n for n in build_schema(None)["notes"])
+
+
+def test_retry_hints_warn_about_non_idempotent_writes() -> None:
+    """`network` and `rate_limited` both say "retry once", which is only safe for reads."""
+    from pace.envelope import HINTS
+    for code in ("network", "rate_limited"):
+        assert "verify with the matching read" in HINTS[code], code

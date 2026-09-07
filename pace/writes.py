@@ -4,9 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import typer
+
 from pace.api import safe_call
 from pace.cache import Cache
 from pace.envelope import PaceError, Result, log
+
+#: Shared by every write command, so it lives with the runner rather than in one of them.
+DRY_RUN_OPT = typer.Option(False, "--dry-run", help="Show the exact Garmin payload; make no network call.")
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,7 @@ NOTES: list[str] = [
     "--from/--to swapped if inverted",
     "--help prints plain text (not JSON)",
     "auto buckets are scored against the whole requested range, not one day",
+    "required_flags lists options that must be given; a command without the key has none",
 ]
 
 SHAPE_FLAGS = ["--fields", "--bucket", "--raw", "--no-cache"]
@@ -49,6 +50,9 @@ WRITES: dict[str, Any] = {
                "id": "Garmin-assigned id when the response carries one, else null",
                "echo": "the values you sent, for confirmation"},
     "invalidation": "successful writes drop the affected cache keys",
+    "idempotency": "Writes are not idempotent: a retry after an ambiguous failure duplicates the "
+                   "workout/weigh-in/hydration. Verify with the matching read (workout list, "
+                   "log weight list, log bp list) before retrying.",
     "confirm": "agents must show the planned write and get an explicit yes before calling",
 }
 
@@ -60,6 +64,7 @@ GLOBAL_FLAGS = {
     "--verbose": "(root) log fetch/cache events to stderr",
     "--from/--to/--days": "date-keyed commands; --from overrides --days; dates: YYYY-MM-DD | today | yesterday | -Nd",
     "--help": "plain-text usage, not JSON; exit 0",
+    "required_flags": "not a flag: a command entry's `required_flags` lists the options that must be given",
 }
 
 STATIC_COMMANDS: list[dict[str, Any]] = [
@@ -81,7 +86,8 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "activity export", "help": "Download one activity file; data.files lists written paths.", "keyed": "id",
      "args": ["ACTIVITY_ID"], "flags": ["--format", "--out"], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "activity export-range", "help": "Download every activity in a range into --out-dir.", "keyed": "date",
-     "args": [], "flags": ["--from", "--to", "--format", "--out-dir", "--type"], "default_fields": [], "series": [], "ttl_s": 0},
+     "args": [], "flags": ["--from", "--to", "--format", "--out-dir", "--type"], "required_flags": ["--from"],
+     "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "profile show", "help": "Name, profile and unit system.", "keyed": "none", "args": [], "flags": SHAPE_FLAGS,
      "default_fields": [], "series": [], "ttl_s": 604800},
     {"name": "auth status", "help": "Whether tokens exist. If false, the USER must run `pace auth login`.", "keyed": "none",
@@ -92,7 +98,9 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "cache path", "help": "Cache database path.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "config show", "help": "Effective configuration.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "config path", "help": "Config file path.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
-    {"name": "workout list", "help": "Saved workouts.", "keyed": "none", "args": [],
+    {"name": "workout list",
+     "help": "Saved workouts. truncated is true when the result length equals --limit; raise --limit to see more.",
+     "keyed": "none", "args": [],
      "flags": ["--limit"] + SHAPE_FLAGS, "default_fields": list(WORKOUT_LIST_FIELDS), "series": [], "ttl_s": 600},
     {"name": "workout show", "help": "One saved workout, full structure.", "keyed": "id", "args": ["WORKOUT_ID"],
      "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
@@ -110,13 +118,15 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "log weight list", "help": "Weigh-ins in a date range (one Garmin call).", "keyed": "date", "args": [],
      "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["dailyWeightSummaries", "totalAverage"], "series": [], "ttl_s": 600},
     {"name": "log weight delete", "help": "Delete one weigh-in.", "keyed": "id+date", "args": ["SAMPLE_PK"],
-     "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+     "flags": ["--date", "--dry-run"], "required_flags": ["--date"], "default_fields": [], "series": [],
+     "ttl_s": 0, "write": True},
     {"name": "log hydration", "help": "Add water intake for a day.", "keyed": "none", "args": ["ML"],
      "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "log bp add", "help": "Record a blood pressure reading.", "keyed": "none", "args": ["SYS", "DIA", "PULSE"],
      "flags": ["--date", "--notes", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "log bp delete", "help": "Delete one blood pressure reading.", "keyed": "id+date", "args": ["VERSION"],
-     "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+     "flags": ["--date", "--dry-run"], "required_flags": ["--date"], "default_fields": [], "series": [],
+     "ttl_s": 0, "write": True},
     {"name": "log bp list", "help": "Blood pressure readings in a date range (one Garmin call).", "keyed": "date",
      "args": [], "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["measurementSummaries"], "series": [], "ttl_s": 600},
 ]

@@ -16,10 +16,12 @@ EXIT_CODES: dict[str, int] = {"bad_args": 2, "auth_required": 3, "rate_limited":
 HINTS: dict[str, str] = {
     "bad_args": "Check `pace schema` for accepted arguments.",
     "auth_required": "Ask the user to run `pace auth login` (interactive MFA). Do not run it yourself.",
-    "rate_limited": "Wait 60 s and retry once; then stop and tell the user.",
+    "rate_limited": "Wait 60 s and retry once; then stop and tell the user."
+                    " For writes, verify with the matching read before retrying.",
     "not_found": "The id or date does not exist on Garmin Connect.",
     "endpoint_unavailable": "Feature not enabled for this account or device; do not retry.",
-    "network": "Transient. Retry once after a few seconds.",
+    "network": "Transient. Retry once after a few seconds."
+               " For writes, verify with the matching read before retrying.",
     "internal": "Unexpected. Re-run with --verbose for cache/fetch logs and report the message.",
 }
 

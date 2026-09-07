@@ -14,11 +14,10 @@ from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, NO_CACHE_OPT, RAW_OPT, shape_args
 from pace.shape import apply
 from pace.workout import build_workout
-from pace.writes import WriteSpec, run_write
+from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
 app = typer.Typer(no_args_is_help=True, help="Structured workouts: list, show, push, schedule, delete.")
 
-DRY_RUN_OPT = typer.Option(False, "--dry-run", help="Show the exact Garmin payload; make no network call.")
 _LIST_TTL = 600
 _SHOW_TTL = 86400
 WORKOUT_LIST_FIELDS: tuple[str, ...] = (
@@ -41,7 +40,7 @@ def _read_json(source: str) -> Any:
 @app.command("list")
 def list_(limit: int = typer.Option(50, "--limit", "-l", help="Max workouts (newest first)."),
           fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT, no_cache: bool = NO_CACHE_OPT) -> None:
-    """Saved workouts."""
+    """Saved workouts. truncated is true when the result length equals --limit; raise --limit to see more."""
     cmd = "workout list"
     try:
         f, b, echo = shape_args(fields, bucket, raw)
@@ -103,7 +102,7 @@ def push(file: str = typer.Argument(..., metavar="FILE", help="Path to a DSL JSO
 
 @app.command("schedule")
 def schedule(workout_id: int = typer.Argument(..., metavar="WORKOUT_ID"),
-             date: str = typer.Argument(..., metavar="DATE", help="YYYY-MM-DD | today | +Nd"),
+             date: str = typer.Argument(..., metavar="DATE", help="YYYY-MM-DD | today | yesterday | +Nd | -Nd"),
              dry_run: bool = DRY_RUN_OPT) -> None:
     """Put a saved workout on the Garmin calendar (syncs to the watch)."""
     cmd = "workout schedule"

@@ -4,6 +4,7 @@ import sys
 
 import click
 import typer
+from typer.main import get_command
 
 from pace import __version__, envelope
 from pace.commands import activity, auth, cache, config, device, gear, goal, log, profile, schema, training, wellness, workout
@@ -44,9 +45,22 @@ def _root(
 def _cmd() -> str:
     """The group + command the user meant, for an envelope built outside any command.
 
-    Flags are dropped *before* the first two tokens are taken, so a root flag
-    (`pace -v wellness sleep`) does not push the command name out of view."""
-    return " ".join([a for a in sys.argv[1:] if not a.startswith("-")][:2])
+    Flags are dropped *before* the tokens are taken, so a root flag
+    (`pace -v wellness sleep`) does not push the command name out of view.
+
+    Only tokens that actually resolve in the click tree are kept, walking it level by
+    level and stopping at the first token that is not a sub-group or command. So the
+    three-level `pace log weight add` (missing KG) names all three levels, while a
+    positional value (`pace activity show 123`) is not mistaken for a fourth."""
+    node: click.Command = get_command(app)
+    out: list[str] = []
+    for token in [a for a in sys.argv[1:] if not a.startswith("-")][:3]:
+        commands = getattr(node, "commands", None)
+        if not commands or token not in commands:
+            break
+        out.append(token)
+        node = commands[token]
+    return " ".join(out)
 
 
 def main() -> None:

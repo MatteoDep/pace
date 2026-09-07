@@ -230,3 +230,14 @@ def test_dsl_reference_is_json_friendly() -> None:
     doc = json.loads(json.dumps(DSL_REFERENCE))
     assert set(doc["sports"]) == {"running", "cycling", "swimming", "walking", "hiking"}
     assert "example" in doc and doc["example"]["steps"]
+    # an agent must be able to see how far the translator has actually been proven
+    assert "running" in doc["verified"] and "untested" in doc["verified"]
+
+
+def test_note_on_a_repeat_group_is_rejected() -> None:
+    """A RepeatGroupDTO has no description field, so a note there would be silently
+    dropped; better to say so than to lose it."""
+    with pytest.raises(PaceError) as exc:
+        build_workout({"name": "x", "sport": "running", "steps": [
+            {"repeat": 2, "note": "x", "steps": [{"type": "interval", "duration": "1m"}]}]})
+    assert exc.value.code == "bad_args" and "note" in exc.value.message
