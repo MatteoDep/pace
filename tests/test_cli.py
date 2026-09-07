@@ -38,10 +38,14 @@ def test_root_flag_does_not_hide_the_command_name(monkeypatch, capsys) -> None:
 
 
 def test_unknown_command_is_bad_args(monkeypatch, capsys) -> None:
+    """Nothing resolves, so `command` is empty rather than echoing a command that does
+    not exist; the message still names the token the user typed."""
     monkeypatch.setattr("sys.argv", ["pace", "frobnicate"])
     with pytest.raises(SystemExit) as exc:
         main()
-    assert exc.value.code == 2 and json.loads(capsys.readouterr().out)["error"]["code"] == "bad_args"
+    doc = json.loads(capsys.readouterr().out)
+    assert exc.value.code == 2 and doc["error"]["code"] == "bad_args"
+    assert doc["command"] == "" and "frobnicate" in doc["error"]["message"]
 
 
 def test_command_failure_exit_code_propagates(monkeypatch, capsys) -> None:
