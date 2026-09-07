@@ -24,7 +24,7 @@
   `activity list` echoes `to` always, and adds `from` only when the call is ranged (an explicit `--from`, `--days`, or a non-default `--to` was given).
 - `cache.hit`: `true` (all from cache), `false` (all fetched), `"partial"`.
   `oldest_age_s`: age of the oldest cache entry used; `0` when nothing came from cache.
-  Both `cache` and `shape` are `null` for commands that never fetch or never shape: `schema`, `config show|path`, `cache stats|clear|path`, `auth status|logout`, `activity export`, `activity export-range`.
+  Both `cache` and `shape` are `null` for commands that never fetch or never shape: `schema`, `config show|path`, `cache stats|clear|path`, `auth status|logout`, `activity export`, `activity export-range`, and every write command.
 - `shape.bucket_used`: the bucket actually applied (`"none"` when no series reduced).
   `reduced_series`: dotted paths that were bucketed.
   `fields`: `"default"`, `"all"`, or the explicit list.
@@ -137,7 +137,11 @@ Eight commands mutate Garmin Connect: `workout push`, `workout schedule`, `worko
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
 `--dry-run` makes no network call.
-It returns `{"dry_run": true, "payload": <exact Garmin request body>}` so a caller can inspect precisely what would be sent before committing to it.
+It returns `{"dry_run": true, "payload": ...}`: the exact call pace will make, so a caller can inspect precisely what would be sent before committing to it.
+The payload is the HTTP body for the `workout-service` endpoints pace calls directly (`workout schedule`, `workout delete`), and the garminconnect method plus its arguments for the library-mediated writes (everything else) -- there the HTTP body is the library's to build.
+
+`--date D` on `log weight add` and `log bp add` timestamps the entry at 12:00 local time of D, not midnight, so a day's entry cannot land in the neighbouring day once Garmin converts it to GMT.
+`log hydration` and the two deletes take a plain date (`cdate`) instead.
 
 Without `--dry-run`, a successful write returns `{"action": "create"|"delete", "resource": "workout"|"weight"|"hydration"|"bp", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
 A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
@@ -148,11 +152,19 @@ Confirmation before a real write is the caller's responsibility -- the coaching 
 
 A successful write drops the cache keys it affects (`data.writes.invalidation` in `pace schema`), so a following read is never served stale data.
 Write commands themselves never read the cache: every write always calls Garmin directly.
+A cache failure during that invalidation is logged (`--verbose`) and ignored: the write already landed on Garmin, so it is still reported as `ok: true`.
+
+Writes are not idempotent: a retry after an ambiguous failure duplicates the workout/weigh-in/hydration.
+Verify with the matching read (`workout list`, `log weight list`, `log bp list`) before retrying.
+The `network` and `rate_limited` hints say so too, since both otherwise read as "retry once".
+
+`log weight delete`, `log bp delete` and `activity export-range` have a mandatory option; `pace schema` lists it per command under `required_flags`, because a flat `flags` list cannot tell a required option from an optional one.
 
 DSL reference for `workout push`: `pace schema` -> `workout_dsl`.
 
 Live-verified 2026-09-07: `workout push` returns `workoutId`; `workout schedule` returns `workoutScheduleId`; deleting a workout also removes its calendar entries.
 `log weight add` resolves the created `samplePk` with one extra day-view read because Garmin's add response carries no id.
+Only a day-view entry matching the weight just written (within 100 g) and attributed to a manual source is accepted, so a scale sync on the same day cannot lend its id; when nothing matches, `id` is `null` and `log weight list` still has the answer.
 
 ## Keeping this file honest
 

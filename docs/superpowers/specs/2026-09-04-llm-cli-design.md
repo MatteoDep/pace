@@ -478,3 +478,12 @@ Where the shipped core CLI departs from, or pins down, the design above:
 - `stressValuesArray` and `bodyBatteryValuesArray` declare `min_value=0`: Garmin's `-1` / `-2` sentinels are dropped before bucketing.
 - `workout schedule` and `workout delete` are implemented via `connectapi` directly: POST `/workout-service/schedule/{id}` and DELETE `/workout-service/workout/{id}`.
   Both request bodies are built as plain dicts rather than the `garminconnect` library's pydantic workout models, because Garmin's real field ids differ from `garminconnect.workout.ConditionType`.
+- `workout push` builds its payload as a plain dict for the same reason.
+  The DSL translator in `pace/workout.py` carries the step-type, end-condition and target ids read off a real workout on the user's account; the library's `ConditionType` / `TargetType` constants disagree with Garmin for `distance`, `lap.button` and the pace/target zone keys, so using its models would have shipped workouts Garmin rejects or silently mangles.
+- `log weight add`, `log weight delete`, `log bp add` and `log bp delete` are Typer sub-groups (`log weight ...`, `log bp ...`), not the positional `log weight KG` / `log bp SYS DIA PULSE` forms of the table in section 3.
+  A group is what makes room for the reads and the deletes under the same noun.
+- `log bp delete VERSION --date D` also exists, which the table does not list: a blood-pressure reading is deleted by the `version` that `log bp list` reports, not by a samplePk.
+- The blood-pressure bounds are garminconnect's own -- systolic `[70, 260]`, diastolic `[40, 150]`, pulse `[20, 250]`, all inclusive -- rather than a range of pace's choosing, so a `--dry-run` that passes locally also passes live.
+  The library raises `ValueError` outside them, and `safe_call` maps `ValueError` / `TypeError` from the library to `bad_args` (exit 2), not `internal`.
+- Writes are not idempotent, and pace does not try to make them so: there is no request id to deduplicate on.
+  A retry after an ambiguous failure duplicates the workout, weigh-in or hydration entry, so `pace schema` -> `writes.idempotency` and the `network` / `rate_limited` hints tell the caller to verify with the matching read first.
