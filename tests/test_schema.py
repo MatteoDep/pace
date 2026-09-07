@@ -64,3 +64,16 @@ def test_dated_entries_expose_range_flags() -> None:
 def test_unknown_group_is_bad_args() -> None:
     res = runner.invoke(app, ["schema", "nope"])
     assert res.exit_code == 2 and json.loads(res.stdout)["error"]["code"] == "bad_args"
+
+
+def test_writes_and_dsl_in_schema() -> None:
+    data = build_schema(None)
+    assert data["workout_dsl"]["example"]["name"]
+    assert set(data["writes"]) == {"dry_run", "result", "invalidation", "confirm"}
+    writes = {c["name"] for c in data["commands"] if c.get("write")}
+    assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
+                      "log hydration", "log bp add"}
+    for c in data["commands"]:
+        if c.get("write"):
+            assert "--dry-run" in c["flags"], c["name"]
+    assert {"workout", "log"} <= set(data["groups"])

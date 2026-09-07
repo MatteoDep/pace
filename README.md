@@ -34,7 +34,14 @@ pace wellness hr --to yesterday --bucket 1h
 pace activity list --days 14 --type running
 pace activity details 10000000001
 pace training readiness
+pace workout push plan.json --dry-run
+pace workout push plan.json
+pace workout schedule <id> +1d
+pace log weight add 66.3
+pace log hydration 500
 ```
+
+Writes require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 
 Output contract: `docs/CONTRACT.md`.
 Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.

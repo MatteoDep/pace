@@ -131,6 +131,26 @@ Prefer a narrow range, and expect `--days 30` to sit there for minutes rather th
 Garmin Connect returns SI regardless of user display preferences: distance `m`, duration `s`, speed `m/s`, elevation `m`, heart rate `bpm`, timestamps epoch ms GMT, `*Local` fields as ISO local strings.
 Documented in `pace schema` and the skill; never repeated per response.
 
+### Writes
+
+Seven commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`.
+Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
+
+`--dry-run` makes no network call.
+It returns `{"dry_run": true, "payload": <exact Garmin request body>}` so a caller can inspect precisely what would be sent before committing to it.
+
+Without `--dry-run`, a successful write returns `{"action": "create"|"delete", "resource": "workout"|"weight"|"hydration"|"bp", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
+A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
+
+Deletes are limited to workouts, weigh-ins and blood-pressure readings; activities and other resources are never deleted through `pace`.
+There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
+Confirmation before a real write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
+
+A successful write drops the cache keys it affects (`data.writes.invalidation` in `pace schema`), so a following read is never served stale data.
+Write commands themselves never read the cache: every write always calls Garmin directly.
+
+DSL reference for `workout push`: `pace schema` -> `workout_dsl`.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.

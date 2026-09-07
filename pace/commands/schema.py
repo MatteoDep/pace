@@ -6,10 +6,12 @@ import typer
 
 from pace import __version__
 from pace.commands.activity import LIST_FIELDS
+from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
 from pace.ratelimit import CONCURRENCY, limiter
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
+from pace.workout import DSL_REFERENCE
 
 UNITS = {
     "distance": "m", "elevation": "m", "duration": "s", "speed": "m/s", "heart_rate": "bpm",
@@ -39,6 +41,16 @@ NOTES: list[str] = [
 
 SHAPE_FLAGS = ["--fields", "--bucket", "--raw", "--no-cache"]
 RANGE_FLAGS = ["--from", "--to", "--days"]
+
+#: The write safety contract, shared by every mutating command.
+WRITES: dict[str, Any] = {
+    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body",
+    "result": {"action": "create | delete", "resource": "workout | weight | hydration | bp",
+               "id": "Garmin-assigned id when the response carries one, else null",
+               "echo": "the values you sent, for confirmation"},
+    "invalidation": "successful writes drop the affected cache keys",
+    "confirm": "agents must show the planned write and get an explicit yes before calling",
+}
 
 GLOBAL_FLAGS = {
     "--fields": "default | all | comma-separated dotted paths",
@@ -80,6 +92,31 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "cache path", "help": "Cache database path.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "config show", "help": "Effective configuration.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "config path", "help": "Config file path.", "keyed": "none", "args": [], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "workout list", "help": "Saved workouts.", "keyed": "none", "args": [],
+     "flags": ["--limit"] + SHAPE_FLAGS, "default_fields": list(WORKOUT_LIST_FIELDS), "series": [], "ttl_s": 600},
+    {"name": "workout show", "help": "One saved workout, full structure.", "keyed": "id", "args": ["WORKOUT_ID"],
+     "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
+    {"name": "workout push", "help": "Create a workout on Garmin Connect from the compact DSL (see `pace schema` -> workout_dsl).",
+     "keyed": "none", "args": ["FILE"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "workout schedule", "help": "Put a saved workout on the Garmin calendar (syncs to the watch).",
+     "keyed": "id+date", "args": ["WORKOUT_ID", "DATE"], "flags": ["--dry-run"], "default_fields": [], "series": [],
+     "ttl_s": 0, "write": True},
+    {"name": "workout delete", "help": "Delete a saved workout (only workouts; activities are never deleted).",
+     "keyed": "id", "args": ["WORKOUT_ID"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0,
+     "write": True},
+    {"name": "log weight add", "help": "Record a weigh-in (plus optional body composition).", "keyed": "date",
+     "args": ["KG"], "flags": ["--date", "--fat", "--water", "--muscle", "--bone", "--bmi", "--dry-run"],
+     "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "log weight list", "help": "Weigh-ins in a date range (one Garmin call).", "keyed": "date", "args": [],
+     "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["dateWeightList", "totalAverage"], "series": [], "ttl_s": 600},
+    {"name": "log weight delete", "help": "Delete one weigh-in.", "keyed": "id+date", "args": ["SAMPLE_PK"],
+     "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "log hydration", "help": "Add water intake for a day.", "keyed": "date", "args": ["ML"],
+     "flags": ["--date", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "log bp add", "help": "Record a blood pressure reading.", "keyed": "date", "args": ["SYS", "DIA", "PULSE"],
+     "flags": ["--date", "--notes", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "log bp list", "help": "Blood pressure readings in a date range (one Garmin call).", "keyed": "date",
+     "args": [], "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["measurementSummaries"], "series": [], "ttl_s": 600},
 ]
 
 
@@ -119,14 +156,18 @@ def build_schema(group: str | None) -> dict[str, Any]:
         "global_flags": GLOBAL_FLAGS,
         "notes": NOTES,
         "groups": {**GROUPS, "activity": "Workouts and activity history.", "auth": "Authentication.",
-                   "cache": "Local cache.", "config": "User configuration."},
+                   "cache": "Local cache.", "config": "User configuration.",
+                   "workout": "Structured workouts: list, show, push, schedule, delete.",
+                   "log": "Health logs written to Garmin Connect."},
         "commands": commands,
+        "workout_dsl": DSL_REFERENCE,
+        "writes": WRITES,
     }
 
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

@@ -476,3 +476,5 @@ Where the shipped core CLI departs from, or pins down, the design above:
 - `auth status` also reports `oauth2_expires_at` (ISO local, read from the token store) alongside `logged_in`.
   `logged_in` still means only "a token store exists": garth mints a fresh oauth2 token from the long-lived oauth1 one, so an expired oauth2 token is not a logged-out account.
 - `stressValuesArray` and `bodyBatteryValuesArray` declare `min_value=0`: Garmin's `-1` / `-2` sentinels are dropped before bucketing.
+- `workout schedule` and `workout delete` are implemented via `connectapi` directly: POST `/workout-service/schedule/{id}` and DELETE `/workout-service/workout/{id}`.
+  Both request bodies are built as plain dicts rather than the `garminconnect` library's pydantic workout models, because Garmin's real field ids differ from `garminconnect.workout.ConditionType`.
