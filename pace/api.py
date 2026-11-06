@@ -74,6 +74,16 @@ def classify_http(code: int | None, msg: str) -> ApiError:
     return ApiError("internal", f"HTTP error: {msg}", code)
 
 
+def _garth_status(err: GarthHTTPError) -> int | None:
+    """HTTP status of a GarthHTTPError: garth keeps the requests error on `.error`; `.response`
+    is checked too for any wrapper that exposes it directly; the message text is the last resort."""
+    for holder in (getattr(err, "error", None), err):
+        code = getattr(getattr(holder, "response", None), "status_code", None)
+        if isinstance(code, int):
+            return code
+    return _status_from_text(str(err))
+
+
 async def safe_call(
     method_name: str, *args: Any, **kwargs: Any
 ) -> tuple[bool, Any, ApiError | None]:
@@ -85,14 +95,16 @@ async def safe_call(
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
         except GarthHTTPError as err:
-            code = getattr(getattr(err, "response", None), "status_code", None)
-            return False, None, classify_http(code, str(err))
+            return False, None, classify_http(_garth_status(err), str(err))
         except FileNotFoundError:
             return False, None, ApiError("auth_required", "No valid tokens. Run `pace auth login`.")
         except GarminConnectAuthenticationError as err:
             return False, None, ApiError("auth_required", f"Auth issue: {err}")
         except GarminConnectConnectionError as err:
             code = _status_from_text(str(err))
+            if code is None and "gear not found" in str(err).lower():
+                # The library's own 404 branches (e.g. gear link/unlink) drop the status code.
+                code = 404
             if code is not None:
                 return False, None, classify_http(code, str(err))
             return False, None, ApiError("network", f"Connection issue: {err}")
