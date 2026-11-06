@@ -1,7 +1,7 @@
 # Gear and Effort Writes: Design
 
 Extends `docs/superpowers/specs/2026-09-04-llm-cli-design.md` section 7 (Mutations).
-Status: draft, 2026-11-06.
+Status: implemented and live-verified, 2026-11-06 (both fallbacks below were not needed).
 
 ## Why
 

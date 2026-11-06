@@ -47,6 +47,7 @@ pace gear unlink <activity-id> <gear-uuid>
 
 To review which shoes are on many activities, avoid one `activity gear` call per activity (the rate limit is 10 calls a minute).
 Run `pace gear list`, then `pace gear activities <uuid>` once per shoe, then `pace activity list` for the range: an activity in no shoe's list has no gear.
+To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 
 Writes require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 

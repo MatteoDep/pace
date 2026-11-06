@@ -162,7 +162,7 @@ Feel labels match case-insensitively and accept `_` for `-`.
 `activity show` reports the same values back as top-level `rpe` (1-10; a stored value that is not a multiple of 10 reads as e.g. `4.5`) and `feel` (label); either key is absent when unset or when the stored feel is not one of the five steps.
 
 `gear link ACTIVITY_ID GEAR_UUID` adds one gear item to an activity and `gear unlink` removes one; `GEAR_UUID` is the 32-hex `uuid` from `gear list` (case-insensitive).
-To change shoes, compose the two writes.
+To change shoes, link the new item first, then unlink the old one: Garmin keeps every linked item, so a failed link never leaves the activity without gear.
 `activity gear ID` reads an activity's gear (cached 5 minutes, since gear changed in the Garmin app cannot be invalidated by `pace`).
 To review gear across many activities, do not call `activity gear` once per activity (10 calls a minute): `gear list`, then `gear activities UUID` once per item, then `activity list` for the range; an activity in no item's list has no gear.
 There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
@@ -183,6 +183,10 @@ DSL reference for `workout push`: `pace schema` -> `workout_dsl`.
 
 Live-verified 2026-09-07: `workout push` returns `workoutId`; `workout schedule` returns `workoutScheduleId`; deleting a workout also removes its calendar entries.
 `log weight add` resolves the created `samplePk` with one extra day-view read because Garmin's add response carries no id.
+
+Live-verified 2026-11-06 on one run: `activity effort` with both flags, `--rpe` only, and `--feel` only each changed just the given `summaryDTO` key(s); every other summary field was unchanged, so Garmin merges the partial update.
+Garmin marks an edited activity with a new `metadataDTO.lastUpdateDate` and `isOriginal: false`, as it does for edits made in the app.
+`gear link` added a second shoe without removing the first; `gear unlink` removed only the one named; both return a JSON body.
 Only a day-view entry matching the weight just written (within 100 g) and attributed to a manual source is accepted, so a scale sync on the same day cannot lend its id; when nothing matches, `id` is `null` and `log weight list` still has the answer.
 
 ## Keeping this file honest
