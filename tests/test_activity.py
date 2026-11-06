@@ -22,9 +22,9 @@ def _tmp_home(tmp_path, monkeypatch):
 def fake_api(monkeypatch):
     state = {"calls": [], "payload": lambda m, a, kw: {"m": m}}
 
-    async def safe_call(method, *args, **kwargs):
-        state["calls"].append((method, args, kwargs))
-        p = state["payload"](method, args, kwargs)
+    async def safe_call(method_name, *args, **kwargs):
+        state["calls"].append((method_name, args, kwargs))
+        p = state["payload"](method_name, args, kwargs)
         if isinstance(p, ApiError):
             return False, None, p
         return True, p, None
@@ -32,6 +32,7 @@ def fake_api(monkeypatch):
     monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
     monkeypatch.setattr("pace.commands.activity.safe_call", safe_call)
     monkeypatch.setattr("pace.api.safe_call", safe_call)
+    monkeypatch.setattr("pace.writes.safe_call", safe_call)
     return state
 
 
@@ -170,3 +171,72 @@ def test_api_error_becomes_envelope(fake_api) -> None:
 
 def test_detail_metrics_map_is_stable() -> None:
     assert DETAIL_METRICS["directHeartRate"] == "hr"
+
+
+def _get_activity_calls(fake_api) -> int:
+    return [c[0] for c in fake_api["calls"]].count("get_activity")
+
+
+def test_show_adds_effort_keys(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 5, "summaryDTO": {"directWorkoutRpe": 40, "directWorkoutFeel": 75}}
+    doc = json.loads(runner.invoke(app, ["show", "5"]).stdout)
+    assert doc["data"]["rpe"] == 4 and doc["data"]["feel"] == "strong"
+    assert doc["data"]["summaryDTO"]["directWorkoutRpe"] == 40
+    sel = json.loads(runner.invoke(app, ["show", "5", "--fields", "rpe,feel", "--no-cache"]).stdout)
+    assert sel["data"] == {"rpe": 4, "feel": "strong"}
+    raw = json.loads(runner.invoke(app, ["show", "5", "--raw", "--no-cache"]).stdout)
+    assert "rpe" not in raw["data"]
+
+
+def test_show_without_summary_omits_effort(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 6}
+    doc = json.loads(runner.invoke(app, ["show", "6"]).stdout)
+    assert doc["ok"] and "rpe" not in doc["data"] and "feel" not in doc["data"]
+
+
+def test_activity_gear_curated(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: [{"uuid": "a" * 32, "customMakeModel": "Altra", "gearTypeName": "Shoes",
+                                             "gearStatusName": "active", "gearPk": 1, "imageNameLarge": None}]
+    doc = json.loads(runner.invoke(app, ["gear", "7"]).stdout)
+    assert doc["command"] == "activity gear"
+    assert doc["data"] == [{"uuid": "a" * 32, "customMakeModel": "Altra", "gearTypeName": "Shoes",
+                            "gearStatusName": "active"}]
+    assert fake_api["calls"][0][:2] == ("get_activity_gear", (7,))
+
+
+def test_effort_dry_run_sends_only_given_keys(fake_api) -> None:
+    doc = json.loads(runner.invoke(app, ["effort", "9", "--rpe", "6", "--dry-run"]).stdout)
+    assert doc["args"] == {"activity_id": 9, "rpe": 6, "feel": None, "dry_run": True}
+    assert doc["data"] == {"dry_run": True, "payload": {"path": "/activity-service/activity/9",
+                           "json": {"activityId": 9, "summaryDTO": {"directWorkoutRpe": 60}}}}
+    assert fake_api["calls"] == []
+
+
+def test_effort_real_run_result_and_invalidation(fake_api) -> None:
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 9}
+    runner.invoke(app, ["show", "9"])
+    runner.invoke(app, ["show", "9"])
+    assert _get_activity_calls(fake_api) == 1  # second show was a cache hit
+    fake_api["payload"] = lambda m, a, kw: None
+    doc = json.loads(runner.invoke(app, ["effort", "9", "--feel", "Very_Strong"]).stdout)
+    assert doc["data"] == {"action": "update", "resource": "activity_effort", "id": None,
+                           "echo": {"activity_id": 9, "feel": "very-strong"}}
+    method, args, kw = fake_api["calls"][-1]
+    assert method == "connectapi" and args == ("/activity-service/activity/9",)
+    assert kw == {"method": "PUT", "json": {"activityId": 9, "summaryDTO": {"directWorkoutFeel": 100}}}
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 9}
+    runner.invoke(app, ["show", "9"])
+    assert _get_activity_calls(fake_api) == 2  # cached row was invalidated
+
+
+def test_effort_both_flags(fake_api) -> None:
+    doc = json.loads(runner.invoke(app, ["effort", "9", "--rpe", "10", "--feel", "weak", "--dry-run"]).stdout)
+    assert doc["data"]["payload"]["json"]["summaryDTO"] == {"directWorkoutRpe": 100, "directWorkoutFeel": 25}
+
+
+@pytest.mark.parametrize("argv", [["effort", "9"], ["effort", "9", "--rpe", "0"], ["effort", "9", "--rpe", "11"],
+                                  ["effort", "9", "--feel", "tired"], ["effort", "0", "--rpe", "5"]])
+def test_effort_bad_args(fake_api, argv) -> None:
+    res = runner.invoke(app, argv)
+    assert res.exit_code == 2 and json.loads(res.stdout)["error"]["code"] == "bad_args"
+    assert fake_api["calls"] == []

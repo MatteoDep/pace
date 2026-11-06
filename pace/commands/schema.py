@@ -5,7 +5,7 @@ from typing import Any
 import typer
 
 from pace import __version__
-from pace.commands.activity import LIST_FIELDS
+from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
 from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
@@ -72,8 +72,13 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "args": [], "flags": RANGE_FLAGS + ["--type", "--limit"] + SHAPE_FLAGS,
      "default_fields": list(LIST_FIELDS),
      "series": [], "ttl_s": 600},
-    {"name": "activity show", "help": "One activity: summary metrics.", "keyed": "id", "args": ["ACTIVITY_ID"],
-     "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
+    {"name": "activity show", "help": "One activity: summary metrics, plus rpe (1-10) and feel (label) when set.",
+     "keyed": "id", "args": ["ACTIVITY_ID"], "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
+    {"name": "activity gear", "help": "Gear linked to one activity.", "keyed": "id", "args": ["ACTIVITY_ID"],
+     "flags": SHAPE_FLAGS, "default_fields": list(ACTIVITY_GEAR_FIELDS), "series": [], "ttl_s": 300},
+    {"name": "activity effort", "help": "Set perceived exertion and/or feel on one activity; only the given field(s) are sent.",
+     "keyed": "id", "args": ["ACTIVITY_ID"], "flags": ["--rpe", "--feel", "--dry-run"], "default_fields": [],
+     "series": [], "ttl_s": 0, "write": True},
     {"name": "activity splits", "help": "Laps / splits of one activity.", "keyed": "id", "args": ["ACTIVITY_ID"],
      "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
     {"name": "activity details", "help": "Per-sample metrics as one bucketed table (cols: t, hr, speed_mps, dist_m, elev_m, cadence, power_w).",

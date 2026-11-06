@@ -73,7 +73,7 @@ def test_writes_and_dsl_in_schema() -> None:
     assert "not idempotent" in data["writes"]["idempotency"]
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
-                      "log hydration", "log bp add", "log bp delete"}
+                      "log hydration", "log bp add", "log bp delete", "activity effort"}
     for c in data["commands"]:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]

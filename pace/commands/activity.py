@@ -1,6 +1,7 @@
-"""Activity commands: list, show, splits, details, weather, last, export."""
+"""Activity commands: list, show, gear, splits, details, weather, last, export, effort."""
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -13,14 +14,19 @@ from pace.api import paginate, safe_call
 from pace.cache import Cache, CacheTracker
 from pace.commands._helpers import cached_call
 from pace.dates import parse_date, resolve_range
+from pace.effort import parse_feel, parse_rpe, with_effort
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
 from pace.shape import BUCKETS, apply, choose_bucket, prune, tz_offset_s
+from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
 app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
 
 _LIST_TTL = 600
 _DETAIL_TTL = 86400
+#: Gear can change in the Garmin app, which pace cannot invalidate: keep it short.
+_GEAR_TTL = 300
+ACTIVITY_GEAR_FIELDS: tuple[str, ...] = ("uuid", "customMakeModel", "gearTypeName", "gearStatusName")
 
 LIST_FIELDS: tuple[str, ...] = (
     "activityId", "activityName", "activityType", "startTimeLocal", "duration", "distance",
@@ -105,7 +111,8 @@ def list_(
     run(cmd, args, work)
 
 
-def _by_id(name: str, method: str, help_: str) -> None:
+def _by_id(name: str, method: str, help_: str, default_fields: tuple[str, ...] = (),
+           transform: Callable[[Any], Any] | None = None, ttl: int = _DETAIL_TTL) -> None:
     def command(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                 fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT,
                 no_cache: bool = NO_CACHE_OPT) -> None:
@@ -119,11 +126,13 @@ def _by_id(name: str, method: str, help_: str) -> None:
             cache = Cache()
             tracker = CacheTracker()
             try:
-                data = await cached_call(method, activity_id, cache=cache, ttl=_DETAIL_TTL, tracker=tracker,
+                data = await cached_call(method, activity_id, cache=cache, ttl=ttl, tracker=tracker,
                                           refresh=no_cache)
             finally:
                 cache.close()
-            return _shaped_result(data, tracker, fields=f, bucket=b, raw=raw)
+            if transform is not None and not raw:
+                data = transform(data)
+            return _shaped_result(data, tracker, default_fields=default_fields, fields=f, bucket=b, raw=raw)
 
         run(cmd, {"activity_id": activity_id, **echo}, work)
 
@@ -132,7 +141,9 @@ def _by_id(name: str, method: str, help_: str) -> None:
     app.command(name, help=help_)(command)
 
 
-_by_id("show", "get_activity", "One activity: summary metrics.")
+_by_id("show", "get_activity", "One activity: summary metrics, plus rpe (1-10) and feel (label) when set.",
+       transform=with_effort)
+_by_id("gear", "get_activity_gear", "Gear linked to one activity.", default_fields=ACTIVITY_GEAR_FIELDS, ttl=_GEAR_TTL)
 _by_id("splits", "get_activity_splits", "Laps / splits of one activity.")
 _by_id("weather", "get_activity_weather", "Weather during one activity.")
 
@@ -314,3 +325,35 @@ def export_range(from_: str = typer.Option(..., "--from", "-F"), to: str = TO_OP
         return Result({"files": list(files)})
 
     run(cmd, args, work)
+
+
+@app.command("effort")
+def effort(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
+           rpe: int | None = typer.Option(None, "--rpe", help="Perceived exertion 1-10."),
+           feel: str | None = typer.Option(None, "--feel", help="very-weak | weak | normal | strong | very-strong"),
+           dry_run: bool = DRY_RUN_OPT) -> None:
+    """Set perceived exertion and/or feel on one activity; only the given field(s) are sent."""
+    cmd = "activity effort"
+    args = {"activity_id": activity_id, "rpe": rpe, "feel": feel, "dry_run": dry_run}
+    summary: dict[str, int] = {}
+    echo: dict[str, Any] = {"activity_id": activity_id}
+    try:
+        if activity_id <= 0:
+            raise PaceError("bad_args", f"ACTIVITY_ID must be positive: {activity_id}")
+        if rpe is None and feel is None:
+            raise PaceError("bad_args", "Give --rpe and/or --feel.")
+        if rpe is not None:
+            summary["directWorkoutRpe"] = parse_rpe(rpe)
+            echo["rpe"] = rpe
+        if feel is not None:
+            label, summary["directWorkoutFeel"] = parse_feel(feel)
+            echo["feel"] = label
+    except PaceError as err:
+        fail(cmd, err)
+    path = f"/activity-service/activity/{activity_id}"
+    body = {"activityId": activity_id, "summaryDTO": summary}
+    # Prefix invalidation also drops ids that extend this one; harmless over-invalidation.
+    spec = WriteSpec(resource="activity_effort", action="update", method="connectapi", args=(path,),
+                     kwargs={"method": "PUT", "json": body}, payload={"path": path, "json": body}, echo=echo,
+                     invalidate=(f"get_activity:{activity_id}",))
+    run(cmd, args, lambda: run_write(spec, dry_run=dry_run))
