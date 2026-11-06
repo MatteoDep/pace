@@ -325,6 +325,16 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "totalActivities",
                      "createDate",
                  )),
+    EndpointSpec("gear", "activities", "Activities a gear item was used on (newest first, up to 1000).",
+                 "get_gear_activities", TTL_LIVE, id_arg="GEAR_UUID", id_type=str,
+                 default_fields=(
+                     "activityId",
+                     "activityName",
+                     "activityType.typeKey",
+                     "startTimeLocal",
+                     "distance",
+                     "duration",
+                 )),
     EndpointSpec("gear", "defaults", "Default gear per activity type.", "get_gear_defaults", TTL_STATIC, resolver="upn"),
     # goal
     EndpointSpec("goal", "list", "Active goals.", "get_goals", TTL_STATIC),
