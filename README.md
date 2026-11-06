@@ -39,7 +39,14 @@ pace workout push plan.json
 pace workout schedule <id> +1d
 pace log weight add 66.3
 pace log hydration 500
+pace activity effort <activity-id> --rpe 6 --feel strong
+pace activity gear <activity-id>
+pace gear link <activity-id> <gear-uuid>
+pace gear unlink <activity-id> <gear-uuid>
 ```
+
+To review which shoes are on many activities, avoid one `activity gear` call per activity (the rate limit is 10 calls a minute).
+Run `pace gear list`, then `pace gear activities <uuid>` once per shoe, then `pace activity list` for the range: an activity in no shoe's list has no gear.
 
 Writes require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 

@@ -20,7 +20,7 @@ from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT
 from pace.shape import BUCKETS, apply, choose_bucket, prune, tz_offset_s
 from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
-app = typer.Typer(no_args_is_help=True, help="Workouts and activity history.")
+app = typer.Typer(no_args_is_help=True, help="Workouts and activity history; set effort (RPE/feel) on one activity.")
 
 _LIST_TTL = 600
 _DETAIL_TTL = 86400

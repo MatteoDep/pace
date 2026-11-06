@@ -37,7 +37,7 @@ GROUPS: dict[str, str] = {
     "wellness": "Daily health metrics.",
     "training": "Training load and performance metrics.",
     "device": "Registered Garmin devices.",
-    "gear": "Gear inventory and usage.",
+    "gear": "Gear inventory and usage; link/unlink gear on an activity.",
     "goal": "User goals and personal records.",
     "profile": "User profile information.",
 }

@@ -71,6 +71,10 @@ def test_writes_and_dsl_in_schema() -> None:
     assert data["workout_dsl"]["example"]["name"]
     assert set(data["writes"]) == {"dry_run", "result", "invalidation", "idempotency", "confirm"}
     assert "not idempotent" in data["writes"]["idempotency"]
+    assert {"update", "link", "unlink"} <= set(data["writes"]["result"]["action"].split(" | "))
+    assert {"activity_gear", "activity_effort"} <= set(data["writes"]["result"]["resource"].split(" | "))
+    assert "link" in data["writes"]["idempotency"]
+    assert "link" in data["groups"]["gear"] and "effort" in data["groups"]["activity"]
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete", "activity effort",

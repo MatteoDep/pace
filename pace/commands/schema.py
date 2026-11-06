@@ -46,13 +46,15 @@ RANGE_FLAGS = ["--from", "--to", "--days"]
 #: The write safety contract, shared by every mutating command.
 WRITES: dict[str, Any] = {
     "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body",
-    "result": {"action": "create | delete", "resource": "workout | weight | hydration | bp",
+    "result": {"action": "create | delete | update | link | unlink",
+               "resource": "workout | weight | hydration | bp | activity_gear | activity_effort",
                "id": "Garmin-assigned id when the response carries one, else null",
                "echo": "the values you sent, for confirmation"},
     "invalidation": "successful writes drop the affected cache keys",
     "idempotency": "Writes are not idempotent: a retry after an ambiguous failure duplicates the "
                    "workout/weigh-in/hydration. Verify with the matching read (workout list, "
-                   "log weight list, log bp list) before retrying.",
+                   "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
+                   "state, so repeating them is harmless.",
     "confirm": "agents must show the planned write and get an explicit yes before calling",
 }
 
@@ -178,7 +180,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
         "limits": LIMITS,
         "global_flags": GLOBAL_FLAGS,
         "notes": NOTES,
-        "groups": {**GROUPS, "activity": "Workouts and activity history.", "auth": "Authentication.",
+        "groups": {**GROUPS, "activity": "Workouts and activity history; set effort (RPE/feel) on one activity.", "auth": "Authentication.",
                    "cache": "Local cache.", "config": "User configuration.",
                    "workout": "Structured workouts: list, show, push, schedule, delete.",
                    "log": "Health logs written to Garmin Connect."},

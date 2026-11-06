@@ -133,20 +133,38 @@ Documented in `pace schema` and the skill; never repeated per response.
 
 ### Writes
 
-Eight commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`.
+Eleven commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`.
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
 `--dry-run` makes no network call.
 It returns `{"dry_run": true, "payload": ...}`: the exact call pace will make, so a caller can inspect precisely what would be sent before committing to it.
-The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands show `{"method": ..., ...arguments}` for the garminconnect call.
+The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands and `gear link`/`gear unlink` show `{"method": ..., ...arguments}` for the garminconnect call; `activity effort` shows `{"path": ..., "json": ...}` like `workout schedule`.
 
 `--date D` on `log weight add` and `log bp add` timestamps the entry at 12:00 local time of D, not midnight, so a day's entry cannot land in the neighbouring day once Garmin converts it to GMT.
 `log hydration` and the two deletes take a plain date (`cdate`) instead.
 
-Without `--dry-run`, a successful write returns `{"action": "create"|"delete", "resource": "workout"|"weight"|"hydration"|"bp", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
+Without `--dry-run`, a successful write returns `{"action": "create"|"delete"|"update"|"link"|"unlink", "resource": "workout"|"weight"|"hydration"|"bp"|"activity_gear"|"activity_effort", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
+`gear link` and `gear unlink` return `link`/`unlink` on `activity_gear`; `activity effort` returns `update` on `activity_effort`; all three have `id: null`.
 A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
 
 Deletes are limited to workouts, weigh-ins and blood-pressure readings; activities and other resources are never deleted through `pace`.
+The only activity edits are gear links and perceived effort; no other activity field is ever written.
+
+`activity effort ID [--rpe 1-10] [--feel LABEL]` sends only the given field(s) inside `summaryDTO`.
+Garmin stores RPE x10 and feel in steps of 25:
+
+| user value | stored |
+|---|---|
+| `--rpe N` (1-10) | `directWorkoutRpe` = N x 10 |
+| `--feel very-weak` / `weak` / `normal` / `strong` / `very-strong` | `directWorkoutFeel` = 0 / 25 / 50 / 75 / 100 |
+
+Feel labels match case-insensitively and accept `_` for `-`.
+`activity show` reports the same values back as top-level `rpe` (1-10; a stored value that is not a multiple of 10 reads as e.g. `4.5`) and `feel` (label); either key is absent when unset or when the stored feel is not one of the five steps.
+
+`gear link ACTIVITY_ID GEAR_UUID` adds one gear item to an activity and `gear unlink` removes one; `GEAR_UUID` is the 32-hex `uuid` from `gear list` (case-insensitive).
+To change shoes, compose the two writes.
+`activity gear ID` reads an activity's gear (cached 5 minutes, since gear changed in the Garmin app cannot be invalidated by `pace`).
+To review gear across many activities, do not call `activity gear` once per activity (10 calls a minute): `gear list`, then `gear activities UUID` once per item, then `activity list` for the range; an activity in no item's list has no gear.
 There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
 Confirmation before a real write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
 
@@ -154,7 +172,8 @@ A successful write drops the cache keys it affects (`data.writes.invalidation` i
 Write commands themselves never read the cache: every write always calls Garmin directly.
 A cache failure during that invalidation is logged (`--verbose`) and ignored: the write already landed on Garmin, so it is still reported as `ok: true`.
 
-Writes are not idempotent: a retry after an ambiguous failure duplicates the workout/weigh-in/hydration.
+Creating writes are not idempotent: a retry after an ambiguous failure duplicates the workout/weigh-in/hydration.
+`gear link`, `gear unlink` and `activity effort` set a state, so repeating them is harmless.
 Verify with the matching read (`workout list`, `log weight list`, `log bp list`) before retrying.
 The `network` and `rate_limited` hints say so too, since both otherwise read as "retry once".
 

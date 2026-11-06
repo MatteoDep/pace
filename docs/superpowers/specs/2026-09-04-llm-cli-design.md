@@ -377,9 +377,10 @@ Documented in README.
 
 - Write commands never read or write the response cache; a successful write invalidates cache keys for the affected resource and date (e.g. `get_hydration_data:<date>`).
 - Every write command accepts `--dry-run`: no network call, `ok: true`, `data: {"dry_run": true, "payload": <exact Garmin payload>}`.
-- Success envelope: `data: {"action": "create" | "delete", "resource": "workout" | "weight" | "hydration" | "bp", "id": ..., "echo": <compact input as parsed>}`.
+- Success envelope: `data: {"action": "create" | "delete" | "update" | "link" | "unlink", "resource": "workout" | "weight" | "hydration" | "bp" | "activity_gear" | "activity_effort", "id": ..., "echo": <compact input as parsed>}`.
+  `update`, `link`, `unlink` and the two `activity_*` resources were added by `docs/superpowers/specs/2026-11-06-gear-and-effort-design.md`.
 - Deletes are allowed only for resources this CLI creates: workouts, weigh-ins, blood pressure readings.
-- Permanently excluded: activity delete or edit, gear assignment, manual activity creation, activity file upload.
+- Permanently excluded: activity delete, activity edits other than gear links and RPE/feel (amended 2026-11-06, see `docs/superpowers/specs/2026-11-06-gear-and-effort-design.md`), manual activity creation, activity file upload.
 - No `--yes` flag.
   Confirmation is the skill's job (show the planned write, get an explicit yes) because an agent would always pass a flag.
 
