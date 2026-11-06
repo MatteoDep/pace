@@ -84,3 +84,17 @@ def test_gear_activities_registered(fake_api) -> None:
     assert doc["data"] == [{"activityId": 1, "activityName": "r", "activityType": {"typeKey": "running"},
                             "startTimeLocal": "2026-11-03 20:09:31", "distance": 1.0, "duration": 2.0}]
     assert fake_api["calls"][0][:2] == ("get_gear_activities", (U,))
+
+
+@pytest.mark.parametrize("cmd", ["activities", "stats"])
+@pytest.mark.parametrize("bad", ["01234567-89ab-cdef-0123-456789abcdef", "Altra", "../x"])
+def test_gear_reads_reject_bad_uuid(fake_api, cmd, bad) -> None:
+    """`get_gear_activities` turns a 404 into [], so an unchecked uuid would read as "no gear"."""
+    res = runner.invoke(app, [cmd, bad])
+    assert res.exit_code == 2 and _doc(res)["error"]["code"] == "bad_args" and fake_api["calls"] == []
+
+
+def test_gear_reads_normalise_uuid_case(fake_api) -> None:
+    fake_api["resp"] = []
+    doc = _doc(runner.invoke(app, ["activities", U.upper()]))
+    assert doc["args"]["gear_uuid"] == U and fake_api["calls"][0][:2] == ("get_gear_activities", (U,))

@@ -139,9 +139,12 @@ def build_command(app: typer.Typer, spec: EndpointSpec) -> None:
     def command(**kw: Any) -> None:
         args: dict[str, Any] = {}
         dates: list[date] | None = None
+        ident = kw.get("ident")
         try:
             if spec.id_arg is not None:
-                args[spec.id_arg.lower()] = kw["ident"]
+                if spec.id_check is not None:
+                    ident = spec.id_check(ident)
+                args[spec.id_arg.lower()] = ident
             if spec.dated is not None:
                 start, end = resolve_range(kw["from_"], kw["to"], kw["days"])
                 dates = list(date_range(start, end))
@@ -153,7 +156,7 @@ def build_command(app: typer.Typer, spec: EndpointSpec) -> None:
             fail(spec.command, err)
         args.update(shape_echo)
         run(spec.command, args, lambda: fetch_spec(
-            spec, ident=kw.get("ident"), dates=dates, no_cache=kw["no_cache"],
+            spec, ident=ident, dates=dates, no_cache=kw["no_cache"],
             fields=fields, bucket=bucket, raw=kw["raw"]))
 
     command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]

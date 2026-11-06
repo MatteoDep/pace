@@ -1,8 +1,10 @@
 """Declarative endpoint registry: one EndpointSpec per simple Garmin read."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
+from pace.ids import validate_uuid
 from pace.shape import SeriesSpec
 
 __all__ = ["EndpointSpec", "SeriesSpec", "REGISTRY", "GROUPS", "specs_for"]
@@ -27,6 +29,8 @@ class EndpointSpec:
     default_fields: tuple[str, ...] = ()
     series: tuple[SeriesSpec, ...] = ()
     unwrap: Literal[None, "first"] = None
+    #: Validates/normalises the id argument before any call; raises PaceError(bad_args).
+    id_check: Callable[[Any], Any] | None = None
 
     @property
     def command(self) -> str:
@@ -318,7 +322,7 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "maximumMeters",
                  )),
     EndpointSpec("gear", "stats", "Usage stats for one gear item.", "get_gear_stats", TTL_STATIC,
-                 id_arg="GEAR_UUID", id_type=str,
+                 id_arg="GEAR_UUID", id_type=str, id_check=validate_uuid,
                  default_fields=(
                      "uuid",
                      "totalDistance",
@@ -326,7 +330,7 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "createDate",
                  )),
     EndpointSpec("gear", "activities", "Activities a gear item was used on (newest first, up to 1000).",
-                 "get_gear_activities", TTL_LIVE, id_arg="GEAR_UUID", id_type=str,
+                 "get_gear_activities", TTL_LIVE, id_arg="GEAR_UUID", id_type=str, id_check=validate_uuid,
                  default_fields=(
                      "activityId",
                      "activityName",

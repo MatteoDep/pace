@@ -106,3 +106,13 @@ async def test_dns_not_found_stays_network(monkeypatch) -> None:
     _raising_api(monkeypatch, GarminConnectConnectionError("Failed to resolve host: name not found"))
     ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
     assert not ok and err is not None and err.code == "network"
+
+
+@pytest.mark.asyncio
+async def test_garth_http_400_keeps_garmin_message(monkeypatch) -> None:
+    """Writes (upload_workout, add_weigh_in, ...) call garth directly; a 400 there is a rejected
+    payload, not "feature not enabled", and the message must survive."""
+    _raising_api(monkeypatch, _garth_http_error(400))
+    ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
+    assert not ok and err is not None and (err.code, err.http) == ("internal", 400)
+    assert "Error in request" in err.message

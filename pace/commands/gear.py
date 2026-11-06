@@ -1,25 +1,13 @@
 """Gear commands: reads generated from pace.spec.REGISTRY, plus link/unlink writes."""
 
-import re
-
 import typer
 
 from pace.envelope import PaceError, fail, run
 from pace.factory import build_group
+from pace.ids import validate_uuid
 from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
 app = build_group("gear")
-
-_UUID = re.compile(r"[0-9a-f]{32}")
-
-
-def validate_uuid(value: str) -> str:
-    """Garmin gear uuids are 32 lowercase hex chars; the value is interpolated into a URL path."""
-    norm = value.strip().lower()
-    if not _UUID.fullmatch(norm):
-        raise PaceError("bad_args", f"GEAR_UUID must be 32 hex chars (see `pace gear list`): {value!r}")
-    return norm
-
 
 def _link_command(verb: str, method: str, help_: str) -> None:
     def command(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),

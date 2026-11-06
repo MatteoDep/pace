@@ -95,7 +95,12 @@ async def safe_call(
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
         except GarthHTTPError as err:
-            return False, None, classify_http(_garth_status(err), str(err))
+            code = _garth_status(err)
+            if code == 400:
+                # Raised by library writes that call garth directly (upload_workout, add_weigh_in,
+                # gear link, ...): a rejected payload, not "endpoint not enabled". Keep Garmin's text.
+                return False, None, ApiError("internal", f"HTTP error: {err}", 400)
+            return False, None, classify_http(code, str(err))
         except FileNotFoundError:
             return False, None, ApiError("auth_required", "No valid tokens. Run `pace auth login`.")
         except GarminConnectAuthenticationError as err:
