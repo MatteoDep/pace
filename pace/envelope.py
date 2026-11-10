@@ -20,6 +20,8 @@ HINTS: dict[str, str] = {
                     " For writes, verify with the matching read before retrying.",
     "not_found": "The id or date does not exist on Garmin Connect.",
     "endpoint_unavailable": "Feature not enabled for this account or device; do not retry.",
+    "rejected": "Garmin refused the write; the message gives its reason. Fix the input or the data on"
+                " Garmin Connect, then retry. Do not retry unchanged.",
     "network": "Transient. Retry once after a few seconds."
                " For writes, verify with the matching read before retrying.",
     "internal": "Unexpected. Re-run with --verbose for cache/fetch logs and report the message.",

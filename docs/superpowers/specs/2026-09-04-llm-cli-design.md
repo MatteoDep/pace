@@ -134,7 +134,8 @@ Source of truth: `docs/CONTRACT.md` (this section is duplicated there in full).
 | `auth_required` | 3 | no tokens, 401, garminconnect auth error |
 | `rate_limited` | 4 | 429 or garminconnect too-many-requests |
 | `not_found` | 1 | 404 |
-| `endpoint_unavailable` | 1 | 400, 403 (feature not enabled for account) |
+| `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
+| `rejected` | 1 | 4xx on a write other than 401/403/404/429: Garmin refused the payload, `message` carries its reason |
 | `network` | 1 | connection failure, 5xx |
 | `internal` | 1 | anything else |
 
@@ -280,7 +281,7 @@ Emits, inside the standard envelope:
  "units": {"distance": "m", "duration": "s", "speed": "m/s", "elevation": "m",
            "heart_rate": "bpm", "timestamps": "epoch ms GMT; *Local fields are ISO local"},
  "exit_codes": {"0": "ok", "1": "api error", "2": "bad_args", "3": "auth_required", "4": "rate_limited"},
- "error_codes": ["bad_args", "auth_required", "rate_limited", "not_found", "endpoint_unavailable", "network", "internal"],
+ "error_codes": ["bad_args", "auth_required", "rate_limited", "not_found", "endpoint_unavailable", "rejected", "network", "internal"],
  "global_flags": {"--fields": "...", "--bucket": "...", "--raw": "...", "--no-cache": "...", "--verbose": "..."},
  "commands": [
    {"name": "wellness sleep", "help": "...", "keyed": "date",
@@ -315,7 +316,7 @@ Frontmatter: `name: pace`; description triggers on Garmin, training, running, cy
 5. Units: fixed SI.
    Convert for the user: km, min/km (or km/h for cycling), h:mm for durations, bpm, m.
    Use `*Local` timestamps.
-6. Errors: `rate_limited` -> wait 60 s, retry once, then stop and say so; `endpoint_unavailable` -> feature not enabled on the account, do not retry.
+6. Errors: `rate_limited` -> wait 60 s, retry once, then stop and say so; `endpoint_unavailable` -> feature not enabled on the account, do not retry; `rejected` -> Garmin refused a write, read its reason, fix the input or the Garmin-side data, do not retry unchanged.
 7. Session start: run `pace auth status` and `pace diary show` together; use the diary profile before asking the user anything.
 8. Writes (`workout push/schedule/delete`, `log *`): never unprompted, never during a check-in the user did not ask to act on.
    Show the planned write as a table, get an explicit yes, then call.

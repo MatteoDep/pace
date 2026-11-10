@@ -1,6 +1,7 @@
 """Async wrapper around the sync Garmin Connect client."""
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -84,6 +85,27 @@ def _garth_status(err: GarthHTTPError) -> int | None:
     return _status_from_text(str(err))
 
 
+_BODY_MAX = 300
+# Statuses with their own meaning; any other 4xx from a write is Garmin refusing the payload.
+_NOT_REJECTIONS = {401, 403, 404, 429}
+
+
+def _rejection(status: int | None, err: GarthHTTPError) -> ApiError | None:
+    """A refused write as `rejected`, with Garmin's reason: the JSON body's `message`, else the raw
+    body with whitespace collapsed, else garth's text. garth's own message drops the body."""
+    if status is None or not 400 <= status < 500 or status in _NOT_REJECTIONS:
+        return None
+    resp = getattr(getattr(err, "error", None), "response", None)
+    text = getattr(resp, "text", "") or ""
+    try:
+        message = json.loads(text).get("message")
+    except (ValueError, AttributeError):
+        message = None
+    reason = message.strip() if isinstance(message, str) else ""
+    reason = reason or " ".join(text.split()) or str(err)
+    return ApiError("rejected", f"Garmin rejected the request ({status}): {reason[:_BODY_MAX]}", status)
+
+
 async def safe_call(
     method_name: str, *args: Any, **kwargs: Any
 ) -> tuple[bool, Any, ApiError | None]:
@@ -95,17 +117,22 @@ async def safe_call(
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
         except GarthHTTPError as err:
+            # Raised by library writes that call garth directly (gear link, upload_workout,
+            # add_weigh_in, ...): a 4xx there is a refused payload, not "endpoint not enabled".
             code = _garth_status(err)
-            if code == 400:
-                # Raised by library writes that call garth directly (upload_workout, add_weigh_in,
-                # gear link, ...): a rejected payload, not "endpoint not enabled". Keep Garmin's text.
-                return False, None, ApiError("internal", f"HTTP error: {err}", 400)
-            return False, None, classify_http(code, str(err))
+            return False, None, _rejection(code, err) or classify_http(code, str(err))
         except FileNotFoundError:
             return False, None, ApiError("auth_required", "No valid tokens. Run `pace auth login`.")
         except GarminConnectAuthenticationError as err:
             return False, None, ApiError("auth_required", f"Auth issue: {err}")
         except GarminConnectConnectionError as err:
+            cause = err.__cause__
+            if method_name == "connectapi" and isinstance(cause, GarthHTTPError):
+                # pace calls `connectapi` itself only for writes (workout schedule/delete, activity
+                # effort); the library wraps garth's error, which still carries Garmin's reason.
+                rejected = _rejection(_garth_status(cause), cause)
+                if rejected:
+                    return False, None, rejected
             code = _status_from_text(str(err))
             if code is None and "gear not found" in str(err).lower():
                 # The library's own 404 branches (e.g. gear link/unlink) drop the status code.

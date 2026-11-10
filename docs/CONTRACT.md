@@ -49,7 +49,8 @@
 | `auth_required` | 3 | no tokens, 401, garminconnect auth error |
 | `rate_limited` | 4 | 429 or garminconnect too-many-requests |
 | `not_found` | 1 | 404 |
-| `endpoint_unavailable` | 1 | 400, 403 (feature not enabled for account) |
+| `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
+| `rejected` | 1 | 4xx on a write other than 401/403/404/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
 | `network` | 1 | connection failure, 5xx |
 | `internal` | 1 | anything else |
 | `internal` | 130 | aborted by user (Ctrl-C) |

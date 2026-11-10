@@ -2,11 +2,12 @@
 
 import pytest
 import requests
-from garminconnect import GarminConnectConnectionError
+from garminconnect import Garmin, GarminConnectConnectionError
 from garth.exc import GarthHTTPError
 
 from pace.api import ApiError, _status_from_text, classify_http, safe_call
 from pace.ratelimit import RateLimiter
+from pace.envelope import HINTS, PaceError, exit_code
 
 
 def test_status_from_parenthesised_code() -> None:
@@ -66,13 +67,16 @@ def _raising_api(monkeypatch, exc: Exception) -> None:
         def add_gear_to_activity(self, *args, **kwargs):
             raise exc
 
+        connectapi = get_activity = add_gear_to_activity
+
     monkeypatch.setattr("pace.api.get_api", lambda: FakeApi())
     monkeypatch.setattr("pace.api.limiter", RateLimiter(min_interval=0.0))
 
 
-def _garth_http_error(status: int) -> GarthHTTPError:
+def _garth_http_error(status: int, body: str = "") -> GarthHTTPError:
     resp = requests.Response()
     resp.status_code = status
+    resp._content = body.encode()
     return GarthHTTPError(msg="Error in request", error=requests.HTTPError(response=resp))
 
 
@@ -108,11 +112,92 @@ async def test_dns_not_found_stays_network(monkeypatch) -> None:
     assert not ok and err is not None and err.code == "network"
 
 
+_START_DATE = '{"message":"Gear\'s start date must be before activity\'s start date","error":"BadRequestException"}'
+
+
+def _wrapped_by_connectapi(status: int, body: str) -> GarminConnectConnectionError:
+    """What garminconnect's `connectapi` raises: its own error, chained to garth's."""
+    try:
+        try:
+            raise _garth_http_error(status, body)
+        except GarthHTTPError as e:
+            raise GarminConnectConnectionError(f"API client error ({status}): {e}") from e
+    except GarminConnectConnectionError as wrapped:
+        return wrapped
+
+
 @pytest.mark.asyncio
-async def test_garth_http_400_keeps_garmin_message(monkeypatch) -> None:
-    """Writes (upload_workout, add_weigh_in, ...) call garth directly; a 400 there is a rejected
-    payload, not "feature not enabled", and the message must survive."""
+@pytest.mark.parametrize("status", [400, 409, 422])
+async def test_direct_garth_4xx_is_rejected_with_garmin_reason(monkeypatch, status) -> None:
+    """Writes that call garth directly (gear link, upload_workout, add_weigh_in, ...): Garmin explains
+    a refused payload in the JSON body, and that reason must reach the caller."""
+    _raising_api(monkeypatch, _garth_http_error(status, _START_DATE))
+    ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
+    assert not ok and err is not None and (err.code, err.http) == ("rejected", status)
+    assert err.message == f"Garmin rejected the request ({status}): Gear's start date must be before activity's start date"
+    pe = PaceError.from_api(err)
+    assert pe.hint == HINTS["rejected"] and exit_code(pe.code) == 1
+
+
+@pytest.mark.asyncio
+async def test_connectapi_write_400_is_rejected_with_garmin_reason(monkeypatch) -> None:
+    """workout schedule/delete and activity effort go through the library's `connectapi`, which wraps
+    garth's error; the reason is still on the chained cause."""
+    _raising_api(monkeypatch, _wrapped_by_connectapi(400, _START_DATE))
+    ok, _, err = await safe_call("connectapi", "/x", method="PUT")
+    assert not ok and err is not None and (err.code, err.http) == ("rejected", 400)
+    assert "Gear's start date must be before activity's start date" in err.message
+
+
+@pytest.mark.asyncio
+async def test_library_read_400_stays_endpoint_unavailable(monkeypatch) -> None:
+    """Reads reach 400 through the library's wrappers; that still means "not enabled for this account"."""
+    _raising_api(monkeypatch, _wrapped_by_connectapi(400, _START_DATE))
+    ok, _, err = await safe_call("get_activity", 1)
+    assert not ok and err is not None and err.code == "endpoint_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("body", "expected"), ids=["trimmed", "capped", "blank-message", "json-list", "html"], argvalues=[
+    ('{"message": "  too far  "}', "too far"),
+    ('{"message": "' + "m" * 1000 + '"}', "m" * 300),
+    ('{"message": "   "}', '{"message": " "}'),
+    ('["not", "a dict"]', '["not", "a dict"]'),
+    ("<html>\n  <body>Bad   request</body>\n</html>" + "x" * 1000, ("<html> <body>Bad request</body> </html>" + "x" * 1000)[:300]),
+])
+async def test_rejection_reason_fallbacks(monkeypatch, body, expected) -> None:
+    _raising_api(monkeypatch, _garth_http_error(400, body))
+    ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
+    assert not ok and err is not None and err.message == f"Garmin rejected the request (400): {expected}"
+
+
+@pytest.mark.asyncio
+async def test_rejection_with_empty_body_keeps_garth_text(monkeypatch) -> None:
     _raising_api(monkeypatch, _garth_http_error(400))
     ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
-    assert not ok and err is not None and (err.code, err.http) == ("internal", 400)
-    assert "Error in request" in err.message
+    assert not ok and err is not None and err.code == "rejected" and "Error in request" in err.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "code"), [(403, "endpoint_unavailable"), (404, "not_found")])
+async def test_connectapi_write_403_404_keep_their_codes(monkeypatch, status, code) -> None:
+    _raising_api(monkeypatch, _wrapped_by_connectapi(status, _START_DATE))
+    ok, _, err = await safe_call("connectapi", "/x", method="PUT")
+    assert not ok and err is not None and err.code == code
+
+
+@pytest.mark.asyncio
+async def test_real_library_connectapi_wrapper_keeps_reason(monkeypatch) -> None:
+    """Pins garminconnect's contract: `Garmin.connectapi` must chain garth's error (`from e`), or
+    workout schedule/delete and activity effort lose Garmin's reason again."""
+    api = Garmin()
+
+    def refuse(*args, **kwargs):
+        raise _garth_http_error(400, _START_DATE)
+
+    monkeypatch.setattr(api.garth, "connectapi", refuse)
+    monkeypatch.setattr("pace.api.get_api", lambda: api)
+    monkeypatch.setattr("pace.api.limiter", RateLimiter(min_interval=0.0))
+    ok, _, err = await safe_call("connectapi", "/x", method="PUT")
+    assert not ok and err is not None and err.code == "rejected"
+    assert "Gear's start date must be before activity's start date" in err.message
