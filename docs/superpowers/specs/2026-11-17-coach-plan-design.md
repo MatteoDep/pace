@@ -1,0 +1,352 @@
+# Coach: Diary, Training Plan, Charts and Skill: Design
+
+Date: 2026-11-17
+Status: approved by the user, 2026-11-17.
+Extends `docs/superpowers/specs/2026-09-04-llm-cli-design.md` (sections 5 skill, 8 diary).
+Supersedes the unimplemented plan `docs/superpowers/plans/2026-09-06-diary-and-skill.md`: its diary design is kept and extended here, and a new plan replaces it.
+
+## Why
+
+The user wants a running coach that lives on their laptop, reads their Garmin data, builds a training plan together with them, asks how workouts went, and adjusts the plan from their answers and the data.
+The long-term shape is a proactive coach reached through a dedicated Telegram bot.
+This spec is the first of three projects:
+
+1. **Coach brain (this spec):** athlete diary, training plan, charts, and the Claude Code skill that coaches.
+   Usable from a normal Claude Code session.
+2. Proactive runtime: a separate Telegram bot (its own BotFather bot, its own `TELEGRAM_STATE_DIR`, its own Claude Code session, not the bot used for leftovers/whatdidido) that runs check-ins on a schedule.
+3. Optional data webapp (Telegram Mini App), only if daily interactive dashboards turn out to be wanted.
+
+Projects 2 and 3 get their own brainstorm.
+Everything in project 1 must work the same when project 2 drives it, so no step may depend on the user sitting at a terminal.
+
+## What the coach is
+
+- **Collaborative, not prescriptive.**
+  The user brings goals, preferences, constraints and opinions.
+  The coach does not adopt one named system (Daniels, Pfitzinger, 80/20, Lydiard, ...) and impose it.
+  It builds the plan with the user from well-tested principles.
+- **Evidence-grounded and willing to challenge.**
+  When the user proposes something that goes against established principles, research, or the user's own history, the coach says so: the concern, the reason, the principle or source, and how confident the evidence is.
+  Then the user decides.
+  The decision and the user's reason are recorded; the coach later checks whether it worked.
+- **Gets to know the athlete itself.**
+  Intake (running history, current volume, PBs, goals, races, availability, injuries, other sports, strength routine, preferences) is the skill's job, done conversationally and stored in the diary.
+- **Running first.**
+  Plans are built for running.
+  The coach also advises on other endurance sports (cycling, swimming, hiking) and on strength and general wellbeing (sleep, recovery, weight), and can put those in the plan as sessions.
+- **Checks in.**
+  It asks how each workout went (RPE, feel, free comment) and keeps body weight current.
+
+## Goals
+
+1. Durable athlete memory: profile, intake, decisions, feedback, constraints, injuries (`pace diary`).
+2. A structured training plan stored in pace, built and edited one session at a time, with optional batches, not tied to weeks (`pace plan`).
+3. Push individual plan sessions to Garmin as scheduled structured workouts, one at a time or several in one call.
+4. Planned versus done: match Garmin activities to plan sessions and report done, missed, modified, unplanned.
+5. Charts as PNG files (`pace chart`), usable in a terminal and sendable as Telegram photos later.
+6. A persistent training load dashboard as a private Claude artifact, kept current by the skill; further deep dives as artifacts on request.
+7. The coaching skill: data access, intake, coaching principles with pushback, check-ins (workout feedback, weight), presentation.
+
+## Non-goals
+
+- Telegram bot, scheduling, background running (project 2).
+- Telegram Mini App or any self-hosted web UI (project 3).
+- Derived load models (CTL/ATL/TSB, ACWR) as CLI features.
+  Weekly sums for charts and status are in scope; anything beyond is computed inline by the skill with the arithmetic shown, as today.
+- Pushing strength or other non-DSL sessions to Garmin: the workout DSL covers running, cycling, swimming, walking, hiking only.
+  Strength sessions live in the plan as text.
+- Garmin's own training plans (Garmin Coach, adaptive plans): pace keeps its own plan.
+- Medical diagnosis.
+
+## Anti-goals
+
+- A coach that imposes a system or overrides the user's call after the user has decided.
+- A coach that agrees with everything: pushback on evidence-backed concerns is required, not optional.
+- Invented citations or overstated evidence.
+  If the skill is not sure a source says something, it states the principle without a citation, or looks it up.
+- Garmin and the plan drifting apart: a session pushed twice creating duplicate workouts on the watch, or a pace session deleted while its Garmin workout stays scheduled.
+- Writes the user did not approve (the section 7 write contract of the 2026-09-04 spec stays unchanged).
+- Nagging: a check-in question (feedback on one activity, weight) is asked once per session and not repeated after the user declines it.
+
+## Constraints
+
+- All existing CLI contracts hold: one compact JSON envelope on stdout, error codes and exit codes, `--dry-run` on every Garmin write with the exact payload, writes never read the cache, success invalidates cache keys, no `--yes` flag, Garmin writes go through `pace/writes.py` `run_write`.
+- Local stores (diary, plan) are files under `$PACE_HOME` with atomic writes (`*.tmp` + `os.replace`), corrupt-file detection, never overwritten when corrupt (same rules as plan 3's diary).
+  Local writes need no `--dry-run`; they are reversible through the same commands.
+- Every new command is listed in `pace schema` (drift test).
+- New dependency: `matplotlib` (user approved), rendering with the non-interactive `Agg` backend.
+- ASCII only in skill and docs; markdown one sentence per line.
+
+## Approaches considered
+
+| | Approach | Trade-off |
+|---|---|---|
+| A | Plan as free-text diary entries; skill does the rest. | Cheapest, but done-vs-planned is guesswork and projects 2 and 3 cannot read the plan. |
+| **B (chosen)** | **Structured `pace plan` store next to the diary, with session-level commands, Garmin push, and status matching.** | **Bigger build and a schema to get right; makes "adjust based on how workouts went" rest on data.** |
+| C | Markdown files (`athlete.md`, `plan.md`) the agent edits directly. | Flexible and readable, but breaks the envelope contract and leaves matching and later UIs parsing prose. |
+
+The user chose B, with one change: set and push work one session at a time (batches optional), not week by week.
+
+Charts, considered:
+
+| | Approach | Trade-off |
+|---|---|---|
+| 1 | Telegram Mini App. | Interactive, but needs public HTTPS (tunnel or hosting), auth on Telegram `initData`, a frontend; down when the laptop sleeps. Deferred to project 3. |
+| **2 (chosen)** | **PNG from `pace chart`.** | **No hosting, works now and in Telegram as photos; not interactive.** |
+| **3 (chosen)** | **Private Claude artifact: one persistent dashboard plus on-request deep dives.** | **Interactive, no hosting; data goes to claude.ai, which the user accepts (same risk class as Garmin's servers).** |
+
+## 1. Diary (`pace diary`)
+
+The plan 3 design (2026-09-04 spec section 8, plan `2026-09-06-diary-and-skill.md` Global Constraints) is kept: `$PACE_HOME/diary.json`, `show`, `set`, `add`, `remove`, incrementing never-reused ids, atomic writes, corrupt-file handling, `active` = constraint and injury entries.
+
+Changes:
+
+- Profile keys extended for intake (designer's call: fixed keys keep the profile predictable for the skill and later UIs; free text inside each key keeps it flexible):
+  `goal`, `event.name`, `event.date`, `availability`, `background` (running history, current weekly volume, PBs), `other_sports`, `strength`, `preferences` (likes, dislikes, preferred long-run day, terrain, ...), `checkin.weight_days` (integer, default 7 when unset), `dashboard.url` (section 4).
+- Entry kinds extended: `note | plan | recommendation | feedback | constraint | injury | decision`.
+  `decision` records a pushback outcome: what the coach advised, what the user chose, the user's reason, and what to check later.
+  Text is free-form; the skill writes it in the shape `advised: ... / chose: ... / because: ... / check: ...`.
+- Entries may carry an optional `ref` naming what they are about: `session:<id>` or `activity:<id>`.
+  `diary show` gains `--ref R` to filter entries by it.
+  Purpose: workout feedback is attached to the session and activity it concerns, so the coach can read it back next to the data.
+- Entries may carry an optional `due` date (designer's call).
+  `decision` entries set it to when the outcome should be checked.
+  `diary show` returns a `due` list: entries whose `due` is today or earlier and that have no later entry closing them (the skill closes one by `diary set-due ID none` or by removing the date; builder picks the mechanism).
+  Purpose: due checks surface at session start without the model rereading every decision, which matters in unattended project 2 runs.
+- Check-in state is stored, so a new session (and every scheduled project 2 run) knows what was already asked (designer's call):
+  profile key `checkin.last` (ISO datetime of the last completed check-in), set by the skill at the end of the check-in;
+  a declined feedback question is recorded as `diary add --kind feedback --ref activity:<id> "declined"`, which counts as handled.
+  On the first run (`checkin.last` unset) the check-in looks back 7 days only.
+  `activity list` does not carry RPE/feel, so finding unrated activities costs one `activity show` per activity (rate limit 10 per minute); the `checkin.last` bound keeps that small, and activities that already have a `feedback` entry are skipped without a call.
+
+## 2. Plan (`pace plan`)
+
+### Store
+
+`$PACE_HOME/plan.json`, one current plan.
+
+```json
+{"plan": {"name": "Spring half 2027", "goal": "sub-1:45 half", "event_date": "2027-04-11",
+          "created": "2026-11-17", "updated": "2026-11-17"},
+ "blocks": [
+   {"id": "b1", "name": "Base", "phase": "base", "start": "2026-11-23", "end": "2027-01-17",
+    "focus": "aerobic volume, strides, 2x strength"}],
+ "sessions": [
+   {"id": 12, "date": "2026-11-25", "sport": "running", "title": "Easy + strides",
+    "purpose": "aerobic base, neuromuscular", "intensity": "easy", "block": "b1",
+    "target": {"duration_s": 3000, "distance_m": null, "elevation_m": null},
+    "workout": {"name": "...", "sport": "running", "steps": [...]},
+    "notes": "", "status": "planned",
+    "garmin": null, "activity_id": null}],
+ "next_id": 13}
+```
+
+- `sport`: the DSL sports plus `strength`, `mobility`, `other`.
+- `intensity`: `rest | easy | moderate | hard`, used for the intensity-distribution view.
+- `workout`: optional workout DSL object (the existing `pace workout push` format); required only to push.
+- `status`: stored states are `planned | pushed | skipped`; `done`, `missed`, `modified` are derived by `plan status` (below), never stored.
+  `skipped` means the user decided not to do it (recorded, not a failure).
+- `garmin`: after a push, `{"workout_id": ..., "schedule_id": ...}` (whatever ids Garmin returns that are needed to unschedule and delete).
+- `activity_id`: optional manual link to the activity that fulfilled the session; overrides automatic matching.
+- Blocks are optional grouping for periodization; sessions need not belong to one.
+- Starting a new plan (`plan new`) moves the current file to `$PACE_HOME/plans/<created>-<slug>.json` before writing the new one.
+  Old plans stay readable (`plan show --archived NAME`, builder may simplify) so the coach can learn from past blocks.
+
+### Commands
+
+Command names and semantics are the design; flag spelling is the builder's.
+
+| command | effect |
+|---|---|
+| `plan new --name N [--goal G] [--event-date D]` | archive current plan, start an empty one |
+| `plan show [--from D] [--to D] [--days N]` | plan header, blocks, sessions in range (default: from 7 days ago to 28 days ahead) |
+| `plan meta KEY VALUE` | set `name`, `goal`, `event_date` |
+| `plan block add/set/remove` | manage blocks |
+| `plan add FILE` | add one session or a list of sessions from a JSON file or stdin; returns them with ids |
+| `plan set ID [fields...]` | edit one session (date, title, purpose, intensity, target, workout, notes, block, status, activity) |
+| `plan remove ID...` | remove sessions |
+| `plan push ID... [--dry-run]` | for each session: create the Garmin workout from its DSL and schedule it on the session date; store `garmin` ids; status `pushed` |
+| `plan unpush ID... [--dry-run]` | delete the Garmin workout (and its schedule); clear `garmin`; status `planned` |
+| `plan status [--from D] [--to D] [--days N]` | planned vs done for the range (below) |
+
+Push rules (these prevent drift, an anti-goal):
+
+- Pushing a session that is already `pushed` replaces it: delete the old Garmin workout, push and schedule the new one.
+  This is how a changed date or changed workout reaches the watch.
+- `plan set` on a `pushed` session that changes `date` or `workout` succeeds locally and flags the session `stale: true` in its output and in `plan show` / `plan status`; the skill then pushes it again.
+- `plan remove` of a `pushed` session is refused with a hint to `unpush` first.
+- A batch push or unpush runs session by session and reports per-session results; one failure does not roll back the others (Garmin writes are not transactional and not idempotent; see `writes.idempotency`).
+- Deleting a pushed workout is within the "deletes only for resources this CLI creates" rule.
+- Pushed workouts stay in the Garmin library after their date (user's call): no automatic cleanup, because deleting a workout erases its calendar history.
+  Their names are prefixed `pace: ` so they stand apart in the Garmin app and a bulk cleanup stays possible later.
+- `plan new` is refused while the current plan has pushed sessions dated today or later (user's call); the hint says to `unpush` them first, which the skill does after the user's yes.
+  Past pushed sessions are left on Garmin.
+- Verified live on 2026-11-17: deleting a workout (`DELETE /workout-service/workout/{id}`) also removes every calendar schedule of it, past and future (both schedule ids return 404 afterwards, and neither appears in the calendar).
+  So `unpush` needs only the workout delete, and deleting a past session's workout would erase that day from the Garmin calendar.
+- Watch sync, verified the same day with the user's watch: a pushed and scheduled workout reaches the watch only through the training calendar (past and future days both shown); it does not appear in the watch's Workouts list.
+  pace never calls "send to device", so pushes do not clutter the watch.
+- Garmin calendar read, verified the same day: `GET /calendar-service/year/{Y}/month/{M}` with `M` 0-indexed returns `calendarItems`; a scheduled workout has `itemType: "workout"`, `id` (= the schedule id), `date`, `title`, `workoutId`.
+
+### Status matching
+
+`plan status` reads activities for the range (`activity list`, cache rules apply) and produces, per day:
+
+- `done`: a session matched to an activity, with planned target vs actual (duration, distance, avg pace, avg HR) and RPE/feel when set.
+- `modified`: matched, but actual duration or distance differs from target by more than 20 % (builder may tune; state the threshold in `pace schema`).
+- `missed`: past date, no match, not `skipped`.
+- `skipped`, `planned` (future), `pushed` (future).
+- `unplanned`: activities with no session.
+
+Matching: a session's manual `activity_id` wins.
+Otherwise, same local date and same sport family (running includes treadmill and trail; the builder maps Garmin activity type keys), one-to-one, closest target duration first.
+Strength/mobility sessions match Garmin strength or similar activity types where they exist, else stay unmatched unless linked manually.
+
+A new read command `workout calendar [range flags]` returns the scheduled workouts in the Garmin calendar for a range (endpoint verified live, see push rules above), so the skill can check an unplanned activity against what Garmin had scheduled.
+
+Output also carries range totals: planned vs actual time and distance per sport, and time per intensity (planned) for the intensity-distribution check.
+
+## 3. Weekly load (`pace load`) and charts (`pace chart`)
+
+### Weekly load
+
+`pace load [--weeks N] [--ahead M] [--sport running|all]` returns two series over the same range:
+
+- `weeks`: one row per ISO week (Monday start, local time):
+  `{"week": "2026-W47", "start": "2026-11-16", "actual": {"km": .., "elev_m": .., "hours": ..}, "planned": {"km": .., "elev_m": .., "hours": ..}}`.
+- `days`: one row per day with the same `actual` / `planned` sums for that day, plus `rolling7`: the sum of the 7 days ending on that day, in each metric.
+  For days up to today `rolling7` uses actual values; for future days it uses actual values for past days in the window and planned values for today onward, so the line continues into the projection without a jump.
+  (Today counts actual if any activity is recorded, else planned; the builder states the exact rule in `pace schema`.)
+
+- `actual` sums Garmin activities (distance, elevation gain, moving time) for past and current weeks.
+- `planned` sums plan session targets (`distance_m`, `elevation_m`, `duration_s`) for current and future weeks; sessions marked `skipped` are excluded.
+  A target left null contributes nothing and the row says how many sessions lacked it (`planned.missing`), so a projection with gaps is visible.
+- Defaults: 16 weeks back, ahead to the plan's last session (at most 26 weeks); `--sport running` (running family as in plan status) by default.
+- The rolling line is a 7-day sum computed daily (user's call): it moves within a week and equals the week's bar on each Sunday.
+
+This is the one source of weekly numbers for the dashboard, the `volume` chart and the skill.
+
+### Charts
+
+`pace chart KIND [range flags] [--out PATH]` renders one PNG with matplotlib and returns an envelope with `data: {"path": ..., "kind": ..., "range": ..., "summary": {...}}`.
+`summary` carries the numbers plotted (compact), so the agent can describe the chart without reading the image.
+Default output directory `$PACE_HOME/charts/`, file name `<kind>-<from>-<to>.png`; `--out` overrides.
+Data comes through the same fetch and cache paths as the read commands.
+
+Initial kinds:
+
+| kind | shows |
+|---|---|
+| `volume` | the same view as the dashboard (below), one metric per image (`--metric km|elev|hours`) |
+| `plan` | planned vs done per session over the range, colored by status |
+| `intensity` | weekly time by intensity (planned) and by HR zone (actual, where Garmin provides time in zones) |
+| `hrv` | overnight HRV and resting HR, with Garmin's baseline band where present |
+| `sleep` | sleep duration and score |
+| `weight` | weigh-ins with a 7-day rolling mean |
+| `activity ID` | one activity: pace, HR, elevation over distance |
+
+One fixed visual style (palette, fonts, sizes legible on a phone screen, 1200 px wide), so every chart looks like the same product.
+For one-off questions outside these kinds, the skill may render an ad hoc chart from `pace` JSON with a short Python script; the fixed kinds are the default.
+
+In a terminal session the skill passes `--out` into the current repo root (the user opens files from there) and gives the path.
+In project 2 the same file is sent as a Telegram photo.
+
+## 4. Artifacts
+
+The user accepts their training data on claude.ai (private artifacts); no per-publish confirmation is needed.
+
+### Training load dashboard (persistent)
+
+One private artifact, created once from the account's "Data" artifact type (dashboard template), its URL stored in the diary profile as `dashboard.url` so every session (and project 2) updates the same page.
+
+Default content, minimal by design (user's spec, extras are designer's call):
+
+- **Training load chart:** weekly bars, past weeks solid (actual), current and future weeks lighter (planned), the current week showing actual against planned.
+  A line drawn over the bars at daily resolution: the rolling 7-day sum (`days[].rolling7`), so it shows load building or dropping inside a week and meets each bar's top on Sunday; solid for past days, dashed for projected days (user's call).
+  A switch for the metric: km, D+ (elevation gain, m), hours.
+  Modeled on Strava's weekly progress chart, with the rolling 7-day line overlaid on the week bins.
+- **Sport switch** (designer's call): running (default) or all sports.
+- **This week line** (designer's call): done vs planned for the current week in the selected metric, and the next planned session.
+
+Data: the skill runs `pace load` (both sport settings) and `plan show` for the next session, and publishes them as the artifact's data, following the Data type's own instructions for how data reaches the page.
+The skill refreshes it at the end of a check-in and after plan changes.
+If the Data type cannot draw the bar plus moving-average overlay or the metric switch, the builder falls back to a plain artifact page with a charting library, keeping the same URL rule.
+
+The page belongs to the user's preferences: the skill may add, change or remove views when the user asks, and records the change as a `note` in the diary so later sessions keep it.
+
+### Deep dives
+
+On request ("show me my last block in detail"), the skill builds a separate artifact for the question, from data fetched through `pace`.
+Data on the page stays minimal: what the question needs, no raw dumps.
+
+No CLI work for artifacts beyond `pace load`.
+Project 2 risk, noted for its brainstorm: the scheduled Telegram session must have the Artifact tool to refresh the dashboard.
+
+## 5. Skill (`.claude/skills/pace/`)
+
+`SKILL.md` plus reference files loaded on demand: `reference.md` (command map, presentation tables, from plan 3) and `coaching.md` (principles and sources).
+Installed by symlink into `~/.claude/skills/pace` as planned.
+
+### A. Data access
+
+As in the 2026-09-04 spec section 5A, extended with `diary`, `plan`, `chart`.
+Presentation contract unchanged (scope line, one table, at most 3 notes, ASCII), plus: when a chart answers the question better than a table, render it and give the path; the table stays for exact numbers.
+
+### B. Session start (check-in)
+
+Run together: `auth status`, `diary show`, `plan status --days 7` (and future 7 days).
+Then, in this order, at most once each per session:
+
+1. Intake gaps: if profile keys the coach needs for the current question are empty, ask (open questions, one at a time), then `diary set`.
+   A full intake happens on the first session; afterwards only gaps and changes.
+2. Workout feedback: for each activity since the last check-in without RPE/feel or a `feedback` diary entry, ask how it went (RPE 1-10, feel, a free comment; pain or niggles explicitly).
+   The user's own statement of RPE/feel is the approval for that single `activity effort` write (designer's call, to keep check-ins light); the skill echoes what it wrote.
+   The comment goes to `diary add --kind feedback --ref activity:<id>` (and `session:<id>` when matched).
+   Reported pain becomes an `injury` entry after the user confirms the wording.
+3. Weight: if the latest weigh-in is older than `checkin.weight_days`, ask for it.
+   A number the user gives is the approval for one `log weight add`.
+   The coach never comments on weight in a way that pushes restriction; see guardrails.
+4. Plan drift: missed, modified, stale or unplanned items from `plan status` are mentioned and, when they matter, lead to a proposed adjustment.
+   For an unplanned activity, the skill first reads the Garmin calendar around its date (did the user move the planned workout?), then asks the user why, and records the answer as `feedback`; apart from this, pace assumes nobody edits pushed workouts on Garmin (user's call).
+5. Due decisions from `diary show` are checked against the data and discussed.
+6. End of check-in: `diary set checkin.last <now>`, refresh the dashboard (section 4).
+
+### C. Coaching
+
+- **Building the plan with the user:** ask what the user wants (goal, race, timeline, how they like to train), propose structure (blocks, weekly pattern, key sessions) with reasons, adjust to the user's input, then add sessions with `plan add`.
+  Push to Garmin only sessions the user approves, typically the next few days, via `plan push`, following the write contract (show, get a yes).
+- **Adjusting:** after feedback or drift, propose one concrete change with its reason, apply with `plan set` on yes, re-push stale sessions on yes.
+  Record the change as `recommendation` (or `decision` if the user overrode advice).
+- **Principles** (`coaching.md`), each with its evidence strength and sources the builder verifies before writing them in: progressive overload and gradual volume increase (and the weak evidence behind the "10 % rule"); intensity distribution (polarized and pyramidal models, mostly easy volume); specificity toward the event; periodization and recovery weeks; taper; long-run progression; strength training for runners (running economy, injury risk); sleep and recovery markers (HRV trends, resting HR) as context, not verdicts; low energy availability / RED-S as a reason never to push weight loss during heavy training; load-ratio metrics such as ACWR and their published critiques.
+  When a claim needs a source the file does not have, the skill may look it up on the web and cites what it found, or says it states the principle without a citation.
+- **Pushback protocol:** when the user's choice conflicts with a principle or with their own recorded history, state: the concern, the reason, the principle or source, and how strong the evidence is (strong, moderate, weak/expert opinion).
+  Offer an alternative.
+  Then accept the user's decision without repeating the argument, record a `decision` entry, and check it at the point named in `check:`.
+  Also challenge in the other direction: if the user's plan is sound and the coach's own earlier advice was weaker, say so.
+- **Using history:** before proposing load changes, look at the user's recorded responses (feedback, decisions, past plan status, HRV/sleep around hard weeks) and say what in their history supports the proposal.
+- **Framing:** observations, then one main recommendation, then what to watch next.
+- **Guardrails:** not medical advice; persistent HRV drop, rising resting HR, poor sleep, or pain suggest rest or easy days and, for pain that persists or worsens, seeing a professional; never diagnose; no weight-loss targets during heavy training blocks; no dieting advice beyond general guidance.
+
+### D. Other endurance sports, strength, wellbeing
+
+Advise on them with the same principles and the same pushback protocol.
+They enter the plan as sessions (`sport` other than running); cycling, swimming, walking and hiking may carry a DSL workout and be pushed; strength and mobility stay text.
+
+## 6. Tests and docs
+
+- Diary: plan 3's tests plus new profile keys, `decision` kind, `ref` and `--ref` filter.
+- Plan store: add/set/remove, id allocation, block validation, session validation (date, sport, intensity, DSL validated by the existing translator on add/set), archive on `new`, corrupt file.
+- Plan push/unpush: dry-run payloads, replace-on-repush, refuse remove of pushed, stale flag, batch partial failure reporting (fixture-driven, no network).
+- Plan status: matching rules (manual link wins, sport family, one-to-one, closest duration, modified threshold, missed vs skipped, unplanned), totals.
+- Load: week bucketing (Monday start, local time, week spanning a month or year boundary), actual vs planned split for the current week, skipped excluded, null targets counted in `missing`, sport filter, `rolling7` equals the week total on Sundays, the actual-to-planned switch at today.
+- Chart: each kind renders a non-empty PNG from fixtures; `summary` numbers equal the plotted data; `--out` honored.
+- Schema drift test covers new groups; skill drift test (plan 3) covers `plan` and `chart`.
+- Docs: `docs/CONTRACT.md` (diary, plan, chart sections), `README.md` (commands, skill install), this spec's post-hoc notes after implementation.
+
+## Left to the builder
+
+- Flag spelling, sub-command grouping details, exact JSON field names beyond those fixed above.
+- Garmin activity type key mapping to sport families.
+- Garmin ids needed for unschedule and delete, verified live.
+- Chart styling details within the stated constraints.
+- Whether `plan add` accepts DSL inline only or also a path to a DSL file.
+- Task order, with the diary first (the skill and plan status depend on it), then plan store, push, status, load, charts, skill, dashboard.
