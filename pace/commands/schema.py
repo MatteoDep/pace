@@ -54,12 +54,17 @@ WRITES: dict[str, Any] = {
     "result": {"action": "create | delete | update | link | unlink",
                "resource": "workout | weight | hydration | bp | activity_gear | activity_effort",
                "id": "Garmin-assigned id when the response carries one, else null",
-               "echo": "the values you sent, for confirmation"},
+               "echo": "the values you sent, for confirmation",
+               "batch": "plan push/unpush return {results, done, failed}: results[] = {id, ok, action "
+                        "(pushed | skipped | unpushed | noop; null when refused), steps, error, garmin, session}, "
+                        "results[].steps[] = {step: delete | upload | schedule, payload, id}; "
+                        "ok: false only when every session failed and no step completed"},
     "invalidation": "successful writes drop the affected cache keys",
     "idempotency": "Writes are not idempotent: a retry after an ambiguous failure duplicates the "
                    "workout/weigh-in/hydration. Verify with the matching read (workout list, "
                    "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
-                   "state, so repeating them is harmless.",
+                   "state, so repeating them is harmless. "
+                   "plan push skips unchanged pushed sessions (unless --force) and records every landed id.",
     "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
                "local_write commands (diary) are outside this rule; the coaching skill decides when to ask about them.",
 }
@@ -171,6 +176,8 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "plan add", "help": "Add sessions from a JSON file or - (one session or a list; all or nothing).", "keyed": "none", "args": ["FILE"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan set", "help": "Change a session; only the given fields change; `none` clears duration, distance, elevation, block, activity and workout.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--title", "--purpose", "--intensity", "--sport", "--block", "--duration", "--distance", "--elevation", "--notes", "--status", "--activity", "--workout"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan remove", "help": "Delete sessions; refused for any with a Garmin workout.", "keyed": "none", "args": ["ID..."], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan push", "help": "Upload and schedule sessions on Garmin (workout named 'pace: <name>'); unchanged pushed sessions are skipped unless --force; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--force", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "plan unpush", "help": "Delete the sessions' workouts from Garmin (404 counts as done); the sessions stay, planned; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
 ]
 
 
@@ -214,7 +221,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "workout": "Structured workouts: list, show, push, schedule, delete.",
                    "log": "Health logs written to Garmin Connect.",
                    "diary": "Athlete diary: the coach's durable memory (local file).",
-                   "plan": "Training plan: blocks and dated sessions (local file)."},
+                   "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,

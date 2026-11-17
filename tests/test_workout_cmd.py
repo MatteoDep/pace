@@ -145,3 +145,18 @@ def test_push_ignores_a_warm_cache_and_then_drops_it(fake_api) -> None:
     cache = Cache()
     assert cache.stats()["entries"] == 0
     cache.close()
+
+
+@pytest.mark.parametrize("args", [["schedule", "77", "2026-09-10"], ["delete", "77"]])
+def test_schedule_and_delete_drop_the_calendar_cache(fake_api, args) -> None:
+    """Both change the Garmin calendar, so a cached month view must not survive them."""
+    async def month():
+        return {"calendarItems": []}
+
+    cache = Cache()
+    asyncio.run(cache.get_or_fetch("connectapi:/calendar-service/year/2026/month/8", month, ttl=600))
+    cache.close()
+    assert _doc(runner.invoke(app, args))["ok"]
+    cache = Cache()
+    assert cache.stats()["entries"] == 0
+    cache.close()

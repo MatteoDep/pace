@@ -74,11 +74,13 @@ def test_writes_and_dsl_in_schema() -> None:
     assert {"update", "link", "unlink"} <= set(data["writes"]["result"]["action"].split(" | "))
     assert {"activity_gear", "activity_effort"} <= set(data["writes"]["result"]["resource"].split(" | "))
     assert "link" in data["writes"]["idempotency"]
+    assert "plan push skips unchanged pushed sessions" in data["writes"]["idempotency"]
+    assert "results[].steps[]" in data["writes"]["result"]["batch"]
     assert "link" in data["groups"]["gear"] and "effort" in data["groups"]["activity"]
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete", "activity effort",
-                      "gear link", "gear unlink"}
+                      "gear link", "gear unlink", "plan push", "plan unpush"}
     for c in data["commands"]:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]

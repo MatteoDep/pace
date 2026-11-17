@@ -1,18 +1,19 @@
-"""Plan commands: blocks and dated sessions in a local file (no Garmin access)."""
+"""Plan commands: blocks and dated sessions in a local file; push and unpush write to Garmin."""
 
 from datetime import date, timedelta
 from typing import Any
 
 import typer
 
-from pace import plan
+from pace import plan, planpush
 from pace.commands._helpers import read_json
 from pace.dates import parse_date
 from pace.envelope import PaceError, Result, run
 from pace.workout import parse_distance, parse_duration
+from pace.writes import DRY_RUN_OPT
 
 app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, pretty_exceptions_enable=False,
-                  help="Training plan: blocks and dated sessions (local file).")
+                  help="Training plan: blocks and dated sessions (local file); push sessions to Garmin.")
 block_app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, pretty_exceptions_enable=False,
                         help="Plan blocks (phases of the plan).")
 app.add_typer(block_app, name="block")
@@ -203,3 +204,23 @@ def remove(ids: list[int] = typer.Argument(..., metavar="ID...")) -> None:
             return Result({"removed": plan.remove_sessions(data, ids)})
 
     run("plan remove", {"ids": ids}, work)
+
+
+@app.command("push")
+def push(ids: list[int] = typer.Argument(..., metavar="ID..."),
+         force: bool = typer.Option(False, "--force", help="Re-push sessions already pushed and unchanged."),
+         dry_run: bool = DRY_RUN_OPT) -> None:
+    """Upload and schedule sessions on Garmin; unchanged pushed sessions are skipped."""
+    async def work() -> Result:
+        return Result(await planpush.push_sessions(ids, dry_run=dry_run, force=force, today=date.today()))
+
+    run("plan push", {"ids": ids, "force": force, "dry_run": dry_run}, work)
+
+
+@app.command("unpush")
+def unpush(ids: list[int] = typer.Argument(..., metavar="ID..."), dry_run: bool = DRY_RUN_OPT) -> None:
+    """Delete the sessions' workouts from Garmin; the sessions stay, planned."""
+    async def work() -> Result:
+        return Result(await planpush.unpush_sessions(ids, dry_run=dry_run, today=date.today()))
+
+    run("plan unpush", {"ids": ids, "dry_run": dry_run}, work)

@@ -134,7 +134,7 @@ Documented in `pace schema` and the skill; never repeated per response.
 
 ### Writes
 
-Eleven commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`.
+Thirteen commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`, `plan push`, `plan unpush`.
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
 `--dry-run` makes no network call.
@@ -147,6 +147,7 @@ The payload shape depends on the command: `workout push` shows the full Garmin w
 Without `--dry-run`, a successful write returns `{"action": "create"|"delete"|"update"|"link"|"unlink", "resource": "workout"|"weight"|"hydration"|"bp"|"activity_gear"|"activity_effort", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
 `gear link` and `gear unlink` return `link`/`unlink` on `activity_gear`; `activity effort` returns `update` on `activity_effort`; all three have `id: null`.
 A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
+`plan push` and `plan unpush` are batches with their own result shape (see Plan below).
 
 Deletes are limited to workouts, weigh-ins and blood-pressure readings; activities and other resources are never deleted through `pace`.
 The only activity edits are gear links and perceived effort; no other activity field is ever written.
@@ -251,9 +252,9 @@ pace never overwrites or repairs it; the user inspects or moves it.
 ## Plan
 
 `pace plan` holds the training plan: blocks and dated sessions.
-It reads and writes one local file, `$PACE_HOME/plan.json`, and the commands in this section never call Garmin.
-Commands: `plan new`, `show`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`.
-`pace schema` marks the mutating ones `"local_write": true` and describes the store under the top-level `plan` key.
+It reads and writes one local file, `$PACE_HOME/plan.json`.
+Commands: `plan new`, `show`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`, `push`, `unpush`.
+Only `plan push` and `plan unpush` call Garmin; `pace schema` marks them `"write": true` and the other mutating ones `"local_write": true`, and describes the store under the top-level `plan` key.
 
 A session has `id` (integer, never reused), `date`, `sport`, `title`, `intensity`, and optionally `purpose`, `block`, `target`, `workout`, `notes`, `status`, `activity_id`.
 `sport` is one of `running`, `cycling`, `swimming`, `walking`, `hiking`, `strength`, `mobility`, `other`; only the first five can carry a `workout` (the `workout push` DSL) and be pushed.
@@ -290,6 +291,38 @@ Without a plan file it returns the empty plan and creates nothing.
 Session and block ids keep counting across plans.
 
 Locking, atomic saves and the corrupt-file rule are those of the diary: pace never overwrites an unreadable `plan.json`.
+
+### Push and unpush
+
+`plan push ID... [--force] [--dry-run]` uploads each session's workout and schedules it on the session date.
+The Garmin workout is named `pace: <workout name>` (the prefix is not doubled).
+Per session the steps are: delete the old workout when `garmin` is set, upload, schedule.
+Each step is saved to `plan.json` as soon as it lands: after the delete `garmin` is null and `status` is `planned`; after the upload `garmin = {"workout_id", "schedule_id": null}` and `pushed_as` holds the date and workout as read before the upload; after the schedule `garmin.schedule_id` is set and `status` is `pushed`.
+So the invariant holds after every step, and a later failure never loses an id.
+A pushed session that is not stale is skipped (`action: "skipped"`, no call) unless `--force`, so re-running a partly failed batch never duplicates the sessions that went through.
+A session with `garmin` set but no schedule (its schedule call failed) is not `pushed`, so the next push deletes that workout first.
+`stale` is recomputed from `pushed_as` against the file at every save, so a `plan set --date` or `--workout` made while the push is in flight leaves the session `stale`, and the next push moves it.
+
+Refused per session as `bad_args`, with no Garmin call: an unknown id, a `skipped` or `done` session, a sport that cannot be pushed, a session without `workout`, and a date before today.
+Past sessions are never pushed, re-pushed or unpushed: deleting their workout would erase that day from the Garmin calendar.
+
+`plan unpush ID... [--dry-run]` deletes each session's workout and saves `garmin = null`, `status = planned`, `pushed_as = null`, `stale = false`; a session without `garmin` is a `noop`.
+Deleting a workout also removes its calendar schedules, and a delete answered with 404 `not_found` counts as done (the workout is already gone).
+Pushed workouts stay in the Garmin workout library after their day; pace deletes one only on re-push or unpush, never as a cleanup.
+
+The whole call holds a push lock (`$PACE_HOME/plan-push.json.lock`, separate from the `plan.json` lock taken for each save), so a second `plan push` or `plan unpush`, from a terminal or the bot, waits up to 10 s, then re-reads each session and skips what is already pushed; past the wait it fails with `internal` "busy".
+
+`data = {"results": [...], "done": n, "failed": n}`, one result per distinct id in order: `{"id", "ok", "action", "steps", "error", "garmin", "session"}`.
+`action` is `pushed`, `skipped`, `unpushed` or `noop`, and null for a refused session.
+`steps` lists the steps that completed, each `{"step": "delete" | "upload" | "schedule", "payload", "id"}` with the Garmin-assigned id (null for a delete).
+`error` is the error object of the error envelope, or null.
+`garmin` holds the Garmin ids that exist for the session as far as pace knows, and `session` the session as saved.
+The envelope is `ok: false` with the first error only when every session failed and no step completed; otherwise it is `ok: true` and failures are reported per session.
+If the session vanished from the file during the push, or saving after a landed step failed, the result is an error whose `garmin` carries the landed ids and whose hint names the `pace workout delete` call that cleans up.
+
+`--dry-run` takes no lock, makes no network call and changes no file; `data.dry_run` is true and each result lists the steps it would run with their exact payloads (the schedule path shows `{workout_id}` for the id the upload would return).
+
+Upload drops the cached workout list; schedule and delete also drop every cached calendar read (`connectapi:/calendar-service/`), as do `workout schedule` and `workout delete`.
 
 ## Keeping this file honest
 

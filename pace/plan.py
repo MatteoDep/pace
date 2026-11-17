@@ -89,7 +89,7 @@ def _iso(value: Any, what: str) -> str:
     return parse_date(value).isoformat()
 
 
-def _stale(s: dict[str, Any]) -> bool:
+def is_stale(s: dict[str, Any]) -> bool:
     if s.get("garmin") is None:
         return False
     snap = s.get("pushed_as") or {}
@@ -196,7 +196,7 @@ def set_session(data: dict[str, Any], session_id: int, changes: dict[str, Any],
     if "target" in changes and isinstance(changes["target"], dict):
         merged["target"] = {**s["target"], **changes["target"]}
     _validate(data, merged, today, "status" in changes)
-    merged["stale"] = _stale(merged)
+    merged["stale"] = is_stale(merged)
     s.update(merged)
     return s
 

@@ -9,8 +9,8 @@ from pace.dates import parse_date
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, NO_CACHE_OPT, RAW_OPT, shape_args
 from pace.shape import apply
-from pace.workout import build_workout
-from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
+from pace.workoutwrites import delete_spec, schedule_spec, upload_spec
+from pace.writes import DRY_RUN_OPT, run_write
 
 app = typer.Typer(no_args_is_help=True, help="Structured workouts: list, show, push, schedule, delete.")
 
@@ -75,13 +75,9 @@ def push(file: str = typer.Argument(..., metavar="FILE", help="Path to a DSL JSO
     """Create a workout on Garmin Connect from the compact DSL (see `pace schema` -> workout_dsl)."""
     cmd = "workout push"
     try:
-        dsl = read_json(file)
-        payload = build_workout(dsl)
+        spec = upload_spec(read_json(file))
     except PaceError as err:
         fail(cmd, err)
-    spec = WriteSpec(resource="workout", action="create", method="upload_workout", args=(payload,),
-                     payload=payload, echo=dsl, invalidate=("get_workouts:",),
-                     id_of=lambda r: r.get("workoutId") if isinstance(r, dict) else None)
     run(cmd, {"file": file, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
 
 
@@ -95,20 +91,12 @@ def schedule(workout_id: int = typer.Argument(..., metavar="WORKOUT_ID"),
         iso = parse_date(date).isoformat()
     except PaceError as err:
         fail(cmd, err)
-    path = f"/workout-service/schedule/{workout_id}"
-    body = {"date": iso}
-    spec = WriteSpec(resource="workout", action="create", method="connectapi", args=(path,),
-                     kwargs={"method": "POST", "json": body}, payload={"path": path, "json": body},
-                     echo={"workout_id": workout_id, "date": iso},
-                     id_of=lambda r: r.get("workoutScheduleId") if isinstance(r, dict) else None)
+    spec = schedule_spec(workout_id, iso)
     run(cmd, {"workout_id": workout_id, "date": iso, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
 
 
 @app.command("delete")
 def delete(workout_id: int = typer.Argument(..., metavar="WORKOUT_ID"), dry_run: bool = DRY_RUN_OPT) -> None:
     """Delete a saved workout (only workouts; activities are never deleted)."""
-    path = f"/workout-service/workout/{workout_id}"
-    spec = WriteSpec(resource="workout", action="delete", method="connectapi", args=(path,),
-                     kwargs={"method": "DELETE"}, payload={"path": path}, echo={"workout_id": workout_id},
-                     invalidate=("get_workouts:", f"get_workout_by_id:{workout_id}"))
+    spec = delete_spec(workout_id)
     run("workout delete", {"workout_id": workout_id, "dry_run": dry_run}, lambda: run_write(spec, dry_run=dry_run))
