@@ -376,6 +376,40 @@ It makes one cached call (5 min) to `GET /calendar-service/year/{Y}/month/{M}` p
 The month view also returns days of the neighbouring months, so items are kept only when `itemType` is `workout`, `id` is set and the date is in the range, and are deduplicated by `id`.
 A 400 from Garmin surfaces as `rejected`.
 
+## Load
+
+`pace load [--weeks N] [--weeks-ahead N] [--sport running|all] [--no-cache]` returns weekly and daily training load.
+It is keyed by weeks (`keyed: "week"` in `pace schema`): there is no `--from` or `--to`.
+`--weeks` counts whole weeks back, this week included (default 16, at least 1).
+`--weeks-ahead` counts whole weeks after this one; by default the range runs through the week of the plan's last session, never before this week.
+The end is capped at 26 weeks ahead, also when `--weeks-ahead` asks for more.
+`--sport` is `running` (running family activities and running sessions, the default) or `all`; anything else, `--weeks 0` or a negative `--weeks-ahead` is `bad_args`.
+The range always covers whole ISO weeks (Monday to Sunday).
+
+`data = {"weeks", "days", "range": {"from", "to"}, "sport"}`.
+Metrics are `km`, `elev_m` and `hours`, rounded to 2 decimals at output only.
+An activity counts `distance / 1000`, `elevationGain` and `movingDuration` (else `duration`) over 3600; a missing value counts 0.
+Its day is the local date from `startTimeLocal`, never the GMT one.
+A session counts its `target` (`distance_m / 1000`, `elevation_m`, `duration_s / 3600`); a null target value adds 0 and is counted in `planned.missing`.
+Sessions with status `skipped` or intensity `rest` are left out; a stored `done` session counts.
+
+Week row: `{"week": "2026-W47", "start", "actual", "planned", "projected"}`.
+The week key is the ISO year and week.
+`actual` is null for a week starting after today, `planned` is null for a week that ended before today.
+`planned` carries `missing`, a count per metric of sessions with a null target value.
+`projected` is the sum of the days' `effective` values.
+For a past week `projected` equals `actual`.
+
+Day row: `{"date", "actual", "planned", "effective", "rolling7"}`.
+`actual` is null after today; `planned` is null on a day without a session, and past days keep it so a missed session shows.
+`effective` is `actual` before today and `planned` after today.
+Today it is `actual` when any activity of the selected sport is recorded today, else `planned`; the choice covers all three metrics together.
+`rolling7` on a day is the sum of `effective` over that day and the six before it, so on a week's Sunday it equals that week's `projected`.
+
+The fetch reads 6 days before the first row so the first `rolling7` values are complete.
+It makes one `get_activities_by_date` call from that day to today (skipped when the whole range is in the future).
+That method pages internally in requests the rate limiter does not count.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.

@@ -49,6 +49,7 @@ pace plan add sessions.json
 pace plan show --from 2026-11-20 --to 2026-11-30
 pace plan set 3 --duration 50m --distance 10km
 pace plan status --past 7 --ahead 0
+pace load --weeks 8 --weeks-ahead 4
 pace workout calendar --ahead 14
 ```
 

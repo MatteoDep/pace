@@ -154,3 +154,11 @@ def test_plan_in_schema() -> None:
     res = runner.invoke(app, ["schema", "plan"])
     assert res.exit_code == 0
     assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"plan"}
+
+
+def test_load_is_week_keyed_and_noted() -> None:
+    doc = build_schema("load")
+    (entry,) = doc["commands"]
+    assert entry["name"] == "load" and entry["keyed"] == "week"
+    assert "--from" not in entry["flags"] and {"--weeks", "--weeks-ahead", "--sport"} <= set(entry["flags"])
+    assert any("keyed week" in n for n in doc["notes"])
