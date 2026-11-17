@@ -45,3 +45,19 @@ async def sleep_stats(start: date, end: date, *, today: date, cache: Any, tracke
             values = item.get("values") or {}
             rows[day] = {"date": day, **{k: values.get(v) for k, v in _FIELDS.items()}}
     return [rows[d] for d in sorted(rows)]
+
+
+async def weigh_ins(start: date, end: date, *, today: date, cache: Any, tracker: Any, refresh: bool) -> list[dict]:
+    """The latest weigh-in of each day in the range as {"date", "kg"}, sorted; one Garmin call."""
+    end = min(end, today)
+    if start > end:
+        return []
+    payload = await cached_call("get_weigh_ins", start.isoformat(), end.isoformat(), cache=cache, ttl=3600,
+                                tracker=tracker, refresh=refresh)
+    rows: dict[str, float] = {}
+    for item in (payload or {}).get("dailyWeightSummaries") or []:
+        day = item.get("summaryDate")
+        grams = (item.get("latestWeight") or {}).get("weight")
+        if isinstance(day, str) and start.isoformat() <= day <= end.isoformat() and isinstance(grams, (int, float)):
+            rows[day] = round(grams / 1000, 3)
+    return [{"date": d, "kg": rows[d]} for d in sorted(rows)]

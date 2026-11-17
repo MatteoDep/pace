@@ -131,3 +131,64 @@ def test_health_chart_default_range_is_90_days(monkeypatch, tmp_path) -> None:
                                                   "to": today.isoformat()}
     assert doc["data"]["summary"]["empty"] is True
     assert len(calls) >= 4  # 91 days need at least four 28-day windows
+
+
+def test_weight_chart_reads_weigh_ins(monkeypatch, tmp_path) -> None:
+    calls = []
+    today = date.today()
+
+    async def safe_call(method, *args, **kwargs):
+        calls.append((method, args))
+        return True, {"dailyWeightSummaries": [
+            {"summaryDate": (today - timedelta(days=2)).isoformat(), "latestWeight": {"weight": 66300.0}},
+            {"summaryDate": today.isoformat(), "latestWeight": {"weight": 66100.0}}]}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    code, doc = _run("weight", "--past", "10", "--out", str(tmp_path / "w.png"))
+    assert code == 0 and doc["data"]["summary"]["count"] == 2 and doc["data"]["summary"]["last"] == 66.1
+    assert [c[0] for c in calls] == ["get_weigh_ins"] and (tmp_path / "w.png").exists()
+
+
+def test_intensity_chart_default_range(api) -> None:
+    today = date.today()
+    code, doc = _run("intensity")
+    assert code == 0 and doc["data"]["range"] == {"from": (today - timedelta(days=56)).isoformat(),
+                                                  "to": (today + timedelta(days=14)).isoformat()}
+    assert doc["data"]["summary"]["sport"] == "running"
+    code, doc = _run("intensity", "--sport", "cycling")
+    assert code == 2
+
+
+def test_activity_chart_by_id(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    async def safe_call(method, *args, **kwargs):
+        calls.append((method, args))
+        if method == "get_activity":
+            return True, {"activityTypeDTO": {"typeKey": "road_biking"},
+                          "summaryDTO": {"startTimeLocal": "2026-11-10T07:00:00.0", "distance": 2000.0,
+                                         "movingDuration": 600.0, "averageSpeed": 3.33}}, None
+        keys = ("directTimestamp", "directHeartRate", "directSpeed", "sumDistance", "directElevation")
+        rows = [{"metrics": [1_700_000_000_000 + i * 60_000, 130, 6.0, i * 360.0, 50.0]} for i in range(6)]
+        return True, {"metricDescriptors": [{"key": k, "metricsIndex": i} for i, k in enumerate(keys)],
+                      "activityDetailMetrics": rows}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    code, doc = _run("activity", "42")
+    assert code == 0 and doc["data"]["path"].endswith("activity-42.png")
+    assert doc["data"]["range"] == {"from": "2026-11-10", "to": "2026-11-10"}
+    assert doc["data"]["summary"]["family"] == "cycling" and "avg_speed_kmh" in doc["data"]["summary"]
+    assert sorted(c[0] for c in calls) == ["get_activity", "get_activity_details"]
+
+
+@pytest.mark.parametrize("args", [["activity"], ["activity", "abc"], ["activity", "0"],
+                                  ["activity", "5", "--past", "3"]])
+def test_activity_requires_id(api, args) -> None:
+    code, doc = _run(*args)
+    assert code == 2 and doc["error"]["code"] == "bad_args"
+
+
+@pytest.mark.parametrize("kind", ["volume", "plan", "recovery", "sleep", "weight", "intensity"])
+def test_id_rejected_for_other_kinds(api, kind) -> None:
+    code, doc = _run(kind, "123")
+    assert code == 2 and doc["error"]["code"] == "bad_args"

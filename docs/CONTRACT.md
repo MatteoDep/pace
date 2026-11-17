@@ -415,9 +415,9 @@ That method pages internally in requests the rate limiter does not count.
 `pace chart KIND [ID] [--weeks N] [--weeks-ahead N] [--from D] [--to D] [--past N] [--ahead N] [--metric km|elev|hours] [--sport running|all] [--out PATH] [--no-cache]` renders one PNG chart and returns where it is.
 `data = {"path", "kind", "range": {"from", "to"}, "summary"}`; `summary` always has `empty`, true when the range holds no data, and the PNG then shows a "No data in range" note instead of marks.
 Every chart is a PNG of exactly 1200 x 675 px with one shared light style.
-Without `--out` the file is `$PACE_HOME/charts/<name>.png`, where name is `volume-<metric>[-all]-<from>-<to>` for `volume` and `<kind>-<from>-<to>` for the others, so two volume charts with different metrics or sports never overwrite each other.
+Without `--out` the file is `$PACE_HOME/charts/<name>.png`, where name is `volume-<metric>[-all]-<from>-<to>` for `volume`, `activity-<id>` for `activity` and `<kind>-<from>-<to>` for the others, so two volume charts with different metrics or sports never overwrite each other.
 `--out` must end in `.png`; its parent directories are created and `path` is returned absolute.
-An unknown `KIND`, an `ID` given to a kind that takes none, or a flag the kind does not use is `bad_args`.
+An unknown `KIND`, an `ID` given to a kind that takes none (or missing for `activity`), or a flag the kind does not use is `bad_args`.
 
 Kinds so far:
 
@@ -439,6 +439,20 @@ Kinds so far:
 - `sleep`: stacked deep, light, REM and awake hours per night; the sleep score is a line on a second axis only when present.
   Flags and default range as `recovery`.
   `summary = {"nights": [{"date", "sleep_h", "deep_h", "light_h", "rem_h", "awake_h", "score"}], "sleep_7d_mean_h", "score_available", "empty"}`; `sleep_7d_mean_h` is the mean of the nights in the 7 calendar days ending at the last night, awake time excluded.
+
+- `weight`: one dot per weigh-in (the latest of each day) and its 7-day trailing calendar mean, from one `get_weigh_ins` call.
+  Flags and default range as `recovery`.
+  The mean covers the weigh-ins within D-6 .. D and is drawn on days that have a weigh-in; the fetch reads 6 days before the range.
+  `summary = {"points": [{"date", "kg", "kg_7d"}], "first", "last", "mean", "count", "empty"}`; `first`, `last` and `mean` are null when there are no weigh-ins.
+- `intensity`: per ISO week, actual time in HR zones 1-5 (stacked, left bar) next to planned time by session intensity `easy`, `moderate`, `hard` (stacked, right bar), in hours.
+  Flags: `--from`, `--to`, `--past`, `--ahead` (default 56 days back, 14 ahead) and `--sport running|all` (default running).
+  Zone time is the sum of `hrTimeInZone_1..5` (the watch's zones) over the activities of the sport family; planned time is the `duration_s` of the sessions of that sport, skipped and rest sessions excluded.
+  Weeks cut by the range show only the days inside it; sessions without a `duration_s` are counted per week and noted on the bar.
+  `summary = {"sport", "weeks": [{"week", "start", "zones_s": [z1..z5], "planned_s": {easy, moderate, hard}, "planned_missing", "low_share"}], "empty"}`; `low_share` is the fraction of zone time in zones 1-2 (null when no zone time).
+- `activity ID`: pace (running family, min/km, faster is up, samples under 0.5 m/s dropped) or speed (other sports, km/h), heart rate on a second axis and elevation below, all over distance.
+  Takes no flags; it reads `get_activity_details` (bucketed as `pace activity details` does) and `get_activity` (type, summary), both cached for a day.
+  `range` is the day of the activity, `from` = `to`.
+  `summary = {"activity_id", "family", "distance_km", "moving_time_s", "avg_pace_min_km" (running) or "avg_speed_kmh" (others), "avg_hr", "elevation_gain_m", "empty"}`.
 
 ## Sleep range
 

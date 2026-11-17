@@ -54,6 +54,9 @@ pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
 pace chart recovery --past 28
 pace chart sleep --past 14
+pace chart weight --past 60
+pace chart intensity --past 56 --ahead 14
+pace chart activity <activity-id>
 pace wellness sleep-range --days 14
 pace workout calendar --ahead 14
 ```

@@ -215,3 +215,94 @@ def test_volume_current_week_label_hidden_when_zero(tmp_path, monkeypatch) -> No
     assert not any("/" in t for t in labels)
     volume.render(_volume_data(), tmp_path / "v2.png", metric="km")
     assert any("/" in t for t in labels)
+
+
+def test_weight_trailing_mean(tmp_path) -> None:
+    from pace.charts import weight
+
+    day = date(2026, 11, 10)
+    rows = [{"date": (day - timedelta(days=d)).isoformat(), "kg": kg}
+            for d, kg in ((8, 70.0), (6, 69.0), (3, 68.0), (0, 67.0))]
+    rows.sort(key=lambda r: r["date"])
+    data = {"rows": rows, "range": {"from": (day - timedelta(days=3)).isoformat(), "to": day.isoformat()},
+            "today": day.isoformat()}
+    out = tmp_path / "w.png"
+    summary = weight.render(data, out)
+    assert _png_size(out) == (1200, 675)
+    # Nov 7 averages the lead-in rows 70, 69 and 68 (Nov 1-7); Nov 10 covers Nov 4-10: 69, 68, 67
+    assert [p["kg_7d"] for p in summary["points"]] == [69.0, 68.0]
+    assert summary["first"] == 68.0 and summary["last"] == 67.0 and summary["mean"] == 67.5
+    assert summary["count"] == 2 and summary["empty"] is False
+
+
+def test_weight_empty_note(tmp_path) -> None:
+    from pace.charts import weight
+
+    day = date(2026, 11, 10)
+    out = tmp_path / "w.png"
+    summary = weight.render({"rows": [], "range": {"from": "2026-11-01", "to": day.isoformat()},
+                             "today": day.isoformat()}, out)
+    assert _png_size(out) == (1200, 675)
+    assert summary == {"points": [], "first": None, "last": None, "mean": None, "count": 0, "empty": True}
+
+
+def _zoned(aid: int, day: str, typ: str, zones: tuple[float, ...]) -> dict:
+    return {"activityId": aid, "startTimeLocal": f"{day} 07:00:00", "activityType": typ,
+            **{f"hrTimeInZone_{i}": s for i, s in enumerate(zones, 1)}}
+
+
+def test_intensity_zone_sums(tmp_path) -> None:
+    from pace.charts import intensity
+
+    data = {"activities": [_zoned(1, "2026-11-10", "running", (600, 1200, 300, 0, 0)),
+                           _zoned(2, "2026-11-12", "trail_running", (0, 600, 600, 60, 0)),
+                           _zoned(3, "2026-11-11", "cycling", (3600, 0, 0, 0, 0))],
+            "sessions": [_session(1, "2026-11-11", None, intensity="easy"),
+                         _session(2, "2026-11-13", None, intensity="hard"),
+                         _session(3, "2026-11-14", None, intensity="easy", status="skipped")],
+            "sport": "running", "range": {"from": "2026-11-09", "to": "2026-11-15"}, "today": "2026-11-12"}
+    data["sessions"][0]["target"] = {"duration_s": 3000}
+    out = tmp_path / "i.png"
+    summary = intensity.render(data, out)
+    assert _png_size(out) == (1200, 675)
+    [week] = summary["weeks"]
+    assert week["week"] == "2026-W46" and week["zones_s"] == [600, 1800, 900, 60, 0]
+    assert week["planned_s"] == {"easy": 3000, "moderate": 0, "hard": 0} and week["planned_missing"] == 1
+    assert week["low_share"] == round(2400 / 3360, 2)
+    everything = intensity.render({**data, "sport": "all"}, out)
+    assert everything["weeks"][0]["zones_s"][0] == 4200
+
+
+def _details(speeds: list[float]) -> dict:
+    keys = ("directTimestamp", "directHeartRate", "directSpeed", "sumDistance", "directElevation")
+    rows = []
+    for i, v in enumerate(speeds):
+        rows.append({"metrics": [1_700_000_000_000 + i * 60_000, 140 + i, v, sum(speeds[:i]) * 60.0, 100 + i]})
+    return {"metricDescriptors": [{"key": k, "metricsIndex": i} for i, k in enumerate(keys)],
+            "activityDetailMetrics": rows}
+
+
+def _activity_data(family_: str, speeds: list[float]) -> dict:
+    return {"details": _details(speeds), "family": family_, "id": 9, "range": {"from": "2026-11-10", "to": "2026-11-10"},
+            "info": {"summaryDTO": {"distance": 3000.0, "movingDuration": 900.0, "averageSpeed": 3.3333,
+                                    "averageHR": 150, "elevationGain": 12.0}}}
+
+
+def test_activity_chart_running_pace(tmp_path) -> None:
+    from pace.charts import activity
+
+    out = tmp_path / "a.png"
+    summary = activity.render(_activity_data("running", [3.0, 3.5, 0.2, 3.3, 3.4]), out)
+    assert _png_size(out) == (1200, 675)
+    assert summary["avg_pace_min_km"] == 5.0 and "avg_speed_kmh" not in summary
+    assert summary["distance_km"] == 3.0 and summary["moving_time_s"] == 900
+    assert summary["avg_hr"] == 150 and summary["elevation_gain_m"] == 12 and summary["empty"] is False
+
+
+def test_activity_chart_cycling_speed(tmp_path) -> None:
+    from pace.charts import activity
+
+    out = tmp_path / "a.png"
+    summary = activity.render(_activity_data("cycling", [6.0, 7.0, 8.0]), out)
+    assert _png_size(out) == (1200, 675)
+    assert summary["avg_speed_kmh"] == 12.0 and "avg_pace_min_km" not in summary

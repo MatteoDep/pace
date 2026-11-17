@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pace import config
 
-KINDS: tuple[str, ...] = ("volume", "plan", "recovery", "sleep")
+KINDS: tuple[str, ...] = ("volume", "plan", "recovery", "sleep", "weight", "intensity", "activity")
 
 
 def default_out(kind: str, *, start: date | None, end: date | None, metric: str | None = None,
