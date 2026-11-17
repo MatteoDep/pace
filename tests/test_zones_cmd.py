@@ -294,10 +294,11 @@ def stub_estimate(monkeypatch):
                     max_calls_on_fetcher=fetcher.max_calls, today=today)
         zones.log_estimate(data, SUMMARY)
         zones.update_hr_max(data, 188, activity=1, day=today)
-        data["h4"]["streak"] = 1
+        zones.record_alpha1_outcome(data, "not_monotonic", day=today, activity=1)
         if seen.get("concurrent"):   # another pace process writes a record while the estimate runs
             seen["concurrent"]()
-        return {"lt1": {}, "lt2": {}, "methods": {}, "runs_used": [], "runs_skipped": [], "deferred": [],
+        return {"lt1": {}, "lt2": {}, "runs_used": [{"id": 1, "date": today.isoformat()}],
+                "methods": {"H4": {"runs": [{"id": 1, "outcome": "not_monotonic"}]}}, "runs_skipped": [], "deferred": [],
                 "calls": 3, "estimated_seconds": 4, "hr_max": data["hr_max"], "rest_hr": 45, "h4": dict(data["h4"]),
                 "weeks": weeks, "extended": False, "ref_hr": None, "summary": SUMMARY,
                 "record": copy.deepcopy(seen.get("record", CANDIDATE))}
@@ -347,10 +348,42 @@ def test_estimate_save_without_values_stores_nothing(garmin, stub_estimate) -> N
 
 def test_estimate_save_refused_record_still_logs(garmin, stub_estimate) -> None:
     stub_estimate["record"] = {**CANDIDATE, "lt1": {"hr": 170, "pace_s_per_km": 320}}
-    err = fails("estimate", "--save")
-    assert "LT1 HR" in err["message"] and "logged" in err["message"]
+    out = run("estimate", "--save")
+    assert out["saved"] is None and "LT1 HR" in out["save_refused"] and "logged" in out["save_refused"]
+    assert out["calls"] == 3 and out["record"]["lt1"]["hr"] == 170
     d = stored()
     assert d["records"] == [] and len(d["estimates"]) == 1
+
+
+def test_estimate_merge_keeps_h4_written_meanwhile(garmin, stub_estimate) -> None:
+    def concurrent():   # an analyze ramp lands between the snapshot and the merge
+        with zones.transaction() as data:
+            zones.record_alpha1_outcome(data, "not_monotonic", day=TODAY - timedelta(days=1), activity=99)
+
+    stub_estimate["concurrent"] = concurrent
+    out = run("estimate")
+    h4 = stored()["h4"]
+    assert h4["counted"] == [99, 1] and h4["streak"] == 2 and h4["unreliable"] is True
+    assert out["h4"] == h4
+
+
+def test_estimate_retry_h4_resets_then_reapplies(garmin, stub_estimate) -> None:
+    with zones.transaction() as data:
+        zones.record_alpha1_outcome(data, "not_monotonic", day=TODAY, activity=7)
+        zones.record_alpha1_outcome(data, "not_monotonic", day=TODAY, activity=8)
+    assert stored()["h4"]["unreliable"] is True
+    run("estimate", "--retry-h4")
+    h4 = stored()["h4"]
+    assert h4["unreliable"] is False and h4["streak"] == 1 and h4["counted"] == [7, 8, 1]
+
+
+def test_show_tolerates_a_failing_list_read(garmin) -> None:
+    garmin["zones"] = [FLOORS]
+    garmin["errors"]["get_activities_by_date"] = ApiError("rate_limited", "slow down", 429)
+    out = run("show")
+    assert out["due"] is None and "rate_limited" in out["due_error"] and out["garmin"]["zone4Floor"] == 165
+    garmin["errors"]["get_activities_by_date"] = ApiError("auth_required", "no tokens", 401)
+    fails("show", "--no-cache", code="auth_required")
 
 
 def test_estimate_arguments_are_checked(garmin, stub_estimate) -> None:

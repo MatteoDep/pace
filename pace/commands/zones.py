@@ -626,24 +626,36 @@ def show(no_cache: bool = NO_CACHE_OPT) -> None:
         cache, tracker = Cache(), CacheTracker()
         try:
             fetcher = GarminFetcher(cache, today=today, refresh=no_cache, tracker=tracker)
-            rows = await fetcher.list_rows(start, today)
+            rows, due_error = [], None
+            try:
+                rows = await fetcher.list_rows(start, today)
+            except PaceError as err:
+                if err.code == "auth_required":
+                    raise
+                due_error = f"activity list unreadable ({err.code}): {err.message}"
             garmin = await _garmin_zones(cache, tracker, no_cache)
         finally:
             cache.close()
         out = zones.status(data, today=today, garmin_zones=garmin, runs_since=_runs_since(data, rows))
+        if due_error:
+            out["due"], out["due_error"] = None, due_error
         return Result(out, tracker.report())
 
     run_command("zones show", {"no_cache": no_cache}, work)
 
 
-def _merge_estimate(fresh: dict, snap: dict, logged_before: int) -> None:
-    """Apply what an estimate changed in its snapshot to the freshly locked file (records and current of
-    concurrent commands are kept; the H4 memory is the snapshot's)."""
+def _merge_estimate(fresh: dict, snap: dict, logged_before: int, result: dict, *, retry_h4: bool) -> None:
+    """Apply what an estimate changed to the freshly locked file. Records, `current` and the H4 memory of
+    concurrent commands are kept: the H4 outcomes of this estimate are re-applied (idempotent through `counted`)."""
     fresh["estimates"].extend(snap["estimates"][logged_before:])
     top = snap.get("hr_max")
     if top:
         zones.update_hr_max(fresh, top["bpm"], activity=top.get("activity"), day=date.fromisoformat(top["date"]))
-    fresh["h4"] = snap["h4"]
+    if retry_h4:
+        zones.reset_h4(fresh)
+    days = {r["id"]: r["date"] for r in result["runs_used"]}
+    for rep in result["methods"]["H4"].get("runs") or []:   # start-time order
+        zones.record_alpha1_outcome(fresh, rep["outcome"], day=date.fromisoformat(days[rep["id"]]), activity=rep["id"])
 
 
 @app.command("estimate")
@@ -672,18 +684,18 @@ def estimate(weeks: int = typer.Option(DEFAULT_WEEKS, "--weeks", help="History w
             cache.close()
         saved, refused = None, None
         with zones.transaction() as data:   # short lock: the reads above can take minutes
-            _merge_estimate(data, snap, logged_before)
+            _merge_estimate(data, snap, logged_before, result, retry_h4=retry_h4)
             if save and result["record"] is not None:
                 try:
                     saved = zones.add_record(data, result["record"], today=today)
                 except PaceError as err:
-                    refused = err
-        if refused is not None:
-            raise PaceError("bad_args", f"{refused.message}; the estimate was logged but no record was saved",
-                            hint="Inspect the candidate with a run without --save.")
+                    refused = err.message
+            result["h4"] = copy.deepcopy(data["h4"])
         if saved is not None:
             result["record"] = saved
-        return Result({**result, "saved": saved}, tracker.report())
+        return Result({**result, "saved": saved,
+                       "save_refused": f"{refused}; the estimate was logged, no record saved" if refused else None},
+                      tracker.report())
 
     run_command("zones estimate", {"weeks": weeks, "max_calls": max_calls, "include_wrist": include_wrist,
                            "retry_h4": retry_h4, "save": save}, work)

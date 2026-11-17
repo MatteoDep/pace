@@ -360,11 +360,13 @@ def _estimate_reasons(data: dict[str, Any], today: date, runs_since: list[dict[s
         reasons.append("no complete estimate yet")
     elif (today - last_day).days >= ESTIMATE_EVERY_DAYS:
         reasons.append(f"estimate: last complete one is {(today - last_day).days} days old")
-    for run in runs_since:
+    # the run before the estimate is there for the break rule only: its race or effect was already estimated
+    fresh = [r for r in runs_since if last_day is None or ((_day(r.get("startTimeLocal") or r.get("date")) or last_day) > last_day)]
+    for run in fresh:
         if ((run.get("eventType") or {}).get("typeKey") == "race"):
             reasons.append("estimate: a race since the last estimate")
             break
-    if any((run.get("aerobicTrainingEffect") or 0) >= HARD_TRAINING_EFFECT for run in runs_since):
+    if any((run.get("aerobicTrainingEffect") or 0) >= HARD_TRAINING_EFFECT for run in fresh):
         reasons.append(f"estimate: a run with aerobic training effect >= {HARD_TRAINING_EFFECT} since the last estimate")
     days = sorted(d for d in (_day(r.get("startTimeLocal") or r.get("date")) for r in runs_since) if d)
     for prev, nxt in zip(days, days[1:], strict=False):

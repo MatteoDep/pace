@@ -386,6 +386,17 @@ def test_due_race_and_training_effect() -> None:
     assert zones.due(d, today=TODAY, runs_since=[{"eventType": None}])["estimate"] is False
 
 
+def test_due_race_before_the_last_estimate_does_not_count() -> None:
+    d = zones.load()
+    zones.log_estimate(d, est("2026-11-10"))
+    race = {"startTimeLocal": "2026-11-09 08:00:00", "eventType": {"typeKey": "race"}, "aerobicTrainingEffect": 4.5}
+    easy = {"startTimeLocal": "2026-11-12 08:00:00"}
+    r = zones.due(d, today=TODAY, runs_since=[race, easy])
+    assert r["estimate"] is False and r["reasons"] == []
+    later = {"startTimeLocal": "2026-11-13 08:00:00", "eventType": {"typeKey": "race"}}
+    assert any("race" in x for x in zones.due(d, today=TODAY, runs_since=[race, easy, later])["reasons"])
+
+
 def test_due_detraining() -> None:
     d = zones.load()
     zones.log_estimate(d, est("2026-10-25"))

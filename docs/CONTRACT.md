@@ -500,6 +500,9 @@ It makes two cached Garmin reads: the activity list and the watch zones (`connec
 `due` is `{"estimate": bool, "field_test": {"lt1": bool, "lt2": bool}, "reasons": [...]}`.
 The list read starts 56 days before the last complete estimate (84 days back when there is none) so that `due` sees the last run before that estimate: a break of 14 days or more that straddles the estimate still counts when 14 days of training follow it.
 Partial estimates are skipped by `due`.
+The race and training-effect rules look only at runs after the last complete estimate; the run before it serves the break rule alone.
+If no run exists in the 56 days before the estimate, a break longer than that which straddles the estimate is not detected.
+When the list read fails (not `auth_required`), `due` is null and `due_error` says why; the rest of `data` is returned.
 The latest field test being 84 days old or more makes a retest due even when the threshold has no current record.
 
 ### `zones estimate`
@@ -508,13 +511,15 @@ The latest field test being 84 days old or more makes a retest due even when the
 `data` is the estimate result: `lt1`, `lt2`, `methods` (H1 to H5, each with `status` `ok|insufficient_data|skipped|alpha1_unusable`, `reasons`, and `suggest` when a field test is the way forward), `runs_used`, `runs_skipped`, `deferred`, `calls`, `estimated_seconds`, `hr_max`, `rest_hr`, `h4`, `weeks`, `extended`, `ref_hr`, `summary`, `record` (the full record `--save` would store, or null) and `saved` (the stored record or null).
 An estimate with `insufficient_data` methods is still `ok`.
 It always appends `summary` to the `estimates` log and raises `hr_max`; without `--save` no record is stored, so the user can look at the candidate first.
-With `--save` a record that the store refuses (for example LT1 HR at or above LT2 HR) is `bad_args` after the estimate has been logged.
+With `--save` a record that the store refuses (for example LT1 HR at or above LT2 HR) is not an error: the result is `ok` with `saved: null` and a `save_refused` message, the estimate is logged, and nothing needs rerunning.
+The H4 outcomes of the run are merged into the file's alpha1 memory (once per activity), so memory written by another command meanwhile is kept.
 
 Budget: `--max-calls` is a hard cap on every Garmin call of the run, the 2x extension included.
 Each picked run costs one `get_activity` and one `get_activity_details`, a FIT download one call, and the activity list, personal records and sleep stats a few more; cache hits are free.
 At the cap the remaining reads are not made: they are listed in `deferred` (`{"kind", "id"?, "error"?}`), the methods run on what was read and the estimate is logged with `partial: true`.
 A `rate_limited` or `network` error stops further calls the same way (the entry carries `error`).
 Other `internal` errors on a FIT download defer that one read; nothing is remembered about the run.
+A FIT file that keeps failing with such a non-parse error therefore keeps every estimate partial until the download succeeds (a known trade-off).
 Reads of runs older than one day are cached for 60 days under their own keys, so rerunning a capped or interrupted estimate continues from the cache.
 `calls` and `estimated_seconds` (the rate limiter's minimum time for those calls) report the cost.
 
