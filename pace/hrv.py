@@ -154,9 +154,10 @@ def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5
     """Qualifying alpha1 windows of a training run (methods doc 6).
 
     `aligned` is `pace.fit.aligned_rr` output. Windows of `size_s` beat seconds every `step_s`, lying inside
-    600..4500 s; skipped with a gap or stop, walking cadence (< 140), coupling risk (counted), more than 5%
-    artifacts, fewer than 200 corrected beats, not flat, unsteady speed in or before the window. "Outdoor"
-    is a run-level check left to the caller.
+    600..4500 s. Checks in order: gap or stop, walking cadence (< 140), not flat, unsteady speed in or before
+    the window; then coupling risk (counted in `dropped_coupling` only for windows that passed the checks
+    before it); then more than 5% artifacts or fewer than 200 corrected beats. "Outdoor" is a run-level check
+    left to the caller.
     """
     result: dict[str, Any] = {"windows": [], "dropped_coupling": 0}
     if not aligned:
@@ -203,16 +204,6 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
     cadence = sum(cads) / raw
     if cadence < MIN_CADENCE:
         return None
-    x = cvals[bisect.bisect_left(ctimes, t0):bisect.bisect_left(ctimes, t1)]
-    if not x:
-        return None
-    hr = 60 / (sum(x) / len(x))
-    if _coupled(hr, cadence):
-        result["dropped_coupling"] += 1
-        return None
-    share = (flag_cum[hi] - flag_cum[lo]) / raw
-    if share > MAX_ARTIFACT_SHARE or len(x) < MIN_BEATS:
-        return None
     v = speed(t0, t1)
     if v is None or v <= 0 or not _flat(aligned[lo:hi], v * (t1 - t0)):
         return None
@@ -229,6 +220,16 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
         if sv is None or sv > (1 + SPEED_BAND) * v:
             return None
         s += 5
+    x = cvals[bisect.bisect_left(ctimes, t0):bisect.bisect_left(ctimes, t1)]
+    if not x:
+        return None
+    hr = 60 / (sum(x) / len(x))
+    if _coupled(hr, cadence):  # counted only for windows that passed every check above
+        result["dropped_coupling"] += 1
+        return None
+    share = (flag_cum[hi] - flag_cum[lo]) / raw
+    if share > MAX_ARTIFACT_SHARE or len(x) < MIN_BEATS:
+        return None
     alpha1 = dfa_alpha1(x)
     if alpha1 is None:
         return None

@@ -116,10 +116,9 @@ def test_alpha1_pink_noise() -> None:
     assert _mean_alpha1(lambda r: _power_noise(r, 1.0)) == pytest.approx(1.03, abs=0.05)
 
 
-@pytest.mark.xfail(strict=True, reason="methods doc 14.2 expects 1.50 +/- 0.05; lambda 500 detrending gives about "
-                   "1.44 (1.49 without detrending, test below): spec value to be confirmed by the controller")
 def test_alpha1_brownian_noise() -> None:
-    assert _mean_alpha1(_brownian) == pytest.approx(1.50, abs=0.05)
+    # lambda 500 detrending removes the slowest Brownian components (methods doc 14.2, controller ruling)
+    assert _mean_alpha1(_brownian) == pytest.approx(1.43, abs=0.05)
 
 
 def test_alpha1_brownian_noise_without_detrending() -> None:
@@ -229,8 +228,21 @@ def test_windows_too_few_beats() -> None:
 def test_windows_coupling(hr: int, cadence: float, kept: bool) -> None:
     res = hrv.windows(_beats(lambda t: 60 / hr, cadence=cadence, noise=0.002))
     assert len(res["windows"]) == (1 if kept else 0)
-    # counted even at HR 88, whose 176 beats would also fail the 200-beat minimum: coupling is checked first
+    # counted even at HR 88, whose 176 beats would also fail the 200-beat minimum checked after coupling
     assert res["dropped_coupling"] == (0 if kept else 1)
+
+
+def test_windows_coupling_counted_only_after_earlier_checks() -> None:
+    hill = _beats(lambda t: 60 / 176, cadence=185, noise=0.002)
+    for b in hill:
+        b["alt"] = 10.0 + 0.03 * b["dist"]
+    walk = _beats(lambda t: 60 / 132, cadence=132, noise=0.002)  # HR equals the step rate, but walking
+    stopped = _beats(lambda t: 60 / 176, cadence=185, noise=0.002)
+    next(b for b in stopped if b["t_s"] >= 650)["stop"] = True
+    for beats in (hill, walk, stopped):
+        assert hrv.windows(beats) == {"windows": [], "dropped_coupling": 0}
+    many = _beats(lambda t: 60 / 176, until=760, cadence=185, noise=0.002)
+    assert hrv.windows(many)["dropped_coupling"] == 8  # windows at 600, 605, ..., 635
 
 
 def test_windows_skip_gap_stop_walking_and_warmup() -> None:

@@ -11,6 +11,7 @@ import io
 import struct
 import time
 import zipfile
+import zlib
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -134,7 +135,7 @@ def read_fit_bytes(data: bytes) -> dict[str, Any]:
                 if members[0].file_size > MAX_FIT_BYTES:
                     raise FitFileError("the .fit member is larger than 64 MB")
                 fit_bytes = zf.read(members[0])
-        except (zipfile.BadZipFile, OSError, EOFError) as exc:
+        except (zipfile.BadZipFile, OSError, EOFError, zlib.error, RuntimeError, NotImplementedError) as exc:
             raise FitFileError(f"bad zip: {exc}") from None
     try:
         return parse_messages(list(_messages(fit_bytes)))
@@ -184,6 +185,8 @@ def aligned_rr(fit: dict[str, Any]) -> list[dict[str, Any]]:
 
     The beat clock starts at the t of the record preceding the first `hrv` message and adds each RR; at each
     later `hrv` message it resyncs to the preceding record's t when the offset exceeds 3 s (marking a gap).
+    After a backward resync (clock ahead), the beats that overlap earlier beats are gaps too, and the output is
+    sorted by `t_s`.
     `gap` is also set on raw RR > 2 s; `stop` marks beats inside a section 1 stop. Raises RRRejected on the
     section 6 sanity check. Returns [] without RR data.
     """
@@ -199,15 +202,19 @@ def aligned_rr(fit: dict[str, Any]) -> list[dict[str, Any]]:
     starts = [a for a, _ in stops]
     out: list[dict[str, Any]] = []
     tb: float | None = None
+    overlap_until = float("-inf")  # after a backward resync, beats up to the old clock overlap earlier beats
     pos = 0
     for anchor, n in msgs:
         jump = False
         if tb is None:
             tb = float(anchor)
         elif abs(tb - anchor) > RESYNC_S:
+            if anchor < tb:
+                overlap_until = max(overlap_until, tb)
             tb, jump = float(anchor), True
         for v in rr[pos:pos + int(n)]:
             tb += v
+            jump = jump or tb <= overlap_until
             rec = records[max(0, bisect.bisect_right(rt, tb) - 1)]
             si = bisect.bisect_right(starts, tb) - 1
             out.append({"t_s": tb, "rr_s": v, "hr": rec["hr"], "speed": rec["speed"], "dist": rec["dist"],
@@ -215,6 +222,7 @@ def aligned_rr(fit: dict[str, Any]) -> list[dict[str, Any]]:
                         "stop": si >= 0 and tb < stops[si][1]})
             jump = False
         pos += int(n)
+    out.sort(key=lambda b: b["t_s"])  # stable; keeps t_s monotonic for windows() after a backward resync
     return out
 
 

@@ -76,6 +76,18 @@ def zipped(name: str, data: bytes, extra: dict[str, bytes] | None = None) -> byt
     return buf.getvalue()
 
 
+def corrupt_deflate() -> bytes:
+    """A zip whose deflated .fit member has damaged compressed bytes (zlib.error on read)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.fit", synthetic_fit() * 3)
+    data = bytearray(buf.getvalue())
+    start = 30 + len("a.fit")  # local header + name, no extra field
+    for i in range(start, start + 20):
+        data[i] ^= 0xFF
+    return bytes(data)
+
+
 # --- parse_messages ---
 
 def test_parse_messages_fixture() -> None:
@@ -147,6 +159,22 @@ def test_aligned_rr_resyncs_on_drift_and_flags_long_rr() -> None:
     assert beats[resync - 1]["t_s"] == pytest.approx(277.6) and beats[resync]["hr"] == 120
 
 
+def test_aligned_rr_backward_resync_keeps_beats_sorted() -> None:
+    recs = [{"t": t, "hr": 120, "speed": 3.0, "dist": 3.0 * t, "alt": 1.0, "cadence": 170.0} for t in range(300)]
+    rr, msgs = [], []
+    for m in range(149):
+        vals = [0.5] * 12 if m == 50 else [0.5] * 4  # message 50 carries 4 s of extra beats
+        rr += vals
+        msgs.append([1 + 2 * m, len(vals)])
+    beats = fit.aligned_rr({"start": "2026-10-01T08:00:00+00:00", "records": recs, "rr_s": rr, "rr_msgs": msgs})
+    times = [b["t_s"] for b in beats]
+    assert len(beats) == len(rr) and times == sorted(times)
+    # the clock is 4 s ahead at message 51 (anchor 103): it jumps back from 107 to 103
+    gaps = [b["t_s"] for b in beats if b["gap"]]
+    assert gaps == pytest.approx([103.5, 104.0, 104.5, 105.0, 105.5, 106.0, 106.5, 107.0])
+    assert not any(b["gap"] for b in beats if b["t_s"] > 107.0 or b["t_s"] < 103.0)
+
+
 def test_aligned_rr_sanity_rejects() -> None:
     data = fit.parse_messages(messages())
     data["rr_s"] = [v * 1.03 for v in data["rr_s"]]  # 3% more beat time than the record span
@@ -186,7 +214,7 @@ def test_read_fit_bytes_errors() -> None:
     assert len(fit.read_fit_bytes(synthetic_fit())["records"]) == 4  # a bare FIT file is accepted too
     for bad in (b"not a fit file at all", zipped("a.txt", b"x"),
                 zipped("a.fit", synthetic_fit(), {"b.fit": synthetic_fit()}),
-                zipped("a.fit", synthetic_fit()[:-7])):
+                zipped("a.fit", synthetic_fit()[:-7]), corrupt_deflate()):
         with pytest.raises(fit.FitFileError):
             fit.read_fit_bytes(bad)
 
