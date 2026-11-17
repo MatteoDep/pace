@@ -16,7 +16,7 @@ from pace import plan, store
 from pace.envelope import PaceError
 from pace.sports import PUSHABLE
 from pace.workoutwrites import delete_spec, schedule_spec, upload_spec
-from pace.writes import WriteSpec, run_write
+from pace.writes import WriteSpec, invalidate, run_write
 
 PUSH_LOCK_TIMEOUT_S = 10.0
 #: Dry-run stand-in for the workout id the upload step would return.
@@ -88,22 +88,30 @@ async def _step(res: dict[str, Any], name: str, spec: WriteSpec, *, dry_run: boo
     except PaceError as exc:
         if not (missing_ok and exc.code == "not_found"):
             raise
+        invalidate(spec.invalidate)  # already gone: its cached rows are stale all the same
         ident = None
     res["steps"].append({"step": name, "payload": spec.payload, "id": ident})
     return ident
 
 
-def _save(res: dict[str, Any], sid: int, mutate: Callable[[dict[str, Any]], None]) -> None:
-    """Persist after a landed step; on failure the error names the landed ids to clean up."""
+def _save(res: dict[str, Any], sid: int, mutate: Callable[[dict[str, Any]], None], *,
+          recorded: bool = False) -> None:
+    """Persist after a landed step; on failure the hint says how to recover the landed ids.
+
+    `recorded`: an earlier save already holds the workout id, so only this step is unsaved.
+    """
     try:
         res["session"] = _persist(sid, mutate)
     except PaceError as exc:
         g = res["garmin"]
         if not g:
             raise
-        raise PaceError(exc.code, exc.message, exc.http,
-                        f"Workout {g['workout_id']} is on Garmin but not recorded in the plan; remove it with "
-                        f"`pace workout delete {g['workout_id']}`.") from None
+        if recorded and exc.code != "not_found":
+            hint = f"Workout {g['workout_id']} is recorded but its schedule is not; push again to replace it."
+        else:
+            hint = (f"Workout {g['workout_id']} is on Garmin but not recorded in the plan; remove it with "
+                    f"`pace workout delete {g['workout_id']}`.")
+        raise PaceError(exc.code, exc.message, exc.http, hint) from None
 
 
 def _clear(s: dict[str, Any]) -> None:
@@ -128,7 +136,14 @@ async def _push_one(sid: int, *, dry_run: bool, force: bool, today: date) -> dic
                 res["garmin"] = None
                 _save(res, sid, _clear)
         dsl = {**copy.deepcopy(s["workout"]), "name": _workout_name(s["workout"]["name"])}
-        workout_id = await _step(res, "upload", upload_spec(dsl), dry_run=dry_run)
+        try:
+            workout_id = await _step(res, "upload", upload_spec(dsl), dry_run=dry_run)
+        except PaceError as exc:
+            if exc.code not in ("network", "internal"):
+                raise
+            raise PaceError(exc.code, exc.message, exc.http,
+                            f"The upload may have landed: check `pace workout list` for {dsl['name']!r} "
+                            "and delete it before retrying.") from None
         if not dry_run:
             if workout_id is None:
                 raise PaceError("internal", "upload response carries no workoutId",
@@ -150,7 +165,7 @@ async def _push_one(sid: int, *, dry_run: bool, force: bool, today: date) -> dic
             def scheduled(x: dict[str, Any]) -> None:
                 x.update(garmin=copy.deepcopy(res["garmin"]), status="pushed")
 
-            _save(res, sid, scheduled)
+            _save(res, sid, scheduled, recorded=True)
     except PaceError as exc:
         return {**res, "ok": False, "error": _err(exc)}
     return res
@@ -188,12 +203,20 @@ def _finish(results: list[dict[str, Any]], dry_run: bool) -> dict[str, Any]:
     return out
 
 
+async def _guarded(sid: int, one: Callable[[int], Any]) -> dict[str, Any]:
+    """Any error escaping a session (e.g. an unreadable plan file) fails that session, not the batch."""
+    try:
+        return await one(sid)
+    except PaceError as exc:
+        return {**_result(sid, None), "ok": False, "error": _err(exc)}
+
+
 async def _batch(ids: list[int], dry_run: bool, one: Callable[[int], Any]) -> dict[str, Any]:
     ids = list(dict.fromkeys(ids))
     if dry_run:
-        return _finish([await one(sid) for sid in ids], dry_run)
+        return _finish([await _guarded(sid, one) for sid in ids], dry_run)
     with store.locked(_lock_path(), timeout_s=PUSH_LOCK_TIMEOUT_S):
-        return _finish([await one(sid) for sid in ids], dry_run)
+        return _finish([await _guarded(sid, one) for sid in ids], dry_run)
 
 
 async def push_sessions(ids: list[int], *, dry_run: bool, force: bool, today: date) -> dict[str, Any]:

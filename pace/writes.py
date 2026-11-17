@@ -27,6 +27,25 @@ class WriteSpec:
     id_of: Callable[[Any], Any] | None = None
 
 
+def invalidate(prefixes: tuple[str, ...]) -> None:
+    """Drop cache rows under each prefix after a write.
+
+    The write already landed on Garmin, so a cache failure must never report it as
+    `ok: false` -- a stale local row is the lesser evil, and it is logged.
+    """
+    if not prefixes:
+        return
+    try:
+        cache = Cache()
+        try:
+            for prefix in prefixes:
+                log(f"invalidate {prefix}* -> {cache.invalidate(prefix)} rows")
+        finally:
+            cache.close()
+    except Exception as exc:  # noqa: BLE001 -- see above; never fatal
+        log(f"invalidate failed: {exc}")
+
+
 async def run_write(spec: WriteSpec, *, dry_run: bool) -> Result:
     if dry_run:
         return Result({"dry_run": True, "payload": spec.payload})
@@ -34,17 +53,6 @@ async def run_write(spec: WriteSpec, *, dry_run: bool) -> Result:
     if not ok:
         assert err is not None
         raise PaceError.from_api(err)
-    if spec.invalidate:
-        # The write already landed on Garmin, so a cache failure must never report it as
-        # `ok: false` -- a stale local row is the lesser evil, and it is logged.
-        try:
-            cache = Cache()
-            try:
-                for prefix in spec.invalidate:
-                    log(f"invalidate {prefix}* -> {cache.invalidate(prefix)} rows")
-            finally:
-                cache.close()
-        except Exception as exc:  # noqa: BLE001 -- see above; never fatal
-            log(f"invalidate failed: {exc}")
+    invalidate(spec.invalidate)
     ident = spec.id_of(resp) if spec.id_of is not None and resp is not None else None
     return Result({"action": spec.action, "resource": spec.resource, "id": ident, "echo": spec.echo})

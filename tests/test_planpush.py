@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from pace import plan, planpush
 from pace.api import ApiError
+from pace.cache import Cache
 from pace.cli import app
 from pace.envelope import PaceError
 
@@ -40,7 +41,7 @@ def _kind(method_name, args, kwargs):
 def fake_api(monkeypatch):
     """Answers per call kind (upload, schedule, delete); `fail` maps a 1-based call number
     or a kind to an ApiError; `on` maps a kind to a callback run before it answers."""
-    state = {"calls": [], "fail": {}, "on": {}, "next_workout": 77, "next_schedule": 9}
+    state = {"calls": [], "fail": {}, "on": {}, "resp": {}, "next_workout": 77, "next_schedule": 9}
 
     async def safe_call(method_name, *args, **kwargs):
         kind = _kind(method_name, args, kwargs)
@@ -50,6 +51,8 @@ def fake_api(monkeypatch):
         err = state["fail"].get(len(state["calls"])) or state["fail"].get(kind)
         if err is not None:
             return False, None, err
+        if kind in state["resp"]:
+            return True, state["resp"][kind], None
         if kind == "upload":
             state["next_workout"] += 1
             return True, {"workoutId": state["next_workout"] - 1}, None
@@ -219,7 +222,6 @@ def test_concurrent_push_waits_and_skips(fake_api, monkeypatch) -> None:
         fcntl.flock(fh, fcntl.LOCK_UN)
     assert exc.value.code == "internal" and "busy" in exc.value.message
     assert fake_api["calls"] == []
-    assert fake_api["calls"] == []
     monkeypatch.setattr(planpush, "PUSH_LOCK_TIMEOUT_S", 5.0)
     with lock.open("a") as fh:  # held briefly: the push waits, then re-reads and skips
         fcntl.flock(fh, fcntl.LOCK_EX)
@@ -341,3 +343,106 @@ def test_dry_run_no_calls_no_writes(fake_api) -> None:
     out = _unpush([a], dry_run=True)
     assert out["results"][0]["steps"][0]["payload"] == {"path": "/workout-service/workout/77"}
     assert fake_api["calls"] == [] and plan.plan_path().read_bytes() == before
+
+
+def _corrupt():
+    plan.plan_path().write_text("{not json")
+
+
+def test_unreadable_plan_mid_batch_fails_per_session(fake_api) -> None:
+    a, b = _add(_s(), _s("2026-11-19"))
+    good = plan.plan_path().read_text()
+    fake_api["on"]["upload"] = _corrupt
+    out = _push([a, b])  # returned, not raised: a's upload landed
+    ra, rb = out["results"]
+    assert not ra["ok"] and ra["garmin"] == {"workout_id": 77, "schedule_id": None}
+    assert "workout delete 77" in ra["error"]["hint"]
+    assert not rb["ok"] and rb["error"]["code"] == "internal" and rb["steps"] == []
+    assert out["done"] == 0 and out["failed"] == 2 and _kinds(fake_api) == ["upload"]
+    plan.plan_path().write_text(good)
+
+
+def test_failed_save_after_schedule_says_push_again(fake_api) -> None:
+    (sid,) = _add(_s())
+    saved = {}
+
+    def corrupt():
+        saved["text"] = plan.plan_path().read_text()  # as left by the upload save
+        _corrupt()
+
+    fake_api["on"]["schedule"] = corrupt
+    r = _push([sid])["results"][0]
+    assert not r["ok"] and r["garmin"] == {"workout_id": 77, "schedule_id": 9}
+    assert "push again" in r["error"]["hint"] and "workout delete" not in r["error"]["hint"]
+    plan.plan_path().write_text(saved["text"])
+    s = _session(sid)  # the upload save went through
+    assert s["garmin"] == {"workout_id": 77, "schedule_id": None} and s["status"] == "planned"
+
+
+def test_vanished_before_schedule_save_says_delete(fake_api) -> None:
+    (sid,) = _add(_s())
+
+    def vanish():
+        with plan.transaction() as data:
+            s = next(x for x in data["sessions"] if x["id"] == sid)
+            s["garmin"] = None  # simulate a hand edit; remove_sessions refuses while garmin is set
+            plan.remove_sessions(data, [sid])
+
+    fake_api["on"]["schedule"] = vanish
+    r = _push([sid])["results"][0]
+    assert not r["ok"] and "workout delete 77" in r["error"]["hint"]
+
+
+def test_repush_after_garmin_side_delete(fake_api) -> None:
+    (sid,) = _add(_s())
+    _push([sid])
+    fake_api["calls"].clear()
+    fake_api["fail"]["delete"] = ApiError("not_found", "gone", 404)
+    r = _push([sid], force=True)["results"][0]
+    assert r["ok"] and [st["step"] for st in r["steps"]] == ["delete", "upload", "schedule"]
+    assert _session(sid)["garmin"] == {"workout_id": 78, "schedule_id": 10}
+
+
+def test_404_delete_still_invalidates(fake_api) -> None:
+    (sid,) = _add(_s())
+    _push([sid])
+
+    async def rows():
+        return []
+
+    cache = Cache()
+    asyncio.run(cache.get_or_fetch("get_workouts:0:50", rows, ttl=600))
+    cache.close()
+    fake_api["fail"]["delete"] = ApiError("not_found", "gone", 404)
+    assert _unpush([sid])["results"][0]["action"] == "unpushed"
+    cache = Cache()
+    assert cache.stats()["entries"] == 0
+    cache.close()
+
+
+def test_upload_without_workout_id(fake_api) -> None:
+    (sid,) = _add(_s())
+    fake_api["resp"]["upload"] = {}
+    out = _push([sid])
+    r = out["results"][0]
+    assert not r["ok"] and r["error"]["code"] == "internal" and "workout list" in r["error"]["hint"]
+    assert [st["step"] for st in r["steps"]] == ["upload"] and r["garmin"] is None
+    assert _kinds(fake_api) == ["upload"] and _session(sid)["garmin"] is None
+
+
+def test_schedule_without_schedule_id(fake_api) -> None:
+    (sid,) = _add(_s())
+    fake_api["resp"]["schedule"] = {}
+    r = _push([sid])["results"][0]
+    assert not r["ok"] and r["error"]["code"] == "internal"
+    s = _session(sid)
+    assert s["garmin"] == {"workout_id": 77, "schedule_id": None} and s["status"] == "planned"
+
+
+@pytest.mark.parametrize("code", ["network", "internal"])
+def test_ambiguous_upload_error_hints_workout_list(fake_api, code) -> None:
+    (sid,) = _add(_s())
+    fake_api["fail"]["upload"] = ApiError(code, "boom")
+    with pytest.raises(PaceError) as exc:
+        _push([sid])
+    assert exc.value.code == code and "pace workout list" in exc.value.hint and "pace: Easy" in exc.value.hint

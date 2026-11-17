@@ -307,7 +307,7 @@ Refused per session as `bad_args`, with no Garmin call: an unknown id, a `skippe
 Past sessions are never pushed, re-pushed or unpushed: deleting their workout would erase that day from the Garmin calendar.
 
 `plan unpush ID... [--dry-run]` deletes each session's workout and saves `garmin = null`, `status = planned`, `pushed_as = null`, `stale = false`; a session without `garmin` is a `noop`.
-Deleting a workout also removes its calendar schedules, and a delete answered with 404 `not_found` counts as done (the workout is already gone).
+Deleting a workout also removes its calendar schedules, and a delete answered with 404 `not_found` counts as done (the workout is already gone) and still drops the same cache keys.
 Pushed workouts stay in the Garmin workout library after their day; pace deletes one only on re-push or unpush, never as a cleanup.
 
 The whole call holds a push lock (`$PACE_HOME/plan-push.json.lock`, separate from the `plan.json` lock taken for each save), so a second `plan push` or `plan unpush`, from a terminal or the bot, waits up to 10 s, then re-reads each session and skips what is already pushed; past the wait it fails with `internal` "busy".
@@ -318,7 +318,10 @@ The whole call holds a push lock (`$PACE_HOME/plan-push.json.lock`, separate fro
 `error` is the error object of the error envelope, or null.
 `garmin` holds the Garmin ids that exist for the session as far as pace knows, and `session` the session as saved.
 The envelope is `ok: false` with the first error only when every session failed and no step completed; otherwise it is `ok: true` and failures are reported per session.
-If the session vanished from the file during the push, or saving after a landed step failed, the result is an error whose `garmin` carries the landed ids and whose hint names the `pace workout delete` call that cleans up.
+If the session vanished from the file during the push, or saving after a landed upload failed, the result is an error whose `garmin` carries the landed ids and whose hint names the `pace workout delete` call that cleans up.
+If only the save after the schedule failed, the workout id is already recorded and the hint says to push again, which replaces it.
+Any error outside the Garmin calls, such as an unreadable `plan.json`, fails that session only; the results already collected are kept.
+A `network` or `internal` error on the upload is ambiguous, so its hint says to look for the `pace: <name>` workout in `pace workout list` before retrying; an upload response without `workoutId`, or a schedule response without `workoutScheduleId`, is an `internal` error.
 
 `--dry-run` takes no lock, makes no network call and changes no file; `data.dry_run` is true and each result lists the steps it would run with their exact payloads (the schedule path shows `{workout_id}` for the id the upload would return).
 
