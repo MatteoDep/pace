@@ -36,10 +36,6 @@ def _commands() -> dict[str, dict]:
     return {c["name"]: c for c in _schema()["commands"]}
 
 
-def _global_flags() -> set[str]:
-    return {f for key in _schema()["global_flags"] for f in FLAG_RE.findall(key)}
-
-
 def _section(text: str, heading: str) -> str:
     start = text.index(f"\n{heading}\n")
     rest = text[start + len(heading) + 2:]
@@ -96,36 +92,47 @@ def test_every_group_and_command_in_reference() -> None:
         assert _mentions(ref, name), name
 
 
+def _span_errors(span: str, cmds: dict[str, dict]) -> list[str]:
+    """Problems with one span: unknown command, or a flag the resolved command does not take.
+
+    Only the command's own `flags` (plus --help) count: `global_flags` describes the root and the
+    shaping flags, which every command that takes them already lists.
+    """
+    tokens = span.split()
+    groups = {n.split()[0] for n in cmds}
+    if len(tokens) == 3 and tokens[1] in groups and tokens[2] == "--help":
+        return []
+    name = _resolve(span, set(cmds))
+    if name is None:
+        return [f"unknown command in `{span}`"]
+    allowed = (ALLOWED[name] if name in ALLOWED else set(cmds[name]["flags"])) | {"--help"}
+    return [f"{flag} not a flag of `pace {name}` in `{span}`"
+            for flag in FLAG_RE.findall(" ".join(_head(span))) if flag not in allowed]
+
+
 def test_pace_spans_resolve() -> None:
     cmds = _commands()
-    names = set(cmds)
-    groups = set(_schema()["groups"])
-    global_flags = _global_flags()
-    bad = []
-    for p in FILES:
-        for span in _spans(p.read_text()):
-            tokens = span.split()
-            if len(tokens) == 3 and tokens[1] in groups and tokens[2] == "--help":
-                continue
-            name = _resolve(span, names)
-            if name is None:
-                bad.append(f"{p.name}: unknown command in `{span}`")
-                continue
-            allowed = ALLOWED.get(name, set(cmds[name]["flags"]) if name in cmds else set())
-            for flag in FLAG_RE.findall(" ".join(_head(span))):
-                if flag not in allowed and flag not in global_flags:
-                    bad.append(f"{p.name}: {flag} not a flag of `pace {name}` in `{span}`")
+    assert not (ALLOWED.keys() & cmds.keys()), "allowlisted command now in the schema: drop it from ALLOWED"
+    bad = [f"{p.name}: {e}" for p in FILES for span in _spans(p.read_text()) for e in _span_errors(span, cmds)]
     assert not bad, "\n".join(bad)
 
 
 def test_span_checker_catches_drift() -> None:
-    names = set(_commands())
+    cmds = _commands()
+    names = set(cmds)
     assert _resolve("pace diary set-due 4 --clear", names) == "diary set-due"
     assert _resolve("pace diary set checkin.last now", names) == "diary set"
     assert _resolve("pace plan block add --name x", names) == "plan block add"
     assert _resolve("pace diary renamed", names) is None
     assert _resolve("pace -- diary set", names) is None
-    assert "--since" in _commands()["diary show"]["flags"] and "--sinse" not in _commands()["diary show"]["flags"]
+    must_fail = ["pace diary show --from x", "pace diary show --sinse x", "pace plan status --fields all",
+                 "pace diary renamed", "pace zones push --force"]
+    for span in must_fail:
+        assert _span_errors(span, cmds), span
+    must_pass = ["pace diary show --since x --kind feedback", "pace diary add --kind note -- --from text",
+                 "pace plan --help", "pace zones push --dry-run", "pace activity list --days 7 --fields all"]
+    for span in must_pass:
+        assert not _span_errors(span, cmds), span
 
 
 def test_writes_section_complete() -> None:

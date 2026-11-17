@@ -44,7 +44,7 @@ For each, write one short opener built from the data, not a generic question:
 - unplanned: first check `pace workout calendar --from <date-3d> --to <date+3d>` (did the user move a planned workout?), then ask what it was.
 Several pending runs go in one message, one line each.
 RPE and feel already on the activity are used as given; ask for them only when missing.
-Which zones judge intensity: if `pace zones show` reports `in_sync: true`, use `hr_zones_s` from `plan status`; otherwise judge from average HR and time against the current LT1 and LT2 HR; with no current record, use the watch zones and `hr_zones_s` as they are.
+Which zones judge intensity: if `pace zones show` reports `in_sync: true`, use `hr_zones_s` from `plan status`; otherwise, if both LT1 and LT2 have a current record, judge from average HR and time against the current LT1 and LT2 HR; unless both have one, use the watch zones and `hr_zones_s` as they are.
 Record each answer with `pace diary add --kind feedback --ref activity:<id> [--ref session:<id>] -- <text>`.
 When the user replies without adding anything about a run (skips it, "nothing", "no"), record the text "no comment", so the run is not raised again.
 Reported pain becomes an `injury` entry only after the user confirms the wording.
@@ -52,7 +52,7 @@ Reported pain becomes an `injury` entry only after the user confirms the wording
 Then: a full check-in if it is due (next section); otherwise answer what the user asked.
 A quick data question ("how did I sleep?") gets the run review if runs are pending, then its answer, without the rest of the check-in.
 
-Unattended runs (no user at a terminal): do every step that needs no answer, send the questions together in one message, and finish the run (Full check-in step 6 included); nothing waits for input, nothing opens a file for a human, and a step that cannot be done is skipped with a one-line note.
+Unattended runs (no user at a terminal): do every step that needs no answer, send the questions together in one message (at most one intake question), and finish the run (Full check-in step 6 included); nothing waits for input, nothing opens a file for a human, and a step that cannot be done is skipped with a one-line note.
 The user's later reply is handled as a new session, which picks up from the diary.
 
 ## Full check-in
@@ -146,6 +146,7 @@ Refresh the dashboard once after a batch of plan edits, not after each edit.
 Read the thresholds section of `coaching.md` first.
 `pace zones show` gives the current LT1 and LT2 records, derived zones, `in_sync` (pace's floors equal the watch's), `due` and `expired`.
 When an estimate is due: `pace zones estimate --save` (10-minute timeout), then show the candidate next to the current values and ask whether to accept it.
+If the result has `save_refused` or a non-empty `deferred` (a partial estimate), say so and what it means, and do not offer to accept it.
 A field test is due per threshold: plan it with the user; `pace zones test-workout drift|time_trial|ramp` returns the workout DSL; put `data.workout` in a session (`pace plan add -`, or `pace plan set ID --workout -` with the DSL on stdin) and push it on yes.
 After the test run: `pace zones analyze <activity id> --test drift|time_trial|ramp --save`; a refusal carries the verdict and the next test to plan.
 For LT1 on this athlete, prefer the drift test (F1): DFA alpha1 did not fall with intensity on their ramp, so a ramp (F3) only when `pace zones show` does not mark alpha1 unreliable and the user wants it.
@@ -153,7 +154,7 @@ Lab values: record them as reported with `pace zones add --source lab --date <da
 A record becomes current only with `pace zones accept ID [--only lt1|lt2]` on the user's yes (a lab record is current on entry unless older).
 A lab record stays current for 6 months, then `expired`: suggest a retest and show newer estimates next to it without applying them.
 Once available, `pace zones push --dry-run` shows the watch zones to write; `pace zones push` on yes.
-Intensity rule: when `in_sync` is not true and a current record exists, write workout DSL HR targets as bpm ranges from the current zones, not `z1..z5`.
+Intensity rule: when `in_sync` is not true and both LT1 and LT2 have a current record, write workout DSL HR targets as bpm ranges from the current zones, not `z1..z5`.
 
 ## Coaching
 

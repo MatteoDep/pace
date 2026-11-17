@@ -116,7 +116,7 @@ Not yet built: `pace zones push` (write the current zones to the watch), once av
 Step types: warmup, cooldown, interval, recovery, rest.
 Each step ends on exactly one of `duration` (45s, 10m, 1h30m), `distance` (400m, 5.5km) or `open: true`.
 Targets (optional, one of): `pace` (min:sec per km, single or range), `hr` (`z1`..`z5` or a bpm range such as `140-150`), `power`, `cadence`.
-Use bpm ranges instead of `z1`..`z5` when `pace zones show` reports `in_sync` not true and a current record exists.
+Use bpm ranges instead of `z1`..`z5` when `pace zones show` reports `in_sync` not true and both LT1 and LT2 have a current record.
 Only running with pace and HR-zone targets is live-verified.
 
 ## Presentation tables
