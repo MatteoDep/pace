@@ -1,9 +1,11 @@
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from pace import thresholds as th
+from pace.workout import build_workout
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -274,3 +276,376 @@ def test_h3_without_h2_or_cs():
     assert r["status"] == "ok" and r["hr"] is None and r["pace_s_per_km"] == 304
     bad = th.lt1_from_cs({"status": "insufficient_data", "reasons": ["x"]}, None)
     assert bad["status"] == "insufficient_data" and bad["reasons"]
+
+
+# --- H5 (task 3b): candidates, segment, bounds ---
+
+def lrow(aid, start, type_key="running", event="uncategorized", te=3.0):
+    return {"activityId": aid, "startTimeGMT": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "activityType": {"typeKey": type_key}, "eventType": {"typeKey": event},
+            "aerobicTrainingEffect": te}
+
+
+T0 = datetime(2026, 11, 1, 6, 0, 0)
+
+
+def test_h5_candidate_24h_rule_race_and_training_effect():
+    race = lrow(1, T0, event="race")
+    hard = lrow(2, T0 + timedelta(days=5), te=4.2)
+    soft = lrow(3, T0 + timedelta(days=9), te=3.9)
+    after20 = lrow(10, T0 + timedelta(hours=20))
+    after30 = lrow(11, T0 + timedelta(hours=30))
+    hard20 = lrow(12, T0 + timedelta(days=5, hours=20))
+    hard30 = lrow(13, T0 + timedelta(days=5, hours=30))
+    soft20 = lrow(14, T0 + timedelta(days=9, hours=20))
+    rows = [race, hard, soft, after20, after30, hard20, hard30, soft20]
+    assert th.drift_candidate(after20, rows) is False
+    assert th.drift_candidate(after30, rows) is True
+    assert th.drift_candidate(hard20, rows) is False
+    assert th.drift_candidate(hard30, rows) is True
+    assert th.drift_candidate(soft20, rows) is True      # TE 3.9 < 4.0
+    assert th.drift_candidate(race, rows) is True        # never excluded by itself
+    assert th.drift_candidate(lrow(20, T0 - timedelta(hours=5)), rows) is True   # the race is later, not before
+
+
+def test_h5_candidate_outdoor_running_only():
+    assert th.drift_candidate(lrow(1, T0, type_key="treadmill_running"), []) is False
+    assert th.drift_candidate(lrow(2, T0, type_key="trail_running"), []) is False
+    assert th.drift_candidate(lrow(3, T0, type_key="cycling"), []) is False
+    assert th.drift_candidate(lrow(4, T0), []) is True
+
+
+def steady_table(extra, hr=140, speed=3.0, **kw):
+    return table(900 + extra, lambda t: 2.0 if t <= 900 else speed, hr_fn=lambda t: hr, **kw)
+
+
+def test_h5_segment_evidence_row():
+    ev = th.drift_segment(run(7, steady_table(3000, hr=140)), fit_records=None)
+    assert ev["id"] == 7 and ev["bounds"] == [900, 3900] and ev["length_s"] == 3000
+    assert ev["h"] == 140 and ev["drift"] == pytest.approx(0.0, abs=1e-9) and ev["label"] == "below"
+    assert ev["temperature"] == "unknown"
+
+
+def test_h5_segment_drift_and_label():
+    tbl = table(3900, lambda t: 2.0 if t <= 900 else 3.0, hr_fn=lambda t: 140 if t <= 2400 else 150)
+    ev = th.drift_segment(run(1, tbl), fit_records=None)
+    assert ev["h"] == 140 and ev["drift"] == pytest.approx((150 / 140 - 1) * 100, abs=0.01)
+    assert ev["label"] == "above"
+
+
+def test_h5_segment_40_min_rejected():
+    out = th.drift_segment(run(2, steady_table(2400)), fit_records=None)
+    assert out["id"] == 2 and out["rejected"] == "segment shorter than 2700 s"
+
+
+def test_h5_segment_hot_fit_temperature_matched_on_elapsed_t():
+    tbl = steady_table(3000)
+    hot = [{"t": t, "temp": 27} for t in range(900, 3901)] + [{"t": t, "temp": 10} for t in range(0, 900)]
+    assert th.drift_segment(run(3, tbl), fit_records=hot)["rejected"] == "mean temperature >= 24 C"
+    # the same hot records but outside the segment (warm-up only) do not count
+    cool = [{"t": t, "temp": 27} for t in range(0, 800)] + [{"t": t, "temp": 15} for t in range(900, 3901)]
+    ev = th.drift_segment(run(3, tbl), fit_records=cool)
+    assert ev["temperature"] == 15
+    # records present but none with temperature: unknown
+    assert th.drift_segment(run(3, tbl), fit_records=[{"t": 1000, "hr": 140}])["temperature"] == "unknown"
+
+
+def test_h5_segment_stop_excluded_and_reported():
+    spd = lambda t: 2.0 if t <= 900 else (0.0 if 1000 <= t < 1020 else 3.0)  # noqa: E731
+    out = th.drift_segment(run(4, table(5100, spd)), fit_records=None)
+    assert out["excluded_s"] == 20
+    assert out["bounds"][0] >= 1020 and out["drift"] == pytest.approx(0.0, abs=1e-9)
+    # a stop in the middle that leaves no 2700 s side: rejected, not a wrong drift
+    spd2 = lambda t: 2.0 if t <= 900 else (0.0 if 2000 <= t < 2020 else 3.0)  # noqa: E731
+    rej = th.drift_segment(run(5, table(4500, spd2)), fit_records=None)
+    assert "rejected" in rej and rej["excluded_s"] == 20
+
+
+def test_h5_segment_hilly_rejected():
+    tbl = table(3900, lambda t: 2.0 if t <= 900 else 3.0)
+    for r in tbl:   # grade 1.5% (flat enough per window) but 15 m of ascent per km (> 10)
+        r["alt"] = r["dist"] * 0.015
+    out = th.drift_segment(run(6, tbl), fit_records=None)
+    assert "rejected" in out
+
+
+def test_h5_segment_wrist():
+    r = run(8, steady_table(3000), src="wrist")
+    assert th.drift_segment(r, fit_records=None) == {"id": 8, "rejected": th.WRIST_REASON}
+    ev = th.drift_segment(r, fit_records=None, include_wrist=True)
+    assert ev["id"] == 8 and ev["wrist"] is True and "rejected" not in ev
+
+
+def ev(h, label, drift=0.0):
+    return {"id": h, "h": h, "label": label, "drift": drift}
+
+
+BASE = [ev(132, "below"), ev(136, "below"), ev(138, "below"), ev(146, "above"), ev(149, "above"), ev(152, "above")]
+
+
+def test_h5_bounds_worked_example():
+    out = th.drift_bounds(BASE)
+    assert out["status"] == "ok" and out["estimate"] == 142 and out["confidence"] == "medium"
+    assert out["errors"] == 0 and out["gap"] == 8
+    assert out["bounds"] == {"lower": 138, "upper": 146}
+    assert th.drift_bounds(BASE, h2={"a": 60, "b": 25})["pace_s_per_km"] == 305
+    assert th.drift_bounds(BASE)["pace_s_per_km"] is None
+
+
+def test_h5_bounds_with_one_error_is_low():
+    out = th.drift_bounds(BASE + [ev(144, "below"), ev(141, "above")])
+    assert out["errors"] == 1 and out["bounds"] == {"lower": 138, "upper": 146}
+    assert out["estimate"] == 142 and out["confidence"] == "low"
+
+
+def test_h5_bounds_one_sided():
+    below = th.drift_bounds(BASE[:3])
+    assert below["estimate"] is None and below["status"] == "insufficient_data"
+    assert "LT1 HR >= 138" in below["notes"]
+    above = th.drift_bounds(BASE[3:])
+    assert above["estimate"] is None and "LT1 HR <= 146" in above["notes"]
+    assert th.drift_bounds([])["status"] == "insufficient_data"
+
+
+def test_h5_bounds_gap_limits():
+    low = th.drift_bounds([ev(130, "below"), ev(131, "below"), ev(146, "above"), ev(147, "above")])
+    assert low["gap"] == 15 and low["confidence"] == "low" and low["estimate"] == 139   # R(138.5)
+    wide = th.drift_bounds([ev(120, "below"), ev(125, "below"), ev(150, "above"), ev(155, "above")])
+    assert wide["estimate"] is None and "bounds too wide" in wide["reasons"]
+    one_each = th.drift_bounds([ev(138, "below"), ev(146, "above")])
+    assert one_each["confidence"] == "low"       # E = 0, gap 8 but fewer than 2 runs per label
+    bad = th.drift_bounds([ev(130, "below"), ev(150, "below"), ev(140, "above")])
+    assert bad["estimate"] is None and "inconsistent drift evidence" in bad["reasons"]
+    assert [r["id"] for r in bad["runs"]] == [130, 150, 140]
+
+
+# --- F1 (task 3b) ---
+
+def lap(start_s, dur):
+    return {"startTimeGMT": (datetime(2026, 11, 17, 10) + timedelta(seconds=start_s)).strftime("%Y-%m-%dT%H:%M:%S.0"),
+            "duration": float(dur), "distance": 0.0}
+
+
+F1_LAPS = [lap(0, 900), lap(900, 3600), lap(4500, 600)]
+
+
+def f1_table(v1, hr1, v2, hr2, steady=3600, spd=None):
+    half = 900 + steady // 2
+
+    def speed(t):
+        if t <= 900:
+            return 2.0
+        return v1 if t <= half else v2
+
+    return table(900 + steady + 600, spd or speed, hr_fn=lambda t: 120 if t <= 900 else (hr1 if t <= half else hr2))
+
+
+def f1_laps(steady=3600):
+    return [lap(0, 900), lap(900, steady), lap(900 + steady, 600)]
+
+
+def test_f1_at_lt1_saveable():
+    out = th.drift(f1_table(3.20, 140, 3.18, 146), laps=F1_LAPS, treadmill=False)
+    assert out["status"] == "ok" and out["verdict"] == "at LT1" and out["saveable"] is True
+    assert out["drift_pct"] == pytest.approx(4.94, abs=0.01)
+    assert out["lt1"] == {"hr": 140, "pace_s_per_km": 313}
+    assert out["confidence"] == "medium" and out["temperature"] == "unknown"
+    assert out["uneven_pace"] is False and out["excluded_s"] == 0
+
+
+def test_f1_below_and_above_retest():
+    below = th.drift(f1_table(3.10, 138, 3.09, 141), laps=F1_LAPS, treadmill=False)
+    assert below["drift_pct"] == pytest.approx(2.50, abs=0.01) and below["verdict"] == "below LT1"
+    assert below["saveable"] is False and below["retest_hr"] == 143 and below["confidence"] is None
+    above = th.drift(f1_table(3.30, 146, 3.26, 156), laps=F1_LAPS, treadmill=False)
+    assert above["drift_pct"] == pytest.approx(8.16, abs=0.01) and above["verdict"] == "above LT1"
+    assert above["saveable"] is False and above["retest_hr"] == 141
+
+
+def test_f1_35_min_rejected():
+    out = th.drift(f1_table(3.2, 140, 3.18, 146, steady=2100), laps=f1_laps(2100), treadmill=False)
+    assert out["status"] == "rejected" and any("shorter than 2400 s" in r for r in out["reasons"])
+
+
+def test_f1_uneven_pace_not_saveable():
+    def spd(t):
+        if t <= 900:
+            return 2.0
+        return 3.0 if ((t - 901) // 60) % 2 == 0 else 3.4
+    out = th.drift(f1_table(3.2, 140, 3.2, 146, spd=spd), laps=F1_LAPS, treadmill=False)
+    assert out["uneven_pace"] is True and out["speed_cv"] > 0.03
+    assert out["verdict"] == "at LT1" and out["saveable"] is False and out["confidence"] is None
+
+
+def test_f1_stop_excluded_reported_and_limits():
+    def spd(t):
+        if t <= 900:
+            return 2.0
+        return 0.0 if 2000 <= t < 2020 else 3.0
+    out = th.drift(f1_table(3.0, 140, 3.0, 146, spd=spd), laps=F1_LAPS, treadmill=False)
+    assert out["status"] == "ok" and out["excluded_s"] == 20
+    assert out["drift_pct"] == pytest.approx((146 / 140 - 1) * 100, abs=0.01)   # not distorted by the stop
+    long_stop = th.drift(f1_table(3.0, 140, 3.0, 146, spd=lambda t: 2.0 if t <= 900 else (0.0 if 2000 <= t < 2040 else 3.0)),
+                         laps=F1_LAPS, treadmill=False)
+    assert long_stop["status"] == "rejected" and long_stop["excluded_s"] == 40
+    assert any("30 s" in r for r in long_stop["reasons"])
+    many = th.drift(f1_table(3.0, 140, 3.0, 146, spd=lambda t: 2.0 if t <= 900 else (
+        0.0 if t % 500 < 25 and t > 1000 else 3.0)), laps=F1_LAPS, treadmill=False)
+    assert many["status"] == "rejected" and any("60 s" in r or "30 s" in r for r in many["reasons"])
+
+
+def test_f1_treadmill_uses_hr_only():
+    out = th.drift(f1_table(3.0, 140, 3.0, 145, spd=lambda t: 2.0 if t <= 900 else 3.0 + (t % 7) * 0.2),
+                   laps=F1_LAPS, treadmill=True)
+    assert out["drift_pct"] == pytest.approx((145 / 140 - 1) * 100, abs=0.01) and out["verdict"] == "at LT1"
+    assert out["lt1"] == {"hr": 140, "pace_s_per_km": None} and out["uneven_pace"] is False
+
+
+def test_f1_without_laps_uses_900_to_4500():
+    out = th.drift(f1_table(3.20, 140, 3.18, 146), laps=[], treadmill=False)
+    assert out["bounds"] == [900, 4500] and out["verdict"] == "at LT1"
+
+
+def test_f1_temperature_from_fit_and_f3_downgrade():
+    fit = [{"t": t, "temp": 18} for t in range(0, 5100)]
+    out = th.drift(f1_table(3.20, 140, 3.18, 146), laps=F1_LAPS, treadmill=False, fit_records=fit, f3_hr=145)
+    assert out["temperature"] == 18 and out["confidence"] == "medium"      # 5 bpm apart: not more than 5
+    low = th.drift(f1_table(3.20, 140, 3.18, 146), laps=F1_LAPS, treadmill=False, f3_hr=146)
+    assert low["confidence"] == "low" and low["saveable"] is True
+
+
+# --- F2 (task 3b) ---
+
+def tt_table(v1=4.0, v2=4.0, spd=None):
+    def speed(t):
+        if t <= 900 or t > 2700:
+            return 2.0
+        return v1 if t <= 1800 else v2
+
+    return table(3300, spd or speed, hr_fn=lambda t: 140 if t <= 900 else (158 if t < 1500 else 168))
+
+
+TT_LAPS = [lap(0, 900), lap(900, 600), lap(1500, 1200), lap(2700, 600)]
+
+
+def test_f2_worked_example():
+    out = th.time_trial(tt_table(), laps=TT_LAPS)
+    assert out["status"] == "ok" and out["lt2"] == {"hr": 168, "pace_s_per_km": 250}
+    assert out["speed_ratio"] == pytest.approx(1.0) and out["fade"] is False and out["confidence"] == "medium"
+    assert out["bounds"] == [900, 2700] and out["distance_m"] == pytest.approx(7200)
+
+
+def test_f2_fade_is_low():
+    out = th.time_trial(tt_table(4.4, 3.6), laps=TT_LAPS)
+    assert out["fade"] is True and out["speed_ratio"] < 0.95 and out["confidence"] == "low"
+
+
+def test_f2_without_laps_uses_fastest_window():
+    out = th.time_trial(tt_table(), laps=[])
+    assert out["status"] == "ok" and out["lt2"]["pace_s_per_km"] == 250 and out["bounds"] == [900, 2700]
+
+
+def test_f2_stop_rejected_and_reported_and_short_rejected():
+    out = th.time_trial(tt_table(spd=lambda t: 2.0 if t <= 900 or t > 2700 else (0.0 if 1700 <= t < 1720 else 4.0)),
+                        laps=TT_LAPS)
+    assert out["status"] == "rejected" and out["excluded_s"] == 20 and any("10 s" in r for r in out["reasons"])
+    short = th.time_trial(table(1500, lambda t: 4.0), laps=[lap(0, 1500)])
+    assert short["status"] == "rejected"
+
+
+# --- test workouts (task 3b) ---
+
+def steps_flat(dsl):
+    out = []
+    for s in dsl["steps"]:
+        out += s["steps"] if "repeat" in s else [s]
+    return out
+
+
+def targets(steps):
+    return [s.get("target") for s in steps]
+
+
+def test_workout_drift_with_record_pace_target():
+    dsl = th.test_workout("drift", lt1_record={"lt1": {"hr": 142, "pace_s_per_km": 304}},
+                          estimate_lt1_hr=None, h2=None)
+    build_workout(dsl)
+    steady = [s for s in dsl["steps"] if s["type"] == "interval"]
+    assert len(steady) == 1 and steady[0]["duration"] == "60m"
+    assert steady[0]["target"] == {"pace": "4:54-5:14"}
+    assert dsl["steps"][-1]["type"] == "cooldown" and dsl["steps"][-1]["duration"] == "10m"
+    assert [s["duration"] for s in dsl["steps"] if s["type"] == "warmup"] == ["12m", "3m"]
+
+
+def test_workout_drift_with_estimate_hr_only():
+    dsl = th.test_workout("drift", lt1_record=None, estimate_lt1_hr=142, h2=None)
+    build_workout(dsl)
+    warm = [s for s in dsl["steps"] if s["type"] == "warmup"]
+    assert warm[0].get("target") is None and warm[1]["target"] == {"hr": "139-145"}
+    steady = [s for s in dsl["steps"] if s["type"] == "interval"][0]
+    assert "target" not in steady and "hold the pace reached at the end of the warm-up" in steady["note"]
+    # a record without a pace also falls back to the estimate
+    dsl2 = th.test_workout("drift", lt1_record={"lt1": {"hr": 140, "pace_s_per_km": None}},
+                           estimate_lt1_hr=142, h2=None)
+    assert [s for s in dsl2["steps"] if s["type"] == "warmup"][1]["target"] == {"hr": "139-145"}
+
+
+def test_workout_drift_without_anything():
+    dsl = th.test_workout("drift", lt1_record=None, estimate_lt1_hr=None, h2=None)
+    build_workout(dsl)
+    assert all(t is None for t in targets(steps_flat(dsl)))
+    notes = " ".join(s.get("note", "") for s in dsl["steps"])
+    assert "build to conversational effort, RPE 3-4" in notes and "conversational, constant pace" in notes
+
+
+def test_workout_time_trial():
+    dsl = th.test_workout("time_trial", lt1_record=None, estimate_lt1_hr=None, h2=None)
+    build_workout(dsl)
+    flat = steps_flat(dsl)
+    assert all(t is None for t in targets(flat))
+    assert [s["duration"] for s in dsl["steps"] if "duration" in s and s["type"] == "interval"] == ["10m", "20m"]
+    assert dsl["steps"][0]["duration"] == "15m" and dsl["steps"][1]["repeat"] == 3
+    assert dsl["steps"][1]["steps"][0]["duration"] == "20s"
+
+
+def test_workout_ramp_from_record_with_h2():
+    rec = {"lt1": {"hr": 142, "pace_s_per_km": 304}}
+    h2 = {"a": 60, "b": 25, "v_min": 2.8, "v_max": 3.8}
+    dsl = th.test_workout("ramp", lt1_record=rec, estimate_lt1_hr=None, h2=h2)
+    build_workout(dsl)
+    ramp = [s for s in dsl["steps"] if s["type"] == "interval"]
+    assert len(ramp) == 8 and all(s["duration"] == "4m" for s in ramp)
+    assert dsl["steps"][0]["type"] == "warmup" and dsl["steps"][-1]["type"] == "cooldown"
+    # 121 bpm -> 2.44 m/s, below 0.9 x 2.8: HR target; 127 bpm -> 2.68 m/s: pace R(373.1) = 373 +/- 5
+    assert ramp[0]["target"] == {"hr": "118-124"} and "hold the pace steady" in ramp[0]["note"]
+    assert ramp[1]["target"] == {"pace": "6:08-6:18"}
+    assert ramp[7]["target"] == {"pace": "3:58-4:08"}      # 163 bpm -> 4.12 m/s -> 243 s/km, 4.12 <= 1.1 x 3.8
+    hrs = [int(s["target"]["hr"].split("-")[0]) + 3 for s in ramp if "hr" in s["target"]]
+    assert hrs == [121]
+
+
+def test_workout_ramp_hr_steps_from_estimate_and_no_h2():
+    dsl = th.test_workout("ramp", lt1_record=None, estimate_lt1_hr=142, h2={"a": 60, "b": 25, "v_min": 2.0, "v_max": 4.0})
+    build_workout(dsl)
+    ramp = [s for s in dsl["steps"] if s["type"] == "interval"]
+    centers = [(lambda lo, hi: (int(lo) + int(hi)) // 2)(*s["target"]["hr"].split("-")) for s in ramp]
+    assert centers == [121, 127, 133, 139, 145, 151, 157, 163]
+    rec = {"lt1": {"hr": 142, "pace_s_per_km": 304}}
+    assert all("hr" in s["target"] for s in
+               [s for s in th.test_workout("ramp", lt1_record=rec, estimate_lt1_hr=None, h2=None)["steps"]
+                if s["type"] == "interval"])
+
+
+def test_workout_ramp_rpe_notes_without_data():
+    dsl = th.test_workout("ramp", lt1_record=None, estimate_lt1_hr=None, h2=None)
+    build_workout(dsl)
+    ramp = [s for s in dsl["steps"] if s["type"] == "interval"]
+    assert all("target" not in s for s in ramp)
+    assert [s["note"] for s in ramp] == ["RPE 2 of 10", "RPE 2-3 of 10", "RPE 3 of 10", "RPE 3-4 of 10",
+                                         "RPE 4 of 10", "RPE 4-5 of 10", "RPE 5 of 10", "RPE 6 of 10"]
+
+
+def test_workout_unknown_kind():
+    from pace.envelope import PaceError
+    with pytest.raises(PaceError):
+        th.test_workout("nope", lt1_record=None, estimate_lt1_hr=None, h2=None)

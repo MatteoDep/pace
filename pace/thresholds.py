@@ -7,8 +7,10 @@ A sample row is {"t" (elapsed s), "hr", "speed", "dist", "alt", "cadence" (steps
 
 import math
 import statistics
+from datetime import datetime
 from typing import Any
 
+from pace.envelope import PaceError
 from pace.zones import R
 
 STOP_SPEED = 1.0           # m/s; a stretch below this for more than STOP_SECONDS is a stop (section 1)
@@ -41,6 +43,33 @@ SEE_LIMIT = 5.0
 LT1_FRACTION = 0.823
 
 WRIST_REASON = "wrist HR (use --include-wrist)"
+
+H5_START_S = 900           # H5 segments start at 900 s, 60 s steps (methods doc 7)
+H5_STEP_S = 60
+H5_MAX_S = 4500
+H5_MIN_S = 2700
+H5_SPEED_TOL = 0.05
+H5_GRADE_WINDOW_S = 300
+H5_MAX_TEMP_C = 24
+H5_PREVIOUS_RACE_H = 24
+H5_HARD_TE = 4.0
+H5_SPLIT = 5.0             # drift % above which a run counts as "above" LT1
+H5_MAX_GAP = 15
+H5_MEDIUM_GAP = 8
+F1_MIN_S = 2400
+F1_MAX_STOP_TOTAL_S = 60
+F1_MAX_STOP_S = 30
+F1_BAND = (3.5, 5.0)
+F1_CV_LIMIT = 0.03
+F1_WARMUP_S = 900          # no-laps fallback: steady part 900 s .. 900 s + 3600 s
+F1_STEADY_S = 3600
+F1_RETEST_STEP = 5
+F3_DISAGREE = 5
+F2_MIN_S = 1680
+F2_S = 1800
+F2_MAX_LAP_S = 1920
+F2_FADE = 0.95
+HR_COVERAGE = 0.9
 
 
 # --- sources and samples ---
@@ -394,3 +423,457 @@ def lt1_from_cs(cs: dict, h2: dict | None) -> dict:
     else:
         out["reasons"].append("no HR-speed regression: LT1 HR unknown")
     return out
+
+
+# --- H5, F1, F2 shared helpers ---
+
+def _half_stats(blocks: list[_Block], a: float, b: float) -> dict[str, Any]:
+    """Moving distance, seconds, speed and mean HR over elapsed time a..b (stop-free blocks only)."""
+    dist = secs = n_hr = 0
+    hr_total = 0.0
+    for blk in blocks:
+        lo, hi = math.ceil(max(a, blk.t0)), math.floor(min(b, blk.t0 + blk.n - 1))
+        if hi <= lo:
+            continue
+        i, j = lo - blk.t0, hi - blk.t0
+        dist += blk.dist[j] - blk.dist[i]
+        secs += j - i
+        n_hr += (j - i) - (blk.bad_hr[j + 1] - blk.bad_hr[i + 1])
+        hr_total += blk.hr_sum[j + 1] - blk.hr_sum[i + 1]
+    return {"dist": dist, "secs": secs, "speed": dist / secs if secs else None,
+            "hr": hr_total / n_hr if n_hr >= HR_COVERAGE * secs > 0 else None}
+
+
+def _drift_pct(h1: dict, h2: dict, treadmill: bool = False) -> float | None:
+    """F1 drift: outdoor (EF_1 / EF_2 - 1) x 100 with EF = speed / HR; treadmill (HR_2 / HR_1 - 1) x 100."""
+    if h1["hr"] is None or h2["hr"] is None:
+        return None
+    if treadmill:
+        return (h2["hr"] / h1["hr"] - 1) * 100
+    if not h1["speed"] or not h2["speed"]:
+        return None
+    return ((h1["speed"] / h1["hr"]) / (h2["speed"] / h2["hr"]) - 1) * 100
+
+
+def _mean_temp(fit_records: list[dict] | None, a: float, b: float) -> float | str:
+    """Mean FIT record temperature over elapsed t in a..b, else "unknown"."""
+    vals = [r["temp"] for r in fit_records or []
+            if a <= r.get("t", -1) <= b and isinstance(r.get("temp"), (int, float))]
+    return round(statistics.fmean(vals), 1) if vals else "unknown"
+
+
+def _ascent_per_km(blocks: list[_Block], a: float, b: float) -> float:
+    asc = dist = 0.0
+    for blk in blocks:
+        lo, hi = math.ceil(max(a, blk.t0)), math.floor(min(b, blk.t0 + blk.n - 1))
+        if hi > lo:
+            asc += blk.asc[hi - blk.t0] - blk.asc[lo - blk.t0]
+            dist += blk.dist[hi - blk.t0] - blk.dist[lo - blk.t0]
+    return asc / (dist / 1000) if dist > 0 else 0.0
+
+
+def _stop_lengths(rows: list[dict], a: float, b: float) -> list[int]:
+    """Length of every stop in rows within a..b: holes between moving rows above 5 s, plus the window edges."""
+    kept, _ = moving_samples([r for r in rows if isinstance(r.get("dist"), (int, float))])
+    if not kept:
+        return [round(b - a)]
+    out = [round(y["t"] - x["t"] - 1) for x, y in zip(kept, kept[1:]) if y["t"] - x["t"] > STOP_GAP]
+    for gap in (kept[0]["t"] - a, b - kept[-1]["t"]):
+        if gap > STOP_GAP:
+            out.append(round(gap))
+    return out
+
+
+def _cv(blocks: list[_Block], a: float, b: float) -> float | None:
+    """Coefficient of variation of speed over 60 s sub-windows tiled from a inside stop-free blocks."""
+    speeds = []
+    for blk in blocks:
+        lo, hi = math.ceil(max(a, blk.t0)), math.floor(min(b, blk.t0 + blk.n - 1))
+        x = lo
+        while x + 60 <= hi:
+            speeds.append(blk.speed(x - blk.t0, x + 60 - blk.t0))
+            x += 60
+    if len(speeds) < 2 or statistics.fmean(speeds) <= 0:
+        return None
+    return statistics.pstdev(speeds) / statistics.fmean(speeds)
+
+
+def _lap_spans(laps: list[dict]) -> list[tuple[float, float]]:
+    """(start, end) of each lap in elapsed s from the first lap's startTimeGMT; cumulative durations if unparsable."""
+    try:
+        t0 = datetime.fromisoformat(str(laps[0]["startTimeGMT"]))
+        starts = [(datetime.fromisoformat(str(lp["startTimeGMT"])) - t0).total_seconds() for lp in laps]
+    except (KeyError, ValueError, TypeError):
+        starts, acc = [], 0.0
+        for lp in laps:
+            starts.append(acc)
+            acc += lp["duration"]
+    return [(st, st + lp["duration"]) for st, lp in zip(starts, laps)]
+
+
+# --- H5 ---
+
+def _start_time(row: dict) -> datetime | None:
+    raw = row.get("startTimeGMT") or row.get("startTimeLocal")
+    try:
+        return datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+
+
+def _type_key(row: dict) -> str | None:
+    t = row.get("activityType")
+    return t.get("typeKey") if isinstance(t, dict) else t
+
+
+def drift_candidate(row: dict, rows: list[dict]) -> bool:
+    """H5 list-row filter: outdoor running, not starting within 24 h after the start of a race or of a run
+    with aerobicTrainingEffect >= 4.0 (other rows of `rows`; a row never excludes itself)."""
+    if _type_key(row) != "running":
+        return False
+    start = _start_time(row)
+    if start is None:
+        return True
+    for other in rows:
+        if other is row:
+            continue
+        hard = ((other.get("eventType") or {}).get("typeKey") == "race"
+                or (other.get("aerobicTrainingEffect") or 0) >= H5_HARD_TE)
+        o = _start_time(other)
+        if hard and o is not None and 0 < (start - o).total_seconds() < H5_PREVIOUS_RACE_H * 3600:
+            return False
+    return True
+
+
+def _grow(blk: _Block, i: int) -> int:
+    """Longest H5 segment length (s, multiple of 60) starting at grid index i; 0 if none."""
+    best, subs, k = 0, [], 0
+    while True:
+        length = H5_STEP_S * (k + 1)
+        j = i + length
+        if j >= blk.n or length > H5_MAX_S:
+            return best
+        lo = j - H5_STEP_S
+        if blk.bad_cad[j + 1] - blk.bad_cad[lo] or (blk.cad_sum[j + 1] - blk.cad_sum[lo + 1]) / H5_STEP_S < MIN_CADENCE:
+            return best
+        subs.append(blk.speed(lo, j))
+        mean = blk.speed(i, j)
+        if any(abs(v - mean) > H5_SPEED_TOL * mean for v in subs):
+            return best
+        if length >= H5_GRADE_WINDOW_S and not blk.window_ok(j - H5_GRADE_WINDOW_S, j):
+            return best
+        best, k = length, k + 1
+
+
+def drift_segment(run: dict, *, fit_records: list[dict] | None, include_wrist: bool = False) -> dict:
+    """H5 step 1: the longest steady, flat, stop-free segment of one run -> an evidence row or a rejection.
+
+    run = {"id", "hr_source", "table"}. Evidence row: {id, h, drift, label, bounds [start_t, end_t], length_s,
+    temperature, excluded_s, wrist}; rejection: {id, rejected, excluded_s}.
+    """
+    rid = run["id"]
+    wrist = run.get("hr_source") != "strap"
+    if wrist and not include_wrist:
+        return {"id": rid, "rejected": WRIST_REASON}
+    blocks, excluded = _blocks(run["table"])
+    best: tuple[int, _Block, int] | None = None
+    for blk in blocks:
+        s = H5_START_S + H5_STEP_S * math.ceil(max(0, blk.t0 - H5_START_S) / H5_STEP_S)
+        while s - blk.t0 + H5_STEP_S < blk.n:
+            length = _grow(blk, s - blk.t0)
+            if length and (best is None or length > best[0]):
+                best = (length, blk, s)
+            s += H5_STEP_S
+    if best is None or best[0] < H5_MIN_S:
+        reason = f"segment shorter than {H5_MIN_S} s" if best else "no steady segment"
+        return {"id": rid, "rejected": reason, "excluded_s": excluded}
+    length, blk, s = best
+    e = s + length
+    if _ascent_per_km(blocks, s, e) > MAX_ASCENT_M_PER_KM:
+        return {"id": rid, "rejected": "ascent above 10 m per km", "excluded_s": excluded}
+    temp = _mean_temp(fit_records, s, e)
+    if temp != "unknown" and temp >= H5_MAX_TEMP_C:
+        return {"id": rid, "rejected": "mean temperature >= 24 C", "excluded_s": excluded}
+    mid = s + length / 2
+    h1, h2 = _half_stats([blk], s, mid), _half_stats([blk], mid, e)
+    d = _drift_pct(h1, h2)
+    if d is None:
+        return {"id": rid, "rejected": "HR missing in the segment", "excluded_s": excluded}
+    row = {"id": rid, "h": R(h1["hr"]), "drift": round(d, 2), "label": "below" if d <= H5_SPLIT else "above",
+           "bounds": [s, e], "length_s": length, "temperature": temp, "excluded_s": excluded}
+    if wrist:
+        row["wrist"] = True
+    return row
+
+
+def drift_bounds(evidence: list[dict], h2: dict | None = None) -> dict:
+    """H5 step 2 (methods doc 7, 14.2): LT1 HR bounds from the accepted evidence rows (h, label).
+
+    h2 (optional {"a", "b"}) gives the LT1 pace. Returns {status, estimate, pace_s_per_km, confidence, errors, gap,
+    bounds {lower, upper}, n, notes, reasons, runs}; one-sided or too wide evidence has no estimate.
+    """
+    runs = [{"id": e.get("id"), "h": e["h"], "label": e["label"], "drift": e.get("drift")} for e in evidence]
+    out: dict[str, Any] = {"status": "insufficient_data", "estimate": None, "pace_s_per_km": None,
+                           "confidence": None, "errors": None, "gap": None,
+                           "bounds": {"lower": None, "upper": None}, "n": len(runs), "notes": [], "reasons": [],
+                           "runs": runs}
+    below = [e["h"] for e in evidence if e["label"] == "below"]
+    above = [e["h"] for e in evidence if e["label"] == "above"]
+    if not evidence:
+        out["reasons"].append("no accepted runs")
+        return out
+    if not above:
+        out["bounds"]["lower"] = max(below)
+        out["notes"].append(f"LT1 HR >= {max(below)}")
+        out["reasons"].append("one-sided evidence: only below runs")
+        return out
+    if not below:
+        out["bounds"]["upper"] = min(above)
+        out["notes"].append(f"LT1 HR <= {min(above)}")
+        out["reasons"].append("one-sided evidence: only above runs")
+        return out
+    hs = below + above
+    scores = {c: sum(h > c for h in below) + sum(h < c for h in above) for c in range(min(hs) - 1, max(hs) + 2)}
+    errors = min(scores.values())
+    best = [c for c, v in scores.items() if v == errors]
+    lo, hi = min(best), max(best)
+    gap = hi - lo
+    out.update(errors=errors, gap=gap, bounds={"lower": lo, "upper": hi})
+    if errors == 0 and gap <= H5_MEDIUM_GAP and len(below) >= 2 and len(above) >= 2:
+        conf = "medium"
+    elif (errors == 0 and gap <= H5_MAX_GAP) or (errors == 1 and len(runs) >= 5):
+        conf = "low"
+    else:
+        out["reasons"].append("bounds too wide" if errors == 0 else "inconsistent drift evidence")
+        return out
+    est = R((lo + hi) / 2)
+    out.update(status="ok", estimate=est, confidence=conf)
+    if h2 and h2.get("b"):
+        out["pace_s_per_km"] = R(1000 / ((est - h2["a"]) / h2["b"]))
+    return out
+
+
+# --- F1 ---
+
+def _steady_window(table: list[dict], laps: list[dict]) -> tuple[float, float]:
+    """F1 steady part: the longest lap (needs 2+ laps), else 900 s .. 900 s + 3600 s capped at the table end."""
+    if laps and len(laps) >= 2:
+        spans = _lap_spans(laps)
+        k = max(range(len(laps)), key=lambda i: (spans[i][1] - spans[i][0], -i))
+        return spans[k]
+    end = max((r["t"] for r in table), default=0)
+    return F1_WARMUP_S, min(F1_WARMUP_S + F1_STEADY_S, end)
+
+
+def drift(table: list[dict], *, laps: list[dict], treadmill: bool, fit_records: list[dict] | None = None,
+          f3_hr: int | None = None) -> dict:
+    """F1 (methods doc 8, 14.3): drift % between the two equal-time halves of the steady part.
+
+    The steady part is the longest lap (needs 2+ laps), else 900 s .. 4500 s. Stops are excluded from speed and HR
+    and reported (`excluded_s`); more than 60 s stopped or one stop above 30 s rejects the test.
+    Treadmill: HR only (device speed ignored), so there is no pace. Confidence is medium for "at LT1" with even
+    pace, low when `f3_hr` (the newest F3 LT1 HR) differs by more than 5 bpm.
+    """
+    start, end = _steady_window(table, laps)
+    rows = [r for r in table if start <= r["t"] <= end]
+    blocks, excluded = _blocks(rows)
+    stops = _stop_lengths(rows, start, end)
+    base: dict[str, Any] = {"bounds": [start, end], "duration_s": end - start, "treadmill": treadmill,
+                            "excluded_s": excluded, "temperature": _mean_temp(fit_records, start, end)}
+    reasons = []
+    if end - start < F1_MIN_S:
+        reasons.append(f"steady part shorter than {F1_MIN_S} s")
+    if sum(stops) > F1_MAX_STOP_TOTAL_S:
+        reasons.append(f"stopped time above {F1_MAX_STOP_TOTAL_S} s")
+    if stops and max(stops) > F1_MAX_STOP_S:
+        reasons.append(f"a stop longer than {F1_MAX_STOP_S} s")
+    if not treadmill and _ascent_per_km(blocks, start, end) > MAX_ASCENT_M_PER_KM:
+        reasons.append("ascent above 10 m per km")
+    mid = start + (end - start) / 2
+    h1, h2 = _half_stats(blocks, start, mid), _half_stats(blocks, mid, end)
+    d = _drift_pct(h1, h2, treadmill)
+    if d is None and not reasons:
+        reasons.append("HR or speed missing in the steady part")
+    if reasons:
+        return {"status": "rejected", "reasons": reasons, **base}
+    cv = None if treadmill else _cv(blocks, start, end)
+    uneven = cv is not None and cv > F1_CV_LIMIT
+    if d < F1_BAND[0]:
+        verdict, retest = "below LT1", F1_RETEST_STEP
+    elif d <= F1_BAND[1]:
+        verdict, retest = "at LT1", None
+    else:
+        verdict, retest = "above LT1", -F1_RETEST_STEP
+    hr1 = R(h1["hr"])
+    out = {"status": "ok", "drift_pct": round(d, 2), "verdict": verdict, "uneven_pace": uneven,
+           "speed_cv": cv, "lt1": None, "retest_hr": None if retest is None else hr1 + retest,
+           "saveable": verdict == "at LT1" and not uneven, "confidence": None, "reasons": [],
+           "halves": [{"speed_mps": h1["speed"], "hr": h1["hr"]}, {"speed_mps": h2["speed"], "hr": h2["hr"]}],
+           **base}
+    if verdict == "at LT1":
+        out["lt1"] = {"hr": hr1, "pace_s_per_km": None if treadmill else R(1000 / h1["speed"])}
+        if out["saveable"]:
+            out["confidence"] = "medium"
+            if f3_hr is not None and abs(f3_hr - hr1) > F3_DISAGREE:
+                out["confidence"] = "low"
+                out["reasons"].append(f"newest F3 LT1 HR {f3_hr} differs from {hr1} by more than {F3_DISAGREE} bpm")
+        elif uneven:
+            out["reasons"].append("uneven pace")
+    return out
+
+
+# --- F2 ---
+
+def _tt_window(table: list[dict], laps: list[dict]) -> tuple[float, float] | None:
+    """The time trial: consecutive laps summing to 1680..1920 s, closest to 1800 (ties: earliest); else the
+    fastest stop-free 1800 s window; the window is cut to 1800 s."""
+    if laps and len(laps) >= 2:
+        spans = _lap_spans(laps)
+        best = None
+        for k in range(len(spans)):
+            for j in range(k, len(spans)):
+                total = spans[j][1] - spans[k][0]
+                if F2_MIN_S <= total <= F2_MAX_LAP_S and (best is None or abs(total - F2_S) < best[0]):
+                    best = (abs(total - F2_S), spans[k][0], min(spans[j][1], spans[k][0] + F2_S))
+        if best:
+            return best[1], best[2]
+    top = None
+    blocks, _ = _blocks(table)
+    for blk in blocks:
+        for i in range(blk.n - F2_S):
+            d = blk.dist[i + F2_S] - blk.dist[i]
+            if top is None or d > top[0]:
+                top = (d, blk.t0 + i)
+    return None if top is None else (top[1], top[1] + F2_S)
+
+
+def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
+    """F2 (methods doc 9, 14.4): LT2 HR = mean HR over 600..1800 s of the trial, pace = duration / distance.
+
+    Rejected when shorter than 1680 s, a stop above 10 s (`excluded_s` reports it) or ascent above 10 m per km.
+    Fade (second 15 min speed < 0.95 x first) gives confidence low, else medium.
+    """
+    win = _tt_window(table, laps)
+    if win is None:
+        return {"status": "rejected", "reasons": [f"no lap or window of about {F2_S} s (shorter than {F2_MIN_S} s)"],
+                "excluded_s": 0}
+    a, b = win
+    rows = [r for r in table if a <= r["t"] <= b]
+    blocks, excluded = _blocks(rows)
+    base: dict[str, Any] = {"bounds": [a, b], "duration_s": b - a, "excluded_s": excluded}
+    reasons = []
+    if b - a < F2_MIN_S:
+        reasons.append(f"trial shorter than {F2_MIN_S} s")
+    if excluded or len(blocks) != 1:
+        reasons.append("a stop longer than 10 s")
+    if blocks and _ascent_per_km(blocks, a, b) > MAX_ASCENT_M_PER_KM:
+        reasons.append("ascent above 10 m per km")
+    if reasons:
+        return {"status": "rejected", "reasons": reasons, **base}
+    blk = blocks[0]
+    dist = blk.dist[-1] - blk.dist[0]
+    n = blk.n - 1
+    hr_n = (n - 600) - (blk.bad_hr[n] - blk.bad_hr[600])
+    if dist <= 0 or n <= 600 or hr_n < HR_COVERAGE * (n - 600):
+        return {"status": "rejected", "reasons": ["distance or HR missing"], **base}
+    hr = (blk.hr_sum[n] - blk.hr_sum[600]) / hr_n
+    mid = blk.t0 + n / 2
+    first, second = _half_stats([blk], blk.t0, mid), _half_stats([blk], mid, blk.t0 + n)
+    ratio = second["speed"] / first["speed"]
+    fade = ratio < F2_FADE
+    return {"status": "ok", "lt2": {"hr": R(hr), "pace_s_per_km": R(n / (dist / 1000))}, "distance_m": dist,
+            "speed_ratio": ratio, "fade": fade, "confidence": "low" if fade else "medium",
+            "reasons": ["faded, started too fast"] if fade else [], **base}
+
+
+# --- test workouts ---
+
+def _pace(s: float) -> str:
+    s = R(s)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _hr_range(hr: float, spread: int = 3) -> str:
+    return f"{R(hr) - spread}-{R(hr) + spread}"
+
+
+def _lt1_hr(record: dict | None, estimate_hr: int | None) -> tuple[int | None, bool]:
+    """(LT1 HR, from the current record?): the record's HR, else the newest estimate's lt1_hr."""
+    hr = ((record or {}).get("lt1") or {}).get("hr")
+    return (hr, True) if hr is not None else (estimate_hr, False)
+
+
+def test_workout(kind: str, *, lt1_record: dict | None, estimate_lt1_hr: int | None, h2: dict | None) -> dict:
+    """Workout DSL for "drift" | "time_trial" | "ramp" (methods doc 14.3, 14.4, 14.8), valid for build_workout.
+
+    lt1_record: the current LT1 record ({"lt1": {"hr", "pace_s_per_km"}}); h2: {"a", "b", "v_min", "v_max"} chosen
+    as in 14.5. Fallback order: record, then estimate HR, then RPE notes.
+    """
+    if kind == "drift":
+        return _drift_workout(lt1_record, estimate_lt1_hr)
+    if kind == "time_trial":
+        return _tt_workout()
+    if kind == "ramp":
+        return _ramp_workout(lt1_record, estimate_lt1_hr, h2)
+    raise PaceError("bad_args", f"unknown test kind {kind!r}; one of drift, time_trial, ramp")
+
+
+def _drift_workout(record: dict | None, estimate_hr: int | None) -> dict:
+    pace = ((record or {}).get("lt1") or {}).get("pace_s_per_km")
+    build = {"type": "warmup", "duration": "12m", "note": "build gradually towards the target"}
+    last3: dict[str, Any] = {"type": "warmup", "duration": "3m"}
+    steady: dict[str, Any] = {"type": "interval", "duration": "60m"}
+    if pace is not None:
+        target = {"pace": f"{_pace(pace - 10)}-{_pace(pace + 10)}"}
+        last3.update(target=target, note="hold the target pace")
+        steady.update(target=dict(target), note="constant pace, flat route or treadmill, no stops; let HR drift")
+    elif estimate_hr is not None:
+        last3.update(target={"hr": _hr_range(estimate_hr)}, note="settle on the pace for the steady part")
+        steady["note"] = "hold the pace reached at the end of the warm-up; let HR drift"
+    else:
+        build["note"] = "build to conversational effort, RPE 3-4"
+        last3["note"] = "conversational effort, RPE 3-4"
+        steady["note"] = "conversational, constant pace"
+    return {"name": "LT1 drift test (F1)", "sport": "running",
+            "description": "Hold pace, not HR; conversational effort, RPE 3-4 of 10. Flat route or treadmill, no stops.",
+            "steps": [build, last3, steady, {"type": "cooldown", "duration": "10m"}]}
+
+
+def _tt_workout() -> dict:
+    return {"name": "LT2 30-min time trial (F2)", "sport": "running",
+            "description": "Race effort for 30 min, alone, flat. Start controlled (the first 5 min should feel "
+                           "slightly too easy); RPE 9-10 at the end.",
+            "steps": [
+                {"type": "warmup", "duration": "15m", "note": "easy"},
+                {"repeat": 3, "steps": [{"type": "interval", "duration": "20s", "note": "stride"},
+                                        {"type": "recovery", "duration": "40s"}]},
+                {"type": "recovery", "duration": "3m", "note": "easy"},
+                {"type": "interval", "duration": "10m", "note": "maximal sustainable effort, even pace"},
+                {"type": "interval", "duration": "20m", "note": "keep the effort even; RPE 9-10 at the end"},
+                {"type": "cooldown", "duration": "10m"}]}
+
+
+RAMP_RPE = ("2", "2-3", "3", "3-4", "4", "4-5", "5", "6")
+
+
+def _ramp_workout(record: dict | None, estimate_hr: int | None, h2: dict | None) -> dict:
+    hr0, from_record = _lt1_hr(record, estimate_hr)
+    steps: list[dict] = [{"type": "warmup", "duration": "10m", "note": "easy"}]
+    for k in range(8):
+        step: dict[str, Any] = {"type": "interval", "duration": "4m"}
+        if hr0 is None:
+            step["note"] = f"RPE {RAMP_RPE[k]} of 10"
+        else:
+            hr = hr0 - 21 + 6 * k
+            v = (hr - h2["a"]) / h2["b"] if from_record and h2 and h2.get("b") else None
+            if v is not None and 0.9 * h2["v_min"] <= v <= 1.1 * h2["v_max"]:
+                p = R(1000 / v)
+                step["target"] = {"pace": f"{_pace(p - 5)}-{_pace(p + 5)}"}
+            else:
+                step["target"] = {"hr": _hr_range(hr)}
+                step["note"] = "hold the pace steady within the step"
+        steps.append(step)
+    steps.append({"type": "cooldown", "duration": "10m"})
+    return {"name": "LT1 alpha1 ramp (F3)", "sport": "running",
+            "description": "Eight 4-min steps, each 6 bpm above the last; hold the pace steady within each step.",
+            "steps": steps}
