@@ -758,6 +758,16 @@ Worked example (unit test, alpha1 injected per step, artifact share 1% and caden
 - Only the first three steps (all alpha1 > 0.75) -> "alpha1_unusable", reason "one-sided".
 - Gate test with the pattern observed on this athlete (unit test): the 13 (HR, alpha1) steps of section 6 with cadences 166, 168, 169, 170, 171, 172, 174, 176, 178, 180, 182, 185, 188 -> the steps at 176 bpm (4.9% from 185) and 180 bpm (4.3% from 188) are dropped for coupling (count 2 reported); over the 11 kept steps rho = +0.49 and only 2 steps lie above 0.75 -> "alpha1_unusable", reasons "not monotonic, rho = 0.49" and "one-sided"; the H4 streak rises by 1.
 
+### 14.9 Implementation rulings (controller, 2026-11-18)
+
+- Ascent is computed with a 2 m hysteresis (a climb counts once the rise since the last turning point exceeds `ASCENT_HYSTERESIS_M` = 2.0 m) in one shared helper, because 1 s altitude jitter (sigma 0.1-0.3 m) otherwise reads as 19-57 m/km on flat ground; all rule numbers live in `pace/rules.py`.
+- The 16-week extension also runs when the H1 fit is rejected (D' outside 50..500 m or CS not below the 720 s speed), not only when fewer than 3 durations are valid.
+- `insufficient_data` outcomes do not enter the H4 `counted` list; `--retry-h4` clears the streak and `counted`.
+- F3 drops laps that look automatic (all laps <= 1100 m or <= 480 s) and is refused with fewer than 3 steps; F2 without laps accepts short stops within the stop rule and reports them.
+- `derive` reports `floor_errors`; `zones push` (Task 5c) refuses while it is non-empty.
+- Observed on the athlete's data after these fixes (read-only run): H2 fits 33 segments from 11 runs (HR = 22.1 + 37.39 v, SEE 4.0 bpm); H1 is rejected (best 3/7/12-min windows 4.15/4.00/3.97 m/s are not maximal); H5 finds only 3 candidate runs in the 60-120 min list window and none with a 45-min steady segment; H4 finds no run passing the gate.
+  Pending user decision: whether to relax the H5 run window or the flat limit; until then LT1 needs F1 and LT2 needs F2.
+
 ## 15. Source log
 
 Verified and cited (opened, supports the claim): 49.
