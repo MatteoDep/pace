@@ -10,7 +10,11 @@ from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
+from pace.plan import (
+    INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES, WORKOUT_PREFIX,
+)
 from pace.ratelimit import CONCURRENCY, limiter
+from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 from pace.workout import DSL_REFERENCE
 
@@ -158,6 +162,15 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
      "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan new", "help": "Start a new plan; the current one is archived to $PACE_HOME/plans/.", "keyed": "none", "args": [], "flags": ["--name", "--goal", "--event-date"], "required_flags": ["--name"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan show", "help": "Plan meta, all blocks and the sessions in the range (default: 7 days back, 28 ahead).", "keyed": "none", "args": [], "flags": ["--from", "--to", "--past", "--ahead"], "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "plan meta", "help": "Set a plan field (name, goal, event_date).", "keyed": "none", "args": ["KEY", "VALUE"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block add", "help": "Add a block; ids are b1, b2, ...", "keyed": "none", "args": [], "flags": ["--name", "--phase", "--start", "--end", "--focus"], "required_flags": ["--name", "--phase", "--start", "--end"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block set", "help": "Change a block; only the given fields change.", "keyed": "none", "args": ["ID"], "flags": ["--name", "--phase", "--start", "--end", "--focus"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block remove", "help": "Delete a block no session uses.", "keyed": "none", "args": ["ID"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan add", "help": "Add sessions from a JSON file or - (one session or a list; all or nothing).", "keyed": "none", "args": ["FILE"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan set", "help": "Change a session; only the given fields change; `none` clears duration, distance, elevation, block, activity and workout.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--title", "--purpose", "--intensity", "--sport", "--block", "--duration", "--distance", "--elevation", "--notes", "--status", "--activity", "--workout"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan remove", "help": "Delete sessions; refused for any with a Garmin workout.", "keyed": "none", "args": ["ID..."], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
 ]
 
 
@@ -200,18 +213,25 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "cache": "Local cache.", "config": "User configuration.",
                    "workout": "Structured workouts: list, show, push, schedule, delete.",
                    "log": "Health logs written to Garmin Connect.",
-                   "diary": "Athlete diary: the coach's durable memory (local file)."},
+                   "diary": "Athlete diary: the coach's durable memory (local file).",
+                   "plan": "Training plan: blocks and dated sessions (local file)."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
         "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
                   "ref_pattern": REF_PATTERN, "checkin_weight_days_default": WEIGHT_DAYS_DEFAULT},
+        "plan": {"path": "$PACE_HOME/plan.json", "sports": SESSION_SPORTS, "pushable": PUSHABLE,
+                 "untracked": UNTRACKED, "intensities": INTENSITIES, "statuses": STATUSES,
+                 "settable_statuses": SETTABLE_STATUSES,
+                 "derived_statuses": ["done", "modified", "missed", "unconfirmed", "rest"], "phases": PHASES,
+                 "session_fields": SESSION_FIELDS, "modified_tolerance": MODIFIED_TOLERANCE,
+                 "workout_name_prefix": WORKOUT_PREFIX},
     }
 
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

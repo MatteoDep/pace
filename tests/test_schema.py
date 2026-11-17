@@ -121,3 +121,34 @@ def test_diary_in_schema() -> None:
     res = runner.invoke(app, ["schema", "diary"])
     assert res.exit_code == 0
     assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"diary"}
+
+
+def test_plan_in_schema() -> None:
+    from pace.plan import (INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES,
+                           WORKOUT_PREFIX)
+    from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"plan new", "plan show", "plan meta", "plan block add", "plan block set", "plan block remove",
+             "plan add", "plan set", "plan remove"}
+    assert names <= set(entries)
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name != "plan show"), name
+    assert entries["plan new"]["required_flags"] == ["--name"]
+    assert entries["plan block add"]["required_flags"] == ["--name", "--phase", "--start", "--end"]
+    for entry in entries.values():
+        for flag in entry.get("required_flags", []):
+            assert flag in entry["flags"], entry["name"]
+    assert "plan" in data["groups"]
+    plan = data["plan"]
+    assert plan["path"] == "$PACE_HOME/plan.json"
+    assert plan["sports"] == SESSION_SPORTS and plan["pushable"] == PUSHABLE and plan["untracked"] == UNTRACKED
+    assert plan["intensities"] == INTENSITIES and plan["statuses"] == STATUSES
+    assert plan["settable_statuses"] == SETTABLE_STATUSES
+    assert plan["derived_statuses"] == ["done", "modified", "missed", "unconfirmed", "rest"]
+    assert plan["phases"] == PHASES and plan["session_fields"] == SESSION_FIELDS
+    assert plan["modified_tolerance"] == MODIFIED_TOLERANCE and plan["workout_name_prefix"] == WORKOUT_PREFIX
+    res = runner.invoke(app, ["schema", "plan"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"plan"}

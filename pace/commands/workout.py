@@ -1,14 +1,10 @@
 """Workout commands: list, show, push (DSL), schedule, delete."""
 
-import json
-import sys
-from pathlib import Path
-from typing import Any
 
 import typer
 
 from pace.cache import Cache, CacheTracker
-from pace.commands._helpers import cached_call
+from pace.commands._helpers import cached_call, read_json
 from pace.dates import parse_date
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, NO_CACHE_OPT, RAW_OPT, shape_args
@@ -24,17 +20,6 @@ WORKOUT_LIST_FIELDS: tuple[str, ...] = (
     "workoutId", "workoutName", "sportType.sportTypeKey", "estimatedDurationInSecs",
     "estimatedDistanceInMeters", "updatedDate",
 )
-
-
-def _read_json(source: str) -> Any:
-    try:
-        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise PaceError("bad_args", f"cannot read {source}: {exc}") from None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise PaceError("bad_args", f"{source}: invalid JSON ({exc.msg} at line {exc.lineno})") from None
 
 
 @app.command("list")
@@ -90,7 +75,7 @@ def push(file: str = typer.Argument(..., metavar="FILE", help="Path to a DSL JSO
     """Create a workout on Garmin Connect from the compact DSL (see `pace schema` -> workout_dsl)."""
     cmd = "workout push"
     try:
-        dsl = _read_json(file)
+        dsl = read_json(file)
         payload = build_workout(dsl)
     except PaceError as err:
         fail(cmd, err)

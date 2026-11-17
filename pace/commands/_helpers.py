@@ -1,5 +1,8 @@
 """Shared helpers for command modules."""
 
+import json
+import sys
+from pathlib import Path
 from typing import Any
 
 from pace.api import safe_call
@@ -42,3 +45,15 @@ async def cached_call(
     if tracker is not None:
         tracker.add(hit, age)
     return value
+
+
+def read_json(source: str) -> Any:
+    """Parse JSON from a file path, or from stdin when `source` is `-`. Raises PaceError(bad_args)."""
+    try:
+        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PaceError("bad_args", f"cannot read {source}: {exc}") from None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PaceError("bad_args", f"{source}: invalid JSON ({exc.msg} at line {exc.lineno})") from None

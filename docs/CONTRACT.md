@@ -248,6 +248,49 @@ Corrupt file: unreadable JSON or an unexpected shape is `internal` with a hint n
 Unexpected shape includes an entry missing `date`, `kind` or `text`, a non-list `tags` or `refs` (null included), a non-string `due` or `resolved`, and a non-object `event`, `checkin` or `dashboard` in the profile.
 pace never overwrites or repairs it; the user inspects or moves it.
 
+## Plan
+
+`pace plan` holds the training plan: blocks and dated sessions.
+It reads and writes one local file, `$PACE_HOME/plan.json`, and the commands in this section never call Garmin.
+Commands: `plan new`, `show`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`.
+`pace schema` marks the mutating ones `"local_write": true` and describes the store under the top-level `plan` key.
+
+A session has `id` (integer, never reused), `date`, `sport`, `title`, `intensity`, and optionally `purpose`, `block`, `target`, `workout`, `notes`, `status`, `activity_id`.
+`sport` is one of `running`, `cycling`, `swimming`, `walking`, `hiking`, `strength`, `mobility`, `other`; only the first five can carry a `workout` (the `workout push` DSL) and be pushed.
+`intensity` is one of `rest`, `easy`, `moderate`, `hard`.
+`target` holds `duration_s`, `distance_m` and `elevation_m`, each a number above 0 or null.
+`block` is a block id (`b1`, `b2`, ...); a block has `name`, `phase`, `start`, `end` and `focus`.
+Phases: `base`, `build`, `peak`, `taper`, `recovery`, `transition`.
+
+Statuses.
+Stored: `planned`, `pushed`, `skipped`, `done`.
+`plan set --status` accepts `planned`, `skipped` and `done`; `pushed` is set only by pushing.
+`done` is stored by hand, for sessions Garmin does not record, and never for a future date.
+Derived only (reported by `plan status`, never stored): `done`, `modified`, `missed`, `unconfirmed`, `rest`.
+Actual duration or distance differing from the target by more than 20 % (`modified_tolerance`) makes a matched session `modified`.
+
+Garmin invariant: a session has a Garmin workout if and only if its `garmin` field is not null, and `status` is `pushed` if and only if `garmin.schedule_id` is set.
+Every guard keys on `garmin`, not on `status`: `plan remove` and `plan new` (for sessions dated today or later) are refused while a session has a Garmin workout, with a hint to unpush first, and the status of such a session cannot be set.
+A pushed session is `stale` when its `date` or `workout` no longer matches what was pushed; `plan set` recomputes the flag.
+
+Validation: any bad session, block or option is `bad_args` (exit 2) and nothing is written.
+`plan add` is all or nothing; its errors name the item index.
+An unknown session or block id is `not_found`; a block used by a session cannot be removed.
+
+`plan set` changes only the given fields and needs at least one.
+`--duration` and `--distance` take the `workout push` forms (`50m`, `1h10m`, `12km`); `--elevation` is meters.
+The literal `none` clears `--duration`, `--distance`, `--elevation`, `--block`, `--activity` and `--workout`.
+`--workout FILE` reads a workout DSL (a file, or `-` for stdin).
+
+`plan show [--from D] [--to D] [--past N] [--ahead N]` returns `data = {"plan", "blocks", "sessions"}`.
+`--from` and `--to` win when given; a missing end falls back to today minus `--past` (default 7) or today plus `--ahead` (default 28); `--from` after `--to` is `bad_args`.
+Without a plan file it returns the empty plan and creates nothing.
+
+`plan new --name N [--goal G] [--event-date D]` starts a fresh plan and archives the current one, when there is one, to `$PACE_HOME/plans/<created>-<name>.json`; `data.archived` is that path or null.
+Session and block ids keep counting across plans.
+
+Locking, atomic saves and the corrupt-file rule are those of the diary: pace never overwrites an unreadable `plan.json`.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.
