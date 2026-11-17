@@ -445,9 +445,9 @@ Kinds so far:
   The mean covers the weigh-ins within D-6 .. D and is drawn on days that have a weigh-in; the fetch reads 6 days before the range.
   `summary = {"points": [{"date", "kg", "kg_7d"}], "first", "last", "mean", "count", "empty"}`; `first`, `last` and `mean` are null when there are no weigh-ins.
 - `intensity`: per ISO week, actual time in HR zones 1-5 (stacked, left bar) next to planned time by session intensity `easy`, `moderate`, `hard` (stacked, right bar), in hours.
-  Flags: `--from`, `--to`, `--past`, `--ahead` (default 56 days back, 14 ahead) and `--sport running|all` (default running).
+  Flags: `--from`, `--to`, `--past`, `--ahead` (default: 56 days back and 14 ahead, snapped out to whole ISO weeks, Monday to Sunday; an end given with `--from`, `--to`, `--past` or `--ahead` is not snapped) and `--sport running|all` (default running).
   Zone time is the sum of `hrTimeInZone_1..5` (the watch's zones) over the activities of the sport family; planned time is the `duration_s` of the sessions of that sport, skipped and rest sessions excluded.
-  Weeks cut by the range show only the days inside it; sessions without a `duration_s` are counted per week and noted on the bar.
+  A range cut by explicit flags shows partial edge weeks, only the days inside it; sessions without a `duration_s` are counted per week and noted on the bar.
   `summary = {"sport", "weeks": [{"week", "start", "zones_s": [z1..z5], "planned_s": {easy, moderate, hard}, "planned_missing", "low_share"}], "empty"}`; `low_share` is the fraction of zone time in zones 1-2 (null when no zone time).
 - `activity ID`: pace (running family, min/km, faster is up, samples under 0.5 m/s dropped) or speed (other sports, km/h), heart rate on a second axis and elevation below, all over distance.
   Takes no flags; it reads `get_activity_details` (bucketed as `pace activity details` does) and `get_activity` (type, summary), both cached for a day.

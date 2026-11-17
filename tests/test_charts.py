@@ -306,3 +306,14 @@ def test_activity_chart_cycling_speed(tmp_path) -> None:
     summary = activity.render(_activity_data("cycling", [6.0, 7.0, 8.0]), out)
     assert _png_size(out) == (1200, 675)
     assert summary["avg_speed_kmh"] == 12.0 and "avg_pace_min_km" not in summary
+
+
+def test_intensity_accepts_activity_type_dicts(tmp_path) -> None:
+    from pace.charts import intensity
+
+    run = _zoned(1, "2026-11-10", "running", (0, 600, 0, 0, 0))
+    ride = _zoned(2, "2026-11-11", "cycling", (0, 900, 0, 0, 0))
+    data = {"activities": [{**run, "activityType": {"typeKey": "running"}},
+                           {**ride, "activityType": {"typeKey": "cycling"}}], "sessions": [], "sport": "running",
+            "range": {"from": "2026-11-09", "to": "2026-11-15"}, "today": "2026-11-12"}
+    assert intensity.render(data, tmp_path / "i.png")["weeks"][0]["zones_s"] == [0, 600, 0, 0, 0]

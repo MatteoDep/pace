@@ -17,9 +17,11 @@ _FAMILIES = {
 _BY_KEY = {key: fam for fam, keys in _FAMILIES.items() for key in keys}
 
 
-def family(type_key: str | None) -> str:
-    """Garmin activityType.typeKey -> one of SESSION_SPORTS (`other` for unknown or missing)."""
-    if type_key is None:
+def family(type_key: "str | dict | None") -> str:
+    """Garmin type key, or an `activityType` dict holding `typeKey`, -> one of SESSION_SPORTS (`other` if unknown)."""
+    if isinstance(type_key, dict):
+        type_key = type_key.get("typeKey")
+    if not isinstance(type_key, str):
         return "other"
     if type_key.startswith("e_bike_"):
         return "cycling"

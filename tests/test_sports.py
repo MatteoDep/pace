@@ -20,3 +20,9 @@ def test_family(key, expected) -> None:
 def test_groups_are_consistent() -> None:
     assert set(PUSHABLE) | set(UNTRACKED) == set(SESSION_SPORTS)
     assert not set(PUSHABLE) & set(UNTRACKED)
+
+
+def test_family_accepts_type_dict() -> None:
+    assert family({"typeKey": "trail_running", "typeId": 6}) == "running"
+    assert family({"typeKey": "indoor_cycling"}) == "cycling"
+    assert family({}) == "other" and family({"typeKey": None}) == "other"

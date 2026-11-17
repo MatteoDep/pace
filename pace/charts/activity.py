@@ -75,8 +75,8 @@ def render(data: dict, out: Path, **_: Any) -> dict:
     summary = _summary(data)
     fig, ax = style.figure()
     running = data["family"] == "running"
-    ax.set_title(f"Activity {data['id']}: {'pace' if running else 'speed'}, heart rate, elevation")
     if summary["empty"]:
+        ax.set_title(f"Activity {data['id']}")
         ax.set_yticks([])
         style.empty_note(ax)
         style.save(fig, out)

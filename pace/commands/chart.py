@@ -1,7 +1,7 @@
 """`pace chart KIND`: render a PNG chart and return its path plus a summary of what it shows."""
 
 import importlib
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,7 @@ def chart(kind: str = typer.Argument(..., metavar="KIND", help="volume, plan, re
           past: int | None = typer.Option(None, "--past", help="Day-ranged kinds: days before today."),
           ahead: int | None = typer.Option(None, "--ahead", help="Day-ranged kinds: days after today."),
           metric: str | None = typer.Option(None, "--metric", help="volume: km, elev or hours (default km)."),
-          sport: str | None = typer.Option(None, "--sport", help="volume, intensity: running (default) or all."),
+          sport: str | None = typer.Option(None, "--sport", help="volume, intensity: running (default) or all. intensity default range: whole weeks."),
           out: str | None = typer.Option(None, "--out", help="PNG path; default $PACE_HOME/charts/<name>.png."),
           no_cache: bool = NO_CACHE_OPT) -> None:
     """Render a PNG chart; data.path is the file, data.summary the numbers it shows."""
@@ -87,6 +87,11 @@ def chart(kind: str = typer.Argument(..., metavar="KIND", help="volume, plan, re
             dpast, dahead = DAY_DEFAULTS[kind]
             start, end = plan_range(from_, to, dpast if past is None else past, dahead if ahead is None else ahead,
                                     today)
+            if kind == "intensity":  # whole ISO weeks, but only for the ends the user did not choose
+                if from_ is None and past is None:
+                    start -= timedelta(days=start.weekday())
+                if to is None and ahead is None:
+                    end += timedelta(days=6 - end.weekday())
         path = Path(out).expanduser().absolute() if out is not None else charts.default_out(
             kind, start=start, end=end, metric=opts.get("metric"), sport=opts.get("sport"), activity_id=activity_id)
         module = importlib.import_module(f"pace.charts.{kind}")

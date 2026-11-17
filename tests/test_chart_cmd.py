@@ -152,8 +152,12 @@ def test_weight_chart_reads_weigh_ins(monkeypatch, tmp_path) -> None:
 def test_intensity_chart_default_range(api) -> None:
     today = date.today()
     code, doc = _run("intensity")
-    assert code == 0 and doc["data"]["range"] == {"from": (today - timedelta(days=56)).isoformat(),
-                                                  "to": (today + timedelta(days=14)).isoformat()}
+    first, last = today - timedelta(days=56), today + timedelta(days=14)
+    assert code == 0 and doc["data"]["range"] == {"from": (first - timedelta(days=first.weekday())).isoformat(),
+                                                  "to": (last + timedelta(days=6 - last.weekday())).isoformat()}
+    code, doc = _run("intensity", "--past", "10", "--ahead", "3")
+    assert doc["data"]["range"] == {"from": (today - timedelta(days=10)).isoformat(),
+                                    "to": (today + timedelta(days=3)).isoformat()}
     assert doc["data"]["summary"]["sport"] == "running"
     code, doc = _run("intensity", "--sport", "cycling")
     assert code == 2
