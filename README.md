@@ -50,6 +50,8 @@ pace plan show --from 2026-11-20 --to 2026-11-30
 pace plan set 3 --duration 50m --distance 10km
 pace plan status --past 7 --ahead 0
 pace load --weeks 8 --weeks-ahead 4
+pace chart volume --metric hours
+pace chart plan --past 14 --ahead 14
 pace workout calendar --ahead 14
 ```
 
@@ -60,6 +62,7 @@ To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 The diary and the plan are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data; the confirmation rule covers Garmin writes only, and the coaching skill decides when to ask about local writes.
 
+`pace chart` writes PNG charts (1200 x 675 px) to `$PACE_HOME/charts/` unless `--out` names a `.png` path; the envelope returns the path.
 Output contract: `docs/CONTRACT.md`.
 Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.
 

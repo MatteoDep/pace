@@ -173,6 +173,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
      "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "chart", "help": "Render a PNG chart (1200 x 675 px) and return data = {path, kind, range, summary}. KIND: volume (weekly bars and rolling 7-day line; week-ranged like `load`, --metric km|elev|hours, --sport running|all) or plan (sessions by status and unplanned activities; day-ranged, default 14 days back and 14 ahead). A flag the kind does not use is bad_args. Default path $PACE_HOME/charts/<name>.png; --out must end in .png.", "keyed": "none", "args": ["KIND", "[ID]"], "flags": ["--weeks", "--weeks-ahead", "--from", "--to", "--past", "--ahead", "--metric", "--sport", "--out", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
     {"name": "plan new", "help": "Start a new plan; the current one is archived to $PACE_HOME/plans/.", "keyed": "none", "args": [], "flags": ["--name", "--goal", "--event-date"], "required_flags": ["--name"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan show", "help": "Plan meta, all blocks and the sessions in the range (default: 7 days back, 28 ahead).", "keyed": "none", "args": [], "flags": ["--from", "--to", "--past", "--ahead"], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "plan status", "help": "Planned vs done for a range (default: 7 days back, 7 ahead): sessions matched to Garmin activities (derived status done, modified, missed, unconfirmed, rest), unplanned activities, totals. Effort (RPE, feel) costs one Garmin call per activity, cached one day; --no-effort skips it.", "keyed": "date", "args": [], "flags": ["--from", "--to", "--past", "--ahead", "--no-effort", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
@@ -229,7 +230,8 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "log": "Health logs written to Garmin Connect.",
                    "diary": "Athlete diary: the coach's durable memory (local file).",
                    "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin.",
-                   "load": "Weekly and daily training load."},
+                   "load": "Weekly and daily training load.",
+                   "chart": "PNG charts of load and plan data."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
@@ -246,7 +248,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

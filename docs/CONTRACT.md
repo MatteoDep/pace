@@ -410,6 +410,27 @@ The fetch reads 6 days before the first row so the first `rolling7` values are c
 It makes one `get_activities_by_date` call from that day to today (skipped when the whole range is in the future).
 That method pages internally in requests the rate limiter does not count.
 
+## Charts
+
+`pace chart KIND [ID] [--weeks N] [--weeks-ahead N] [--from D] [--to D] [--past N] [--ahead N] [--metric km|elev|hours] [--sport running|all] [--out PATH] [--no-cache]` renders one PNG chart and returns where it is.
+`data = {"path", "kind", "range": {"from", "to"}, "summary"}`; `summary` always has `empty`, true when the range holds no data, and the PNG then shows a "No data in range" note instead of marks.
+Every chart is a PNG of exactly 1200 x 675 px with one shared light style.
+Without `--out` the file is `$PACE_HOME/charts/<name>.png`, where name is `volume-<metric>[-all]-<from>-<to>` for `volume` and `<kind>-<from>-<to>` for the others, so two volume charts with different metrics or sports never overwrite each other.
+`--out` must end in `.png`; its parent directories are created and `path` is returned absolute.
+An unknown `KIND`, an `ID` given to a kind that takes none, or a flag the kind does not use is `bad_args`.
+
+Kinds so far:
+
+- `volume`: weekly bars and the rolling 7-day sum, from the same data as `pace load`.
+  Flags: `--weeks`, `--weeks-ahead` and `--sport` as in `pace load` (same defaults and checks), and `--metric` `km` (default), `elev` (elevation gain, m) or `hours`.
+  Past weeks show `actual`; the current week shows `actual` with the rest of `projected` stacked lighter and labeled `actual / projected`; future weeks show `projected`, lighter.
+  The rolling 7-day line runs at daily resolution, solid up to today and dashed after, so on each Sunday it meets the top of that week's bar.
+  `summary = {"metric", "sport", "weeks": [{"week", "actual", "projected"}], "rolling7_today", "empty"}`: `actual` is null for future weeks, `rolling7_today` is null when today is outside the range.
+- `plan`: one mark per plan session on a date axis, one row per sport, colored and shaped by its `plan status` status; unplanned activities are hollow circles.
+  Flags: `--from`, `--to`, `--past`, `--ahead` as in `plan status`; the default range is 14 days back and 14 ahead.
+  It makes the same single activities call as `plan status` and never fetches effort.
+  `summary = {"counts": {status: n}, "unplanned", "empty"}`, counting every session in the range by its derived status.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.

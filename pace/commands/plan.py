@@ -39,6 +39,18 @@ def plan_range(from_: str | date | None, to: str | date | None, past: int, ahead
     return start, end
 
 
+async def fetch_status_inputs(start: date, end: date, *, today: date, cache: Cache, tracker: Any,
+                              refresh: bool) -> tuple[list[dict], list[dict]]:
+    """(sessions, activity rows) for `plan status`: one cached activities call, none when the range is all future."""
+    sessions = plan.sessions_in(plan.load(), start, end)
+    rows: list[dict] = []
+    if start <= today:
+        rows = await cached_call("get_activities_by_date", start.isoformat(), min(end, today).isoformat(),
+                                 None, cache=cache, ttl=_ACTIVITIES_TTL, tracker=tracker, refresh=refresh)
+        rows = [a for a in rows or [] if a.get("activityId") is not None]
+    return sessions, rows
+
+
 def _clearable(value: str | None, parse: Any) -> tuple[bool, Any]:
     """(given, parsed): the literal `none` clears (None)."""
     if value is None:
@@ -99,15 +111,11 @@ def status(from_: str | None = typer.Option(None, "--from", help="Range start; d
     async def work() -> Result:
         today = date.today()
         start, end = plan_range(from_, to, past, ahead, today)
-        sessions = plan.sessions_in(plan.load(), start, end)
         cache = Cache()
         tracker = CacheTracker()
         try:
-            rows: list[dict] = []
-            if start <= today:
-                rows = await cached_call("get_activities_by_date", start.isoformat(), min(end, today).isoformat(),
-                                         None, cache=cache, ttl=_ACTIVITIES_TTL, tracker=tracker, refresh=no_cache)
-                rows = [a for a in rows or [] if a.get("activityId") is not None]
+            sessions, rows = await fetch_status_inputs(start, end, today=today, cache=cache, tracker=tracker,
+                                                       refresh=no_cache)
             effort: dict[int, dict] = {}
             if not no_effort:
                 for a in rows:
