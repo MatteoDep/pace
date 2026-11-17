@@ -258,7 +258,7 @@ def test_cli_envelope(fake_api) -> None:
     assert doc["data"]["dry_run"] is True
     res = runner.invoke(app, ["plan", "push", "999"])
     doc = json.loads(res.stdout)
-    assert res.exit_code == 2 and not doc["ok"] and doc["error"]["code"] == "bad_args"
+    assert res.exit_code == 1 and not doc["ok"] and doc["error"]["code"] == "not_found"
     res = runner.invoke(app, ["plan", "unpush", str(sid)])
     doc = json.loads(res.stdout)
     assert doc["ok"] and doc["data"]["results"][0]["action"] == "noop"
@@ -295,7 +295,7 @@ def test_refusals(fake_api) -> None:
     (good,) = _add(_s())
     out = _push([*ids, 999, good])  # one pushable session keeps the envelope ok
     refused = out["results"][:-1]
-    assert [r["error"]["code"] for r in refused] == ["bad_args"] * 6
+    assert [r["error"]["code"] for r in refused] == ["bad_args"] * 5 + ["not_found"]
     assert all(r["steps"] == [] and r["action"] is None for r in refused)
     assert _kinds(fake_api) == ["upload", "schedule"]
     assert out["done"] == 1 and out["failed"] == 6
@@ -446,3 +446,58 @@ def test_ambiguous_upload_error_hints_workout_list(fake_api, code) -> None:
     with pytest.raises(PaceError) as exc:
         _push([sid])
     assert exc.value.code == code and "pace workout list" in exc.value.hint and "pace: Easy" in exc.value.hint
+
+
+def test_session_moved_into_the_past_can_still_be_unpushed(fake_api) -> None:
+    (sid,) = _add(_s("2026-11-20"))
+    _push([sid])
+    with plan.transaction() as data:
+        plan.set_session(data, sid, {"date": "2026-11-16"}, today=TODAY)
+    fake_api["calls"].clear()
+    r = _push([sid, *_add(_s())])["results"][0]  # pushing it to a past date stays refused
+    assert r["error"]["code"] == "bad_args" and r["steps"] == []
+    assert _kinds(fake_api) == ["upload", "schedule"]  # only the other session
+    fake_api["calls"].clear()
+    r = _unpush([sid])["results"][0]  # its workout still sits on 2026-11-20: deleting it is safe
+    assert r["ok"] and r["action"] == "unpushed" and _kinds(fake_api) == ["delete"]
+    assert _session(sid)["garmin"] is None
+
+
+def test_unknown_id_is_not_found_with_pace_hint(fake_api) -> None:
+    (good,) = _add(_s())
+    for call in (_push, _unpush):
+        r = call([999, good])["results"][0]
+        assert r["error"]["code"] == "not_found" and "pace plan show" in r["error"]["hint"]
+
+
+def test_vanished_during_delete_step_has_pace_hint(fake_api) -> None:
+    (sid,) = _add(_s())
+    _push([sid])
+    with plan.transaction() as data:
+        plan.set_session(data, sid, {"date": "2026-11-20"}, today=TODAY)
+
+    def vanish():
+        with plan.transaction() as data:
+            s = next(x for x in data["sessions"] if x["id"] == sid)
+            s["garmin"] = None  # simulate a hand edit; remove_sessions refuses while garmin is set
+            plan.remove_sessions(data, [sid])
+
+    fake_api["on"]["delete"] = vanish
+    r = _push([sid])["results"][0]
+    assert r["error"]["code"] == "not_found" and "pace plan show" in r["error"]["hint"]
+
+
+@pytest.mark.parametrize("args", [["remove", "1"], ["new", "--name", "Next"]])
+def test_remove_and_new_wait_for_the_push_lock(fake_api, monkeypatch, args) -> None:
+    _add(_s())
+    monkeypatch.setattr(planpush, "PUSH_LOCK_TIMEOUT_S", 0.2)
+    lock = plan.plan_path().with_name("plan-push.json.lock")
+    with lock.open("a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        res = runner.invoke(app, ["plan", *args])
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    doc = json.loads(res.stdout)
+    assert not doc["ok"] and "busy" in doc["error"]["message"]
+    assert len(plan.load()["sessions"]) == 1
+    res = runner.invoke(app, ["plan", *args])
+    assert json.loads(res.stdout)["ok"] and plan.load()["sessions"] == []

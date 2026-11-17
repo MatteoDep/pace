@@ -56,11 +56,12 @@ def _differs(target: float | None, actual: float | None) -> bool:
 
 
 def _diff(s: dict[str, Any], a: dict[str, Any]) -> float:
+    """Relative difference to the target, so duration and distance targets sort together."""
     t = s["target"]
     if t.get("duration_s"):
-        return abs(_duration(a) - t["duration_s"])
+        return abs(_duration(a) - t["duration_s"]) / t["duration_s"]
     if t.get("distance_m"):
-        return abs((a.get("distance") or 0) - t["distance_m"])
+        return abs((a.get("distance") or 0) - t["distance_m"]) / t["distance_m"]
     return 0
 
 
@@ -75,9 +76,11 @@ def _pair(sessions: list[dict[str, Any]], activities: list[dict[str, Any]]) -> d
             a = by_id.get(aid)
             pairs[s["id"]] = a if a is not None and aid not in used else None
             used.add(aid)
-    for s in sessions:  # 2. the workout the activity was started from
+    # Automatic steps 2 and 3 never give an activity to a skipped or rest session.
+    auto = [s for s in sessions if s["id"] not in pairs and s["status"] != "skipped" and s["intensity"] != "rest"]
+    for s in auto:  # 2. the workout the activity was started from
         wid = (s.get("garmin") or {}).get("workout_id")
-        if s["id"] in pairs or wid is None:
+        if wid is None:
             continue
         for a in sorted(activities, key=lambda a: (a["startTimeLocal"], a["activityId"])):
             if a["activityId"] not in used and a.get("workoutId") == wid:
@@ -86,7 +89,7 @@ def _pair(sessions: list[dict[str, Any]], activities: list[dict[str, Any]]) -> d
                 break
     candidates = sorted(
         ((_diff(s, a), s["id"], a["startTimeLocal"], a["activityId"], s, a)
-         for s in sessions if s["id"] not in pairs for a in activities
+         for s in auto if s["id"] not in pairs for a in activities
          if a["activityId"] not in used and _day(a) == s["date"] and family(_type(a)) == s["sport"]),
         key=lambda c: c[:4])
     for _, sid, _, aid, _, a in candidates:  # 3. closest pairing on the same day and sport family

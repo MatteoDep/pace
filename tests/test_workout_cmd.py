@@ -185,3 +185,11 @@ def test_calendar_months_filter_and_dedupe(fake_api) -> None:
 def test_calendar_too_many_months(fake_api) -> None:
     doc = _doc(runner.invoke(app, ["calendar", "--from", "2025-01-01", "--to", "2026-06-01"]))
     assert not doc["ok"] and doc["error"]["code"] == "bad_args" and fake_api["calls"] == []
+
+
+def test_calendar_skips_items_without_id(fake_api) -> None:
+    no_id = _item(0, "2026-12-20")
+    del no_id["id"]
+    fake_api["resp"] = {"calendarItems": [no_id, _item(3, "2026-12-20")]}
+    doc = _doc(runner.invoke(app, ["calendar", "--from", "2026-12-20", "--to", "2026-12-20"]))
+    assert doc["ok"] and [c["schedule_id"] for c in doc["data"]] == [3]

@@ -117,3 +117,23 @@ def test_totals_and_intensity() -> None:
     assert out["intensity_planned_s"] == {"easy": 3000, "hard": 1800}
     assert out["intensity_missing"] == 1
     assert [d["date"] for d in out["days"]] == sorted(d["date"] for d in out["days"])
+
+
+def test_skipped_and_rest_sessions_take_no_activity() -> None:
+    skipped = sess(1, duration=3000, status="skipped", garmin={"workout_id": 77, "schedule_id": 5})
+    rest = sess(2, intensity="rest")
+    out = match([skipped, rest], [act(10, duration=1800), act(11, workoutId=77)], today=TODAY)
+    s = sessions_of(out)
+    assert (s[1]["status"], s[1]["actual"]) == ("skipped", None)
+    assert (s[2]["status"], s[2]["actual"]) == ("rest", None)
+    assert unplanned_of(out) == [10, 11]
+    linked = sess(3, status="skipped", activity_id=10)  # a manual link still wins
+    assert sessions_of(match([linked], [act(10)], today=TODAY))[3]["actual"]["activity_id"] == 10
+
+
+def test_closest_pairing_is_relative() -> None:
+    # Raw differences would pair s1 with 10 (100 s < 500 m); relative ones pair s2 (2.5 % < 16.7 %).
+    out = match([sess(1, duration=600), sess(2, distance=20000)],
+                [act(10, duration=700, distance=20500.0), act(11, duration=3000, distance=50000.0)], today=TODAY)
+    s = sessions_of(out)
+    assert s[2]["actual"]["activity_id"] == 10 and s[1]["actual"]["activity_id"] == 11

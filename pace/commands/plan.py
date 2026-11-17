@@ -66,7 +66,7 @@ def new(name: str = typer.Option(..., "--name", help="Plan name."),
         event_date: str | None = typer.Option(None, "--event-date", help="Target event date.")) -> None:
     """Start a new plan; the current one is archived to $PACE_HOME/plans/."""
     async def work() -> Result:
-        with plan.transaction() as data:
+        with planpush.push_lock(), plan.transaction() as data:
             archived = plan.new_plan(data, name=name, goal=goal, event_date=event_date, today=date.today())
             return Result({"plan": data["plan"], "archived": archived})
 
@@ -111,8 +111,11 @@ def status(from_: str | None = typer.Option(None, "--from", help="Range start; d
             effort: dict[int, dict] = {}
             if not no_effort:
                 for a in rows:
-                    full = with_effort(await cached_call("get_activity", a["activityId"], cache=cache,
-                                                         ttl=_ACTIVITY_TTL, tracker=tracker, refresh=no_cache))
+                    try:
+                        full = with_effort(await cached_call("get_activity", a["activityId"], cache=cache,
+                                                             ttl=_ACTIVITY_TTL, tracker=tracker, refresh=no_cache))
+                    except PaceError:  # one unreadable activity leaves its rpe and feel null, not the whole call
+                        continue
                     effort[a["activityId"]] = {"rpe": full.get("rpe"), "feel": full.get("feel")}
         finally:
             cache.close()
@@ -239,7 +242,7 @@ def set_(session_id: int = typer.Argument(..., metavar="ID"),
 def remove(ids: list[int] = typer.Argument(..., metavar="ID...")) -> None:
     """Delete sessions; refused for any with a Garmin workout (unpush first)."""
     async def work() -> Result:
-        with plan.transaction() as data:
+        with planpush.push_lock(), plan.transaction() as data:
             return Result({"removed": plan.remove_sessions(data, ids)})
 
     run("plan remove", {"ids": ids}, work)

@@ -8,6 +8,7 @@ session at once; the second waits, re-reads the session and sees it pushed.
 
 import copy
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -21,11 +22,18 @@ from pace.writes import WriteSpec, invalidate, run_write
 PUSH_LOCK_TIMEOUT_S = 10.0
 #: Dry-run stand-in for the workout id the upload step would return.
 NEW_WORKOUT_ID = "{workout_id}"
+_SHOW_HINT = "List ids with `pace plan show`."
 
 
 def _lock_path() -> Path:
     """Not plan.json itself: the per-step plan.transaction() locks that, and flock must never nest."""
     return plan.plan_path().with_name("plan-push.json")
+
+
+def push_lock() -> AbstractContextManager[None]:
+    """The push lock. `plan remove` and `plan new` take it too, always before the plan lock (same order
+    as a push), so they never run between the steps of a push and orphan a landed workout."""
+    return store.locked(_lock_path(), timeout_s=PUSH_LOCK_TIMEOUT_S)
 
 
 def _err(exc: PaceError) -> dict[str, Any]:
@@ -49,7 +57,7 @@ def _workout_name(name: str) -> str:
 
 def _refusal(s: dict[str, Any] | None, sid: int, today: date, push: bool) -> PaceError | None:
     if s is None:
-        return PaceError("bad_args", f"no session with id {sid}", hint="List ids with `pace plan show`.")
+        return PaceError("not_found", f"no session with id {sid}", hint=_SHOW_HINT)
     if push:
         if s["status"] in ("skipped", "done"):
             return PaceError("bad_args", f"session {sid} is {s['status']}; only planned sessions are pushed")
@@ -59,7 +67,11 @@ def _refusal(s: dict[str, Any] | None, sid: int, today: date, push: bool) -> Pac
         if s["workout"] is None:
             return PaceError("bad_args", f"session {sid} has no workout",
                              hint=f"Attach one: pace plan set {sid} --workout FILE")
-    if s["date"] < today.isoformat():
+    # A push deletes the old workout only for a session dated today or later, so it never erases a past day.
+    # Unpush is refused only when the workout also sits on a past day: a session moved into the past after
+    # its push still has its workout on the old, future date.
+    last = s["date"] if push else plan.garmin_horizon(s)
+    if last < today.isoformat():
         verb = "pushed" if push else "unpushed"
         return PaceError("bad_args", f"session {sid} is in the past ({s['date']}); past sessions are never {verb}",
                          hint="Deleting its workout would erase that day from the Garmin calendar.")
@@ -71,7 +83,7 @@ def _persist(sid: int, mutate: Callable[[dict[str, Any]], None]) -> dict[str, An
     with plan.transaction() as data:
         s = _find(data, sid)
         if s is None:
-            raise PaceError("not_found", f"session {sid} vanished from the plan during the push")
+            raise PaceError("not_found", f"session {sid} vanished from the plan during the push", hint=_SHOW_HINT)
         mutate(s)
         s["stale"] = plan.is_stale(s)
         return copy.deepcopy(s)
@@ -215,7 +227,7 @@ async def _batch(ids: list[int], dry_run: bool, one: Callable[[int], Any]) -> di
     ids = list(dict.fromkeys(ids))
     if dry_run:
         return _finish([await _guarded(sid, one) for sid in ids], dry_run)
-    with store.locked(_lock_path(), timeout_s=PUSH_LOCK_TIMEOUT_S):
+    with push_lock():
         return _finish([await _guarded(sid, one) for sid in ids], dry_run)
 
 

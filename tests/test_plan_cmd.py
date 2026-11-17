@@ -181,3 +181,21 @@ def test_status_no_effort_and_future_range(status_api) -> None:
     status_api["calls"].clear()
     doc = _run("status", "--from", (today + timedelta(days=2)).isoformat(), "--to", (today + timedelta(days=5)).isoformat())
     assert status_api["calls"] == [] and doc["data"]["days"] == []
+
+
+def test_status_survives_one_failed_effort_fetch(status_api, monkeypatch) -> None:
+    from pace.api import ApiError
+
+    async def safe_call(method, *args, **kwargs):
+        status_api["calls"].append((method, args, kwargs))
+        if method == "get_activities_by_date":
+            return True, status_api["rows"], None
+        if args[0] == 10:
+            return False, None, ApiError("network", "boom", 503)
+        return True, {"activityId": args[0], "summaryDTO": {"directWorkoutRpe": 60, "directWorkoutFeel": 75}}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    today = date.today().isoformat()
+    status_api["rows"] = [_row(10, today), _row(11, today)]
+    un = {u["activity_id"]: u for u in _run("status", "--past", "0", "--ahead", "0")["data"]["days"][0]["unplanned"]}
+    assert (un[10]["rpe"], un[10]["feel"]) == (None, None) and un[11]["rpe"] is not None

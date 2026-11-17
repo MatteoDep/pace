@@ -106,7 +106,8 @@ def calendar(from_: str | None = typer.Option(None, "--from", help="Range start;
                 view = await cached_call("connectapi", f"/calendar-service/year/{y}/month/{m - 1}", cache=cache,
                                          ttl=_CALENDAR_TTL, tracker=tracker, refresh=no_cache)
                 for it in (view or {}).get("calendarItems") or []:
-                    if it.get("itemType") == "workout" and lo <= str(it.get("date")) <= hi:
+                    if (it.get("itemType") == "workout" and it.get("id") is not None
+                            and lo <= str(it.get("date")) <= hi):
                         items[it.get("id")] = it
         finally:
             cache.close()

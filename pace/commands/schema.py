@@ -182,7 +182,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "plan set", "help": "Change a session; only the given fields change; `none` clears duration, distance, elevation, block, activity and workout.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--title", "--purpose", "--intensity", "--sport", "--block", "--duration", "--distance", "--elevation", "--notes", "--status", "--activity", "--workout"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan remove", "help": "Delete sessions; refused for any with a Garmin workout.", "keyed": "none", "args": ["ID..."], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan push", "help": "Upload and schedule sessions on Garmin (workout named 'pace: <name>'); unchanged pushed sessions are skipped unless --force; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--force", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
-    {"name": "plan unpush", "help": "Delete the sessions' workouts from Garmin (404 counts as done); the sessions stay, planned; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "plan unpush", "help": "Delete the sessions' workouts from Garmin (404 counts as done); the sessions stay, planned; refused when both the session date and the date its workout was pushed to are past.", "keyed": "none", "args": ["ID..."], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
 ]
 
 

@@ -133,8 +133,11 @@ def _validate(data: dict[str, Any], s: dict[str, Any], today: date, status_chang
     if status_changed:
         if s["status"] not in SETTABLE_STATUSES:
             raise _bad(f"status cannot be set to {s['status']!r}; one of {', '.join(SETTABLE_STATUSES)}")
-        if s["garmin"] is not None:
-            raise _bad("session has a Garmin workout; its status cannot be set", hint="unpush it first")
+        # A past session may still be marked skipped or done: its workout can no longer be unpushed.
+        past = s["date"] < today.isoformat()
+        if s["garmin"] is not None and not (past and s["status"] in ("skipped", "done")):
+            raise _bad("session has a Garmin workout; its status can only become skipped or done once its "
+                       "date is past", hint="unpush it first")
     if s["status"] == "done" and date.fromisoformat(s["date"]) > today:
         raise _bad(f"cannot mark a future session done ({s['date']})")
 
@@ -212,9 +215,24 @@ def remove_sessions(data: dict[str, Any], ids: list[int]) -> list[dict[str, Any]
     return found
 
 
+def garmin_horizon(s: dict[str, Any]) -> str:
+    """The later of the session date and the date its workout was pushed to (a session may move after a push)."""
+    return max(s["date"], (s.get("pushed_as") or {}).get("date") or s["date"])
+
+
 def sessions_in(data: dict[str, Any], start: date, end: date) -> list[dict[str, Any]]:
     lo, hi = start.isoformat(), end.isoformat()
     return sorted((s for s in data["sessions"] if lo <= s["date"] <= hi), key=lambda s: (s["date"], s["id"]))
+
+
+def _is_iso_day(value: Any) -> bool:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _slug(name: str) -> str:
@@ -227,14 +245,17 @@ def new_plan(data: dict[str, Any], *, name: str, goal: str | None, event_date: s
     if not isinstance(name, str) or not name.strip():
         raise _bad("name must be non-empty")
     event = _iso(event_date, "event_date") if event_date is not None else None
-    blocked = [s["id"] for s in data["sessions"] if s["date"] >= today.isoformat() and s["garmin"] is not None]
+    blocked = [s["id"] for s in data["sessions"]
+               if s["garmin"] is not None and garmin_horizon(s) >= today.isoformat()]
     if blocked:
-        raise _bad(f"session(s) {', '.join(map(str, blocked))} dated today or later have a Garmin workout",
+        raise _bad(f"session(s) {', '.join(map(str, blocked))} have a Garmin workout dated today or later",
                    hint=f"unpush them first: pace plan unpush {' '.join(map(str, blocked))}")
     archived = None
     if data["plan"] or data["blocks"] or data["sessions"]:
         old = data["plan"]
-        created = old.get("created") if isinstance(old.get("created"), str) else today.isoformat()
+        created = old.get("created")
+        if not _is_iso_day(created):  # the archive name must never carry a path
+            created = today.isoformat()
         base = f"{created}-{_slug(str(old.get('name') or ''))}"
         target = archive_dir() / f"{base}.json"
         n = 2

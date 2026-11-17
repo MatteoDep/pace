@@ -254,7 +254,7 @@ pace never overwrites or repairs it; the user inspects or moves it.
 `pace plan` holds the training plan: blocks and dated sessions.
 It reads and writes one local file, `$PACE_HOME/plan.json`.
 Commands: `plan new`, `show`, `status`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`, `push`, `unpush`.
-Only `plan push` and `plan unpush` call Garmin; `pace schema` marks them `"write": true` and the other mutating ones `"local_write": true`, and describes the store under the top-level `plan` key.
+Only `plan push` and `plan unpush` write to Garmin (`plan status` reads it); `pace schema` marks them `"write": true` and the other mutating ones `"local_write": true`, and describes the store under the top-level `plan` key.
 
 A session has `id` (integer, never reused), `date`, `sport`, `title`, `intensity`, and optionally `purpose`, `block`, `target`, `workout`, `notes`, `status`, `activity_id`.
 `sport` is one of `running`, `cycling`, `swimming`, `walking`, `hiking`, `strength`, `mobility`, `other`; only the first five can carry a `workout` (the `workout push` DSL) and be pushed.
@@ -270,8 +270,12 @@ Stored: `planned`, `pushed`, `skipped`, `done`.
 Derived only (reported by `plan status`, never stored): `done`, `modified`, `missed`, `unconfirmed`, `rest`.
 Actual duration or distance differing from the target by more than 20 % (`modified_tolerance`) makes a matched session `modified`.
 
-Garmin invariant: a session has a Garmin workout if and only if its `garmin` field is not null, and `status` is `pushed` if and only if `garmin.schedule_id` is set.
-Every guard keys on `garmin`, not on `status`: `plan remove` and `plan new` (for sessions dated today or later) are refused while a session has a Garmin workout, with a hint to unpush first, and the status of such a session cannot be set.
+Garmin invariant: a session has a Garmin workout if and only if its `garmin` field is not null, and `status` is `pushed` only when `garmin.schedule_id` is set.
+Every guard keys on `garmin`, not on `status`.
+`plan remove` is refused while a session has a Garmin workout, with a hint to unpush first.
+`plan new` is refused while a session has a Garmin workout dated today or later: the later of the session `date` and the date it was pushed to.
+The status of a session with a Garmin workout cannot be set, except to `skipped` or `done` once its date is before today: such a workout can no longer be unpushed, so the session keeps its Garmin ids (and a `schedule_id` with a status other than `pushed`).
+`plan remove` and `plan new` take the push lock before the `plan.json` lock, as a push does, so they never run between the steps of a push.
 A pushed session is `stale` when its `date` or `workout` no longer matches what was pushed; `plan set` recomputes the flag.
 
 Validation: any bad session, block or option is `bad_args` (exit 2) and nothing is written.
@@ -288,6 +292,7 @@ The literal `none` clears `--duration`, `--distance`, `--elevation`, `--block`, 
 Without a plan file it returns the empty plan and creates nothing.
 
 `plan new --name N [--goal G] [--event-date D]` starts a fresh plan and archives the current one, when there is one, to `$PACE_HOME/plans/<created>-<name>.json`; `data.archived` is that path or null.
+`<created>` is the old plan's `created` date when it is a valid `YYYY-MM-DD`, else today.
 Session and block ids keep counting across plans.
 
 Locking, atomic saves and the corrupt-file rule are those of the diary: pace never overwrites an unreadable `plan.json`.
@@ -307,9 +312,11 @@ A session entry is `{"id", "title", "sport", "intensity", "status", "target", "s
 An `unplanned` entry is an activity no session took: `{"activity_id", "type", "sport", "duration_s", "distance_m", "avg_hr", "hr_zones_s", "rpe", "feel"}`.
 
 Each activity is used at most once, matched in this order:
-1. A session's manual `activity_id` wins and never falls back; if the activity is not in the fetched rows the session is `done` with only `activity_id` set in `actual`.
+1. A session's manual `activity_id` wins and never falls back; if the activity is not in the fetched rows, or an earlier session (by date, then id) already linked the same activity, the session is `done` with only `activity_id` set in `actual`.
 2. A session with a pushed workout takes the activity whose `workoutId` equals its `garmin.workout_id`, on any date in the range.
-3. Remaining pairs on the same local date and the same sport family (`pace/sports.py`: treadmill and trail runs count as running, e-bikes as cycling) are taken closest first, by duration difference to the target, else distance difference, else 0, ties broken by session id, start time and activity id.
+3. Remaining pairs on the same local date and the same sport family (`pace/sports.py`: treadmill and trail runs count as running, e-bikes as cycling) are taken closest first, by the relative difference to the target (`|actual - target| / target`) of the duration, else of the distance, else 0, so duration and distance targets sort together; ties broken by session id, start time and activity id.
+
+Steps 2 and 3 skip sessions stored `skipped` and sessions of intensity `rest`: a run on the day of a skipped session stays `unplanned`; only a manual `activity_id` links one.
 
 A matched session is `modified` when a duration or distance target differs from the actual by more than 20 % (`MODIFIED_TOLERANCE`; a missing actual value does not count), else `done`.
 An unmatched session keeps a stored `done` or `skipped`; otherwise `rest` for intensity `rest`, `unconfirmed` (strength, mobility, other) or `missed` (the rest) when its date is before today, else the stored `planned` or `pushed`.
@@ -320,6 +327,7 @@ Planned sums every session in the range except `skipped` and intensity `rest`; a
 
 RPE and feel are read with `get_activity` for every activity in the range: one Garmin call per activity, cached one day under the same key as `activity show`, so a long range is slow and counts against the rate limit.
 `--no-effort` skips them and leaves `rpe` and `feel` null.
+An activity whose `get_activity` call fails also gets `rpe` and `feel` null; the command still succeeds.
 
 ### Push and unpush
 
@@ -332,22 +340,26 @@ A pushed session that is not stale is skipped (`action: "skipped"`, no call) unl
 A session with `garmin` set but no schedule (its schedule call failed) is not `pushed`, so the next push deletes that workout first.
 `stale` is recomputed from `pushed_as` against the file at every save, so a `plan set --date` or `--workout` made while the push is in flight leaves the session `stale`, and the next push moves it.
 
-Refused per session as `bad_args`, with no Garmin call: an unknown id, a `skipped` or `done` session, a sport that cannot be pushed, a session without `workout`, and a date before today.
-Past sessions are never pushed, re-pushed or unpushed: deleting their workout would erase that day from the Garmin calendar.
+Refused per session, with no Garmin call: an unknown id (`not_found`), and as `bad_args` a `skipped` or `done` session, a sport that cannot be pushed, a session without `workout`, and a date before today.
+Past sessions are never pushed or re-pushed: deleting their workout would erase that day from the Garmin calendar.
+`plan unpush` is refused (`bad_args`) only when both the session `date` and the date its workout was pushed to (`pushed_as.date`) are before today; an unknown id is `not_found`.
+So a session moved into the past after its push can still be unpushed, which deletes the workout from its old, future day.
+A session moved from the past to a date today or later may be re-pushed; the delete step removes its old workout and with it that workout's schedule on the past day, so that day loses it from the Garmin calendar.
 
 `plan unpush ID... [--dry-run]` deletes each session's workout and saves `garmin = null`, `status = planned`, `pushed_as = null`, `stale = false`; a session without `garmin` is a `noop`.
 Deleting a workout also removes its calendar schedules, and a delete answered with 404 `not_found` counts as done (the workout is already gone) and still drops the same cache keys.
 Pushed workouts stay in the Garmin workout library after their day; pace deletes one only on re-push or unpush, never as a cleanup.
 
 The whole call holds a push lock (`$PACE_HOME/plan-push.json.lock`, separate from the `plan.json` lock taken for each save), so a second `plan push` or `plan unpush`, from a terminal or the bot, waits up to 10 s, then re-reads each session and skips what is already pushed; past the wait it fails with `internal` "busy".
+`plan remove` and `plan new` wait for the same lock and fail the same way.
 
 `data = {"results": [...], "done": n, "failed": n}`, one result per distinct id in order: `{"id", "ok", "action", "steps", "error", "garmin", "session"}`.
 `action` is `pushed`, `skipped`, `unpushed` or `noop`, and null for a refused session.
 `steps` lists the steps that completed, each `{"step": "delete" | "upload" | "schedule", "payload", "id"}` with the Garmin-assigned id (null for a delete).
 `error` is the error object of the error envelope, or null.
 `garmin` holds the Garmin ids that exist for the session as far as pace knows, and `session` the session as saved.
-The envelope is `ok: false` with the first error only when every session failed and no step completed; otherwise it is `ok: true` and failures are reported per session.
-If the session vanished from the file during the push, or saving after a landed upload failed, the result is an error whose `garmin` carries the landed ids and whose hint names the `pace workout delete` call that cleans up.
+The envelope is `ok: false` with the first error only when every session failed and no step completed; otherwise it is `ok: true` with exit 0, even when `failed` is above 0, and failures are reported per session.
+If the session vanished from the file during the push (`not_found`, hint `pace plan show`), or saving after a landed upload failed, the result is an error whose `garmin` carries the landed ids and whose hint names the `pace workout delete` call that cleans up.
 If only the save after the schedule failed, the workout id is already recorded and the hint says to push again, which replaces it.
 Any error outside the Garmin calls, such as an unreadable `plan.json`, fails that session only; the results already collected are kept.
 A `network` or `internal` error on the upload is ambiguous, so its hint says to look for the `pace: <name>` workout in `pace workout list` before retrying; an upload response without `workoutId`, or a schedule response without `workoutScheduleId`, is an `internal` error.
@@ -361,7 +373,7 @@ Upload drops the cached workout list; schedule and delete also drop every cached
 `workout calendar [--from D] [--to D] [--past N] [--ahead N] [--no-cache]` is a read command listing the workouts scheduled on the Garmin calendar; the default range is today to 14 days ahead.
 `data` is `[{"date", "schedule_id", "workout_id", "title"}]` sorted by date and schedule id.
 It makes one cached call (5 min) to `GET /calendar-service/year/{Y}/month/{M}` per calendar month touching the range, with `M` counted from 0; more than 12 months is `bad_args`.
-The month view also returns days of the neighbouring months, so items are kept only when `itemType` is `workout` and the date is in the range, and are deduplicated by `id`.
+The month view also returns days of the neighbouring months, so items are kept only when `itemType` is `workout`, `id` is set and the date is in the range, and are deduplicated by `id`.
 A 400 from Garmin surfaces as `rejected`.
 
 ## Keeping this file honest

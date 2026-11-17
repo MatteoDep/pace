@@ -220,3 +220,44 @@ def test_sessions_in_orders_by_date_then_id() -> None:
     plan.add_sessions(d, [_s(date="2026-11-27"), _s(date="2026-11-25"), _s(date="2026-11-25"), _s(date="2026-12-30")])
     out = plan.sessions_in(d, date(2026, 11, 25), date(2026, 11, 27))
     assert [s["id"] for s in out] == [2, 3, 1]
+
+
+def test_past_session_with_garmin_can_be_skipped_or_done() -> None:
+    d = _fresh()
+    s = plan.add_sessions(d, _s(date="2026-11-16"))[0]
+    s["garmin"] = {"workout_id": 1, "schedule_id": 2}
+    s["status"] = "pushed"
+    s["pushed_as"] = {"date": "2026-11-16", "workout": None}
+    out = plan.set_session(d, s["id"], {"status": "skipped"}, today=TODAY)
+    assert out["status"] == "skipped" and out["garmin"] == {"workout_id": 1, "schedule_id": 2}
+    assert plan.set_session(d, s["id"], {"status": "done"}, today=TODAY)["status"] == "done"
+    with pytest.raises(PaceError) as exc:  # back to planned would hide the Garmin workout
+        plan.set_session(d, s["id"], {"status": "planned"}, today=TODAY)
+    assert "unpush" in (exc.value.hint or "")
+    f = plan.add_sessions(d, _s(date="2026-11-17"))[0]  # today is not past
+    f["garmin"] = {"workout_id": 3, "schedule_id": 4}
+    f["pushed_as"] = {"date": "2026-11-17", "workout": None}
+    with pytest.raises(PaceError):
+        plan.set_session(d, f["id"], {"status": "skipped"}, today=TODAY)
+
+
+def test_new_plan_blocks_on_pushed_date_still_ahead() -> None:
+    d = _fresh()
+    s = plan.add_sessions(d, _s(date="2026-11-16"))[0]  # moved into the past after the push
+    s["garmin"] = {"workout_id": 1, "schedule_id": 2}
+    s["pushed_as"] = {"date": "2026-11-20", "workout": None}
+    with pytest.raises(PaceError) as exc:
+        plan.new_plan(d, name="x", goal=None, event_date=None, today=TODAY)
+    assert exc.value.code == "bad_args" and str(s["id"]) in exc.value.message
+    s["pushed_as"]["date"] = "2026-11-10"
+    assert plan.new_plan(d, name="x", goal=None, event_date=None, today=TODAY)
+
+
+def test_archive_name_ignores_invalid_created(tmp_path) -> None:
+    d = _fresh()
+    d["plan"] = {"name": "Old", "created": "../x"}
+    path = plan.new_plan(d, name="n", goal=None, event_date=None, today=TODAY)
+    assert path == str(tmp_path / "plans" / "2026-11-17-old.json")
+    d["plan"]["created"] = "2026-13-45"
+    path = plan.new_plan(d, name="n", goal=None, event_date=None, today=TODAY)
+    assert path == str(tmp_path / "plans" / "2026-11-17-n.json")
