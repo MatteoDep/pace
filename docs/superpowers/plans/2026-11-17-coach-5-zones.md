@@ -69,6 +69,17 @@ Plan 5; depends on plans 1-3 (`pace.store`, `pace.plan`, `pace.sports`, `pace.lo
 
 ---
 
+### Task 0 results (controller, 2026-11-18)
+
+- Step 1: fitdecode 0.11.0 added (commit 3f9911b).
+- Step 2: `tests/fixtures/sensors_strap.json` (one `bleDeviceType: "HEART_RATE"` BLE sensor) and `sensors_wrist.json` (`sensors: null`, the key is null, not an empty list); RPE (`summaryDTO.directWorkoutRpe`) is only on `get_activity`, not in details nor list rows; a race is a list row with `eventType.typeKey == "race"` (1 of the athlete's 338 activities; their 42 km run is `uncategorized`).
+- Step 3: fitdecode yields data messages with `.name` and `.fields` (name/value), so the adapter maps them to `(name, {field: value})`; records are 1 Hz with `timestamp`, `heart_rate`, `speed` and `enhanced_speed`, `altitude` and `enhanced_altitude`, `distance`, `cadence` in strides/min plus `fractional_cadence` (steps/min = 2 x (cadence + fractional_cadence)), GPS fields (dropped); no temperature on this watch; `session.start_time` equals the first record timestamp.
+  Elapsed `t` = record timestamp - start: an auto-pause leaves a gap in the records (731 s in the checked run, matching timer stop/start events), and no `hrv` beats are logged during the pause.
+  RR alignment: `hrv` messages are interleaved after records; plain cumulative RR drifts behind elapsed time (up to 95 s over 3 h, missing beats); rule: start the beat clock at the elapsed `t` of the record preceding the first `hrv` message, add each RR, and after each `hrv` message resync to the preceding record's `t` when the offset exceeds 3 s (44 resyncs in 3 h; 95% of offsets within 2.6 s; one large resync after a pause).
+  Fixture: `tests/fixtures/fit_rr_small.json` (synthetic messages with a pause) reproduces the rule.
+- Step 5: `get_activity_details(id, maxchart=2 x elapsed)` returns every sample at 1 s spacing (2379 vs 1199 at maxchart 2000); timestamps are `directTimestamp` epoch ms; `directRunCadence` is strides/min (90 vs list row 179 steps/min), `directDoubleCadence` exists alongside.
+- Step 4 (zone write) waits for the user's yes; Task 5c is blocked on it, Tasks 1-5b are not.
+
 ### Task 1: Zone store, precedence, derivation, due rule
 
 Can run before Task 0 completes (no Garmin data needed).
