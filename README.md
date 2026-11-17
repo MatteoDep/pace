@@ -52,6 +52,9 @@ pace plan status --past 7 --ahead 0
 pace load --weeks 8 --weeks-ahead 4
 pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
+pace chart recovery --past 28
+pace chart sleep --past 14
+pace wellness sleep-range --days 14
 pace workout calendar --ahead 14
 ```
 

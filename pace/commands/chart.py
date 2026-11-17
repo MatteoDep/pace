@@ -20,9 +20,10 @@ SPORTS = ("running", "all")
 WEEK_FLAGS = ("--weeks", "--weeks-ahead", "--metric")
 DAY_FLAGS = ("--from", "--to", "--past", "--ahead")
 #: Flags each kind accepts besides --out and --no-cache; a flag given to another kind is bad_args.
-KIND_FLAGS: dict[str, tuple[str, ...]] = {"volume": (*WEEK_FLAGS, "--sport"), "plan": DAY_FLAGS}
+KIND_FLAGS: dict[str, tuple[str, ...]] = {"volume": (*WEEK_FLAGS, "--sport"), "plan": DAY_FLAGS, "recovery": DAY_FLAGS,
+                                    "sleep": DAY_FLAGS}
 #: Day-range defaults (past, ahead) for kinds keyed by days.
-DAY_DEFAULTS: dict[str, tuple[int, int]] = {"plan": (14, 14)}
+DAY_DEFAULTS: dict[str, tuple[int, int]] = {"plan": (14, 14), "recovery": (28, 0), "sleep": (28, 0)}
 
 
 def _check(kind: str, item_id: str | None, given: dict[str, Any]) -> int | None:
@@ -41,7 +42,7 @@ def _check(kind: str, item_id: str | None, given: dict[str, Any]) -> int | None:
     return activity_id
 
 
-def chart(kind: str = typer.Argument(..., metavar="KIND", help="volume or plan."),
+def chart(kind: str = typer.Argument(..., metavar="KIND", help="volume, plan, recovery or sleep."),
           item_id: str | None = typer.Argument(None, metavar="[ID]", help="Activity id (activity charts only)."),
           weeks: int | None = typer.Option(None, "--weeks", help="volume: whole weeks back (default 16)."),
           weeks_ahead: int | None = typer.Option(None, "--weeks-ahead",

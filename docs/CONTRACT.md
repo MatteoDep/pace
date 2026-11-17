@@ -431,6 +431,25 @@ Kinds so far:
   It makes the same single activities call as `plan status` and never fetches effort.
   `summary = {"counts": {status: n}, "unplanned", "empty"}`, counting every session in the range by its derived status.
 
+- `recovery`: daily resting heart rate (dots) and its 7-day trailing calendar mean (line), from `pace wellness sleep-range`.
+  Flags: `--from`, `--to`, `--past`, `--ahead`; the default range is 28 days back through today.
+  The mean covers the 7 calendar days ending on each day and ignores days without a value; the fetch reads 6 days before the range so the first means are complete.
+  HRV (`hrv` dots and `hrv_7d` dashed line) goes on a second axis only when any value in the range is non-null.
+  `summary = {"days": [{"date", "rhr", "rhr_7d"} (plus "hrv", "hrv_7d" when available)], "rhr_7d_latest", "hrv_available", "empty"}`.
+- `sleep`: stacked deep, light, REM and awake hours per night; the sleep score is a line on a second axis only when present.
+  Flags and default range as `recovery`.
+  `summary = {"nights": [{"date", "sleep_h", "deep_h", "light_h", "rem_h", "awake_h", "score"}], "sleep_7d_mean_h", "score_available", "empty"}`; `sleep_7d_mean_h` is the mean of the nights in the 7 calendar days ending at the last night, awake time excluded.
+
+## Sleep range
+
+`pace wellness sleep-range [--from D] [--to D] [--days N] [--no-cache]` returns one row per night, keyed `date`, in ascending order.
+Row: `{"date", "sleep_s", "deep_s", "light_s", "rem_s", "awake_s", "rhr", "avg_hr", "hrv", "hrv_7d", "score"}`; seconds throughout, `sleep_s` is deep + light + REM (awake excluded), and any field is null when Garmin has none.
+`hrv`, `hrv_7d` and `score` are null on the current watch (Forerunner 55).
+It reads `/sleep-service/stats/sleep/daily/{from}/{to}` through `connectapi`, which accepts at most 28 days inclusive per call (29 is HTTP 400).
+The range is cut into fixed 28-day windows anchored on the calendar (day ordinal divided by 28), each clipped to the range, so a repeated read asks for the same windows and hits the cache.
+Days after today are never requested; a window ending in the past is cached for 7 days, one ending yesterday for 1 day, one holding today for 1 hour.
+There is no `--fields`, `--bucket` or `--raw`; the charts read the same rows.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.

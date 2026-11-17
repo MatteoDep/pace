@@ -1,11 +1,11 @@
 import struct
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from pace.charts import plan as plan_chart
-from pace.charts import volume
+from pace.charts import recovery, sleep, volume
 from pace.load import aggregate
 from pace.matching import match
 
@@ -105,3 +105,65 @@ def test_import_is_lazy() -> None:
     code = ("import sys, pace.cli, pace.charts, pace.commands.chart, pace.commands.schema; "
             "assert 'matplotlib' not in sys.modules, 'matplotlib imported'")
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def _night(day: date, *, deep=2760, light=18480, rem=9300, awake=180, rhr=45, hrv=None, hrv_7d=None, score=None):
+    return {"date": day.isoformat(), "sleep_s": None if deep is None else deep + light + rem, "deep_s": deep,
+            "light_s": light, "rem_s": rem, "awake_s": awake, "rhr": rhr, "avg_hr": 52, "hrv": hrv,
+            "hrv_7d": hrv_7d, "score": score}
+
+
+def _sleep_data(**kw) -> dict:
+    rows = [_night(date(2026, 11, 4) + timedelta(days=i), rhr=44 + i % 3, **kw) for i in range(14)]
+    return {"rows": rows, "range": {"from": "2026-11-04", "to": "2026-11-17"}, "today": TODAY.isoformat()}
+
+
+def test_recovery_hides_hrv_when_null(tmp_path) -> None:
+    out = tmp_path / "r.png"
+    summary = recovery.render(_sleep_data(), out)
+    assert _png_size(out) == (1200, 675)
+    assert summary["hrv_available"] is False and summary["empty"] is False
+    assert len(summary["days"]) == 14 and "hrv" not in summary["days"][0]
+    assert summary["days"][0]["rhr_7d"] == 44.0
+    assert summary["days"][6]["rhr_7d"] == round((44 + 45 + 46 + 44 + 45 + 46 + 44) / 7, 2)
+    assert summary["rhr_7d_latest"] == summary["days"][-1]["rhr_7d"]
+
+
+def test_recovery_shows_hrv_with_values(tmp_path) -> None:
+    out = tmp_path / "r.png"
+    summary = recovery.render(_sleep_data(hrv=62, hrv_7d=60), out)
+    assert summary["hrv_available"] is True
+    assert summary["days"][0]["hrv"] == 62 and summary["days"][0]["hrv_7d"] == 60
+    assert _png_size(out) == (1200, 675)
+
+
+def test_recovery_lead_in_rows_feed_mean_but_are_not_shown(tmp_path) -> None:
+    data = _sleep_data()
+    data["rows"] = [_night(date(2026, 11, 1), rhr=50), *data["rows"]]
+    summary = recovery.render(data, tmp_path / "r.png")
+    assert summary["days"][0]["date"] == "2026-11-04"
+    assert summary["days"][0]["rhr_7d"] == round((50 + 44) / 2, 2)
+
+
+def test_sleep_chart_summary(tmp_path) -> None:
+    out = tmp_path / "s.png"
+    data = _sleep_data()
+    data["rows"][3] = _night(date(2026, 11, 7), deep=None, light=None, rem=None, awake=None, rhr=None)
+    summary = sleep.render(data, out)
+    assert _png_size(out) == (1200, 675)
+    assert len(summary["nights"]) == 14 and summary["empty"] is False and summary["score_available"] is False
+    assert summary["nights"][0] == {"date": "2026-11-04", "sleep_h": 8.48, "deep_h": 0.77, "light_h": 5.13,
+                                    "rem_h": 2.58, "awake_h": 0.05, "score": None}
+    assert summary["nights"][3]["sleep_h"] is None
+    assert summary["sleep_7d_mean_h"] == 8.48
+    scored = sleep.render(_sleep_data(score=80), tmp_path / "s2.png")
+    assert scored["score_available"] is True and scored["nights"][0]["score"] == 80
+
+
+def test_recovery_empty_note(tmp_path) -> None:
+    data = {"rows": [], "range": {"from": "2026-11-04", "to": "2026-11-17"}, "today": TODAY.isoformat()}
+    out = tmp_path / "r.png"
+    summary = recovery.render(data, out)
+    assert _png_size(out) == (1200, 675)
+    assert summary == {"days": [], "rhr_7d_latest": None, "hrv_available": False, "empty": True}
+    assert sleep.render(data, tmp_path / "s.png")["empty"] is True

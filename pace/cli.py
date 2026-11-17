@@ -26,7 +26,7 @@ for module, name in (
     app.add_typer(module.app, name=name)
 app.command("schema", help="Machine-readable command manifest.")(schema.schema)
 app.command("load", help="Weekly and daily training load.")(load.load)
-app.command("chart", help="Render a PNG chart (volume, plan).")(chart.chart)
+app.command("chart", help="Render a PNG chart (volume, plan, recovery, sleep).")(chart.chart)
 load_plugins(app)
 
 

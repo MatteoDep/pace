@@ -30,6 +30,11 @@ COLORS: dict[str, str] = {
     "skipped": "#898781",
     "rest": "#c3c2b7",
     "unplanned": "#52514e",
+    "hrv": "#7a52b8",
+    "deep": "#1d4f91",
+    "light": "#86b6ef",
+    "rem": "#7a52b8",
+    "awake": "#d9d7cc",
     "grid": "#e1e0d9",
     "axis": "#c3c2b7",
     "text": "#0b0b0b",
@@ -112,6 +117,20 @@ def today_line(ax: "Axes", today: date) -> None:
     ax.axvline(noon(today), color=COLORS["muted"], linewidth=0.8, linestyle=":", zorder=1)
     ax.annotate("today", (noon(today), 1), xycoords=("data", "axes fraction"), xytext=(3, -2),
                 textcoords="offset points", ha="left", va="top", fontsize=9, color=COLORS["muted"])
+
+
+def date_axis(ax: "Axes", start: date, end: date) -> None:
+    """Day ticks for ranges up to two weeks, Monday ticks (every few weeks when long) beyond."""
+    import matplotlib.dates as mdates
+
+    span = (end - start).days
+    if span <= 14:
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%a\n%b %d" if span <= 10 else "%b %d"))
+    else:
+        interval = max(1, -(-(span // 7) // 8))
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=mdates.MO, interval=interval))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
 
 
 def empty_note(ax: "Axes", text: str = "No data in range") -> None:

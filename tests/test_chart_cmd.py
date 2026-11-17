@@ -86,3 +86,32 @@ def test_default_names_differ_per_metric(api, tmp_path) -> None:
 def test_bad_args(api, args) -> None:
     code, doc = _run(*args)
     assert code == 2 and doc["error"]["code"] == "bad_args" and api == []
+
+
+def test_sleep_and_recovery_charts(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    async def safe_call(method, *args, **kwargs):
+        calls.append(args[0])
+        a, b = args[0].rsplit("/", 2)[-2:]
+        day, items = date.fromisoformat(a), []
+        while day <= date.fromisoformat(b):
+            items.append({"calendarDate": day.isoformat(), "values": {
+                "totalSleepTimeInSeconds": 30540, "deepTime": 2760, "lightTime": 18480, "remTime": 9300,
+                "awakeTime": 180, "restingHeartRate": 45, "avgHeartRate": 52, "avgOvernightHrv": None,
+                "hrv7dAverage": None, "hrvStatus": None, "sleepScore": None}})
+            day += timedelta(days=1)
+        return True, {"individualStats": items, "overallStats": {}}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    today = date.today()
+    code, doc = _run("sleep", "--past", "10", "--out", str(tmp_path / "s.png"))
+    assert code == 0 and doc["data"]["kind"] == "sleep"
+    assert doc["data"]["range"] == {"from": (today - timedelta(days=10)).isoformat(), "to": today.isoformat()}
+    assert len(doc["data"]["summary"]["nights"]) == 11 and (tmp_path / "s.png").exists()
+    code, doc = _run("recovery", "--past", "10")
+    assert code == 0 and doc["data"]["summary"]["hrv_available"] is False
+    assert doc["data"]["path"].endswith(f"recovery-{today - timedelta(days=10)}-{today}.png")
+    assert all(c.startswith("/sleep-service/stats/sleep/daily/") for c in calls)
+    code, doc = _run("recovery", "--weeks", "2")
+    assert code == 2 and doc["error"]["code"] == "bad_args"
