@@ -410,6 +410,19 @@ The fetch reads 6 days before the first row so the first `rolling7` values are c
 It makes one `get_activities_by_date` call from that day to today (skipped when the whole range is in the future).
 That method pages internally in requests the rate limiter does not count.
 
+### Export
+
+`pace load --export PATH` takes the usual range flags and writes one JSON file for the dashboard instead of returning the load data.
+`--sport` with `--export` is `bad_args`: both sports are computed.
+The file is `{"rows": [...], "meta": [{"label": "Generated", "value": ISO datetime}, {"label": "Command", "value": "pace load --export"}]}`, written atomically with mode 0600.
+The result is `data = {"path": PATH, "rows": n}`.
+Every row has `table` set to `week`, `day` or `next`.
+`week` rows: `week`, `start`, `sport` (`running` or `all`) and the `actual_`, `planned_`, `projected_`, `remaining_` and `missing_` values with the suffixes `km`, `elev_m` and `hours`; a side that is absent in the load data is null.
+`remaining_*` is `projected - actual` for the current week, `projected` for a future week and 0 for a past week.
+`missing_*` is the `planned.missing` count.
+`day` rows: `date`, `sport`, `projected` (true when the date is after today) and `rolling7_km`, `rolling7_elev_m`, `rolling7_hours`.
+`next` appears at most once: the first plan session dated today or later that is not `skipped` or `rest` and is not already done (stored `done`, or matched to an activity as `done` or `modified` today), with `date`, `title`, `sport`, `intensity`, `duration_s`, `distance_m` and `status`.
+
 ## Charts
 
 `pace chart KIND [ID] [--weeks N] [--weeks-ahead N] [--from D] [--to D] [--past N] [--ahead N] [--metric km|elev|hours] [--sport running|all] [--out PATH] [--no-cache]` renders one PNG chart and returns where it is.
