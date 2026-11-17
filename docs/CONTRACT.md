@@ -168,7 +168,7 @@ To change shoes, link the new item first, then unlink the old one: Garmin keeps 
 To review gear across many activities, do not call `activity gear` once per activity (10 calls a minute): `gear list`, then `gear activities UUID` once per item, then `activity list` for the range; an activity in no item's list has no gear.
 There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
 Confirmation before a real Garmin write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
-The confirmation rule covers Garmin writes only: `diary` commands write a local file (`"local_write": true` in `pace schema`, never `"write"`) and need no confirmation.
+The confirmation rule covers Garmin writes only: `diary` commands write a local file (`"local_write": true` in `pace schema`, never `"write"`) and are outside this rule; the coaching skill decides when to ask about them.
 
 A successful write drops the cache keys it affects (`data.writes.invalidation` in `pace schema`), so a following read is never served stale data.
 Write commands themselves never read the cache: every write always calls Garmin directly.

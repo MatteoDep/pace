@@ -57,7 +57,7 @@ WRITES: dict[str, Any] = {
                    "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
                    "state, so repeating them is harmless.",
     "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
-               "local diary and plan writes (local_write) need no confirmation",
+               "local_write commands (diary) are outside this rule; the coaching skill decides when to ask about them.",
 }
 
 GLOBAL_FLAGS = {

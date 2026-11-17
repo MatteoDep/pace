@@ -52,7 +52,7 @@ Run `pace gear list`, then `pace gear activities <uuid>` once per shoe, then `pa
 To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 
 Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
-The diary and the training plan are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data, and need no confirmation.
+The diary is a local file under `$PACE_HOME` (default `~/.pace`), not Garmin data; the confirmation rule covers Garmin writes only, and the coaching skill decides when to ask about local writes.
 
 Output contract: `docs/CONTRACT.md`.
 Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.
