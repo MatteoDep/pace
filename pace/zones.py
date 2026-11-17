@@ -27,7 +27,7 @@ HR_DRIFT_BPM = 4
 PACE_DRIFT_FRAC = 0.03
 HARD_TRAINING_EFFECT = 4.0
 H2_RANGE_SLACK = 0.10
-OUTCOMES = ("usable", "not_monotonic", "one_sided")
+OUTCOMES = ("usable", "not_monotonic", "one_sided", "insufficient_data")  # the last two leave the streak alone
 PUSH_SPORTS = ("RUNNING", "DEFAULT")  # watch entry compared by status(); pinned in plan 5 Task 5c
 FLOOR_KEYS = ("zone1Floor", "zone2Floor", "zone3Floor", "zone4Floor", "zone5Floor")
 

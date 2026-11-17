@@ -910,6 +910,8 @@ def _ramp_workout(record: dict | None, estimate_hr: int | None, h2: dict | None)
 A1_THRESHOLD = 0.75
 A1_RHO_MAX = -0.6          # usable only if Spearman rho of HR and alpha1 <= this
 A1_MIN_SIDE = 3            # windows or steps needed on each side of 0.75
+A1_JUDGE_N = 6             # "not monotonic" counts only with >= 6 points ...
+A1_JUDGE_HR_SPAN = 10      # ... spanning >= 10 bpm (controller ruling); else outcome "insufficient_data"
 A1_LINEAR = (0.5, 1.0)     # near-linear part of the alpha1 decline (Rogers et al. 2020)
 A1_LT2_NOTE = 0.5          # alpha1 0.5: a note only, never LT2
 H4_MIN_POINTS = 60         # 5 min of window centres per side
@@ -963,19 +965,28 @@ def alpha1_gate(points: list[dict]) -> dict:
 
     Usable only if rho <= -0.6 and >= 3 points on each side of 0.75; "not monotonic" takes precedence over
     "one-sided" as the outcome. rho is None with fewer than 2 points (then only "one-sided" applies).
+    A failed rho counts as "not_monotonic" (toward the H4 streak) only with >= 6 points spanning >= 10 bpm;
+    otherwise the outcome is "insufficient_data", which leaves the streak alone (controller ruling).
     """
     above = sum(p["alpha1"] > A1_THRESHOLD for p in points)
     below = sum(p["alpha1"] < A1_THRESHOLD for p in points)
     rho = spearman([p["hr"] for p in points], [p["alpha1"] for p in points]) if len(points) >= 2 else None
     reasons = []
+    judged = False
     if rho is not None and rho > A1_RHO_MAX:
-        reasons.append(f"not monotonic, rho = {rho:.2f}")
+        hrs = [p["hr"] for p in points]
+        judged = len(points) >= A1_JUDGE_N and max(hrs) - min(hrs) >= A1_JUDGE_HR_SPAN
+        reasons.append(f"not monotonic, rho = {rho:.2f}" if judged else
+                       f"too few points to judge monotonicity ({len(points)}, HR span {max(hrs) - min(hrs):.0f} bpm; "
+                       f"need {A1_JUDGE_N} spanning {A1_JUDGE_HR_SPAN} bpm)")
     if above < A1_MIN_SIDE or below < A1_MIN_SIDE:
         reasons.append("one-sided")
     if not reasons:
         outcome = "usable"
+    elif judged:
+        outcome = "not_monotonic"
     else:
-        outcome = "not_monotonic" if reasons[0].startswith("not monotonic") else "one_sided"
+        outcome = "insufficient_data" if rho is not None and rho > A1_RHO_MAX else "one_sided"
     return {"usable": not reasons, "outcome": outcome, "rho": rho, "reasons": reasons, "above": above,
             "below": below, "n": len(points)}
 
@@ -1204,7 +1215,8 @@ def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | No
 
     h3 = lt1_from_cs, h4 = alpha1_lt1, h5 = drift_bounds, h2 = hr_speed (or {"a", "b"}) results.
     Final confidence is medium only if the picked result's own confidence is medium, a method outside the picked
-    ones agrees within 5 bpm, and no method with own confidence medium disagrees; never high.
+    ones agrees within 5 bpm (for "H4+H5" the mutual agreement of H4 and H5 counts, controller ruling), and no
+    method with own confidence medium disagrees; never high.
     """
     vals = {"H3": _lt1_of(h3), "H4": _lt1_of(h4), "H5": _lt1_of(h5)}
     confs = {"H3": "low", "H4": (h4 or {}).get("confidence"), "H5": (h5 or {}).get("confidence")}
@@ -1243,7 +1255,7 @@ def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | No
     others = [v for m, v in vals.items() if m not in picked and v is not None]
     vetoed = any(confs[m] == "medium" and abs(v - hr) > AGREE_BPM
                  for m, v in vals.items() if v is not None and hr is not None)
-    agreed = hr is not None and any(abs(v - hr) <= AGREE_BPM for v in others)
+    agreed = hr is not None and (len(picked) == 2 or any(abs(v - hr) <= AGREE_BPM for v in others))
     out.update(status="ok", hr=hr, pace_s_per_km=pace, method="+".join(picked), own_confidence=own,
                confidence="medium" if own == "medium" and agreed and not vetoed else "low")
     out["notes"] += [f"H4: {n}" for n in (h4 or {}).get("notes") or []]

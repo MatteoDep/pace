@@ -716,8 +716,8 @@ OBSERVED = [(126, 0.54), (133, 0.65), (136, 0.45), (139, 0.35), (142, 0.37), (14
 OBSERVED_CADENCE = [166, 168, 169, 170, 171, 172, 174, 176, 178, 180, 182, 185, 188]
 
 
-def h4_run(rid, pts, share=0.01, cadence=172, dropped=0):
-    return {"id": rid, "windows": [w for a, hr, v in pts for w in a1w(a, hr, v, cadence, share)],
+def h4_run(rid, pts, share=0.01, cadence=172, dropped=0, n=20):
+    return {"id": rid, "windows": [w for a, hr, v in pts for w in a1w(a, hr, v, cadence, share, n)],
             "dropped_coupling": dropped}
 
 
@@ -738,10 +738,25 @@ def test_alpha1_gate_outcomes():
     one = th.alpha1_gate(falling[:3])
     assert one["outcome"] == "one_sided" and one["reasons"] == ["one-sided"] and not one["usable"]
     rising = [{"hr": p["hr"], "alpha1": 1.5 - p["alpha1"]} for p in falling]
-    both = th.alpha1_gate(rising[:2] + falling[3:])
+    both = th.alpha1_gate(rising[:3] + falling[3:])          # 6 points over 30 bpm, rho 0, all below 0.75
     assert both["outcome"] == "not_monotonic" and both["reasons"][1] == "one-sided"
     assert both["reasons"][0].startswith("not monotonic, rho = ")
     assert th.alpha1_gate([])["outcome"] == "one_sided" and th.alpha1_gate([])["rho"] is None
+    few = th.alpha1_gate(rising[:2] + falling[3:])           # 5 points: too few to judge monotonicity
+    assert few["outcome"] == "insufficient_data" and few["reasons"][0].startswith("too few points")
+    narrow = th.alpha1_gate([{"hr": 140 + k, "alpha1": 0.5 + 0.08 * k} for k in range(7)])   # 6 bpm span
+    assert narrow["outcome"] == "insufficient_data"
+
+
+def test_h4_three_window_rising_run_does_not_touch_the_streak():
+    out = th.alpha1_lt1([h4_run(7, [(0.6, 130, 3.0), (0.8, 136, 3.1), (1.0, 142, 3.2)], n=1)])
+    r = out["runs"][0]
+    assert r["windows"] == 3 and r["rho"] == pytest.approx(1)
+    assert r["outcome"] == "insufficient_data" and out["status"] == "alpha1_unusable" and out["hr"] is None
+    data = copy.deepcopy(zones.EMPTY)
+    zones.record_alpha1_outcome(data, "not_monotonic", day=date(2026, 11, 16), activity=6)
+    zones.record_alpha1_outcome(data, r["outcome"], day=date(2026, 11, 17), activity=7)
+    assert data["h4"]["streak"] == 1 and data["h4"]["unreliable"] is False
 
 
 def test_h4_regression_worked_example():
@@ -933,6 +948,14 @@ def test_combine_agreement():
     assert out["status"] == "ok" and out["method"] == "H4+H5"
     assert out["hr"] == 144 and out["pace_s_per_km"] == 298 and out["confidence"] == "medium"
     assert out["flags"] == [] and out["suggest"] is None and out["h3"]["hr"] == 142
+    # H4 and H5 agreeing confirm each other: medium with H3 missing or disagreeing (low, so no veto)
+    for h3 in (None, {"status": "ok", "hr": None, "pace_s_per_km": 304, "confidence": "low"},
+               dict(H3_142, hr=130)):
+        alone = th.combine_lt1(h3, h4(146), h5(142), H2_OK)
+        assert (alone["method"], alone["hr"], alone["pace_s_per_km"], alone["confidence"]) == ("H4+H5", 144, 298,
+                                                                                               "medium")
+    low4 = th.combine_lt1(None, h4(146, "low"), h5(142, "low"), H2_OK)
+    assert low4["confidence"] == "low"
 
 
 def test_combine_disagreement_picks_h5():
