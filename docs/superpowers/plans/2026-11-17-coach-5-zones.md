@@ -2,59 +2,74 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** pace estimates the user's lactate thresholds (LT1, LT2) from past runs (critical speed, HR-speed regression, HR drift in normal runs, DFA alpha1 from RR intervals), analyzes field tests, accepts lab values, derives HR and pace zones from the current record, and keeps the watch's HR zones in sync.
+**Goal:** pace estimates the user's lactate thresholds (LT1, LT2) from past runs (critical speed, HR-speed regression, HR drift in normal runs, DFA alpha1 from RR intervals), analyzes three field tests (drift, time trial, alpha1 ramp), accepts lab values, derives HR and pace zones from the current LT1 and LT2 records, and keeps the watch's HR zones in sync.
 
-**Architecture:** `pace/zones.py` is the threshold store, precedence, due rule and zone derivation (pure, on `pace/store.py`).
-`pace/fit.py` downloads, caches and parses original FIT files (`fitdecode`) into RR intervals and per-second records.
-`pace/hrv.py` holds RR artifact correction and DFA alpha1.
-`pace/thresholds.py` holds the pure estimation methods (H1-H5), their combination, run selection and the field-test analyses (F1, F2), operating on activity rows, detail tables and RR series.
-`pace/commands/zones.py` wraps everything; Garmin reads go through `cached_call`, the zone write through `run_write`.
+**Architecture:** `pace/zones.py` is the threshold store, per-threshold precedence, due rule, HRmax and H4 status memory, estimates log and zone derivation (pure, on `pace/store.py`).
+`pace/fit.py` downloads original FIT files, parses them in memory (`fitdecode` behind a thin adapter, a pure `parse_messages` behind it) and caches only derived JSON.
+`pace/hrv.py` holds RR artifact correction, DFA alpha1 (banded detrending) and alpha1 windows.
+`pace/thresholds.py` holds the pure estimation methods (H1-H5), the alpha1 gate, the field-test analyses (F1, F2, F3), their combination and run selection, operating on list rows, sample tables and RR series.
+`pace/commands/zones.py` wraps everything: `run_estimate(fetcher)` orchestrates an estimate through an injected, call-counting fetcher; Garmin reads go through `cached_call`, the zone write through `run_write`.
 
-**Tech Stack:** Python 3.14, typer, fitdecode (new dependency, approved by the user, verified on the user's FIT files), stdlib statistics, pytest.
+**Tech Stack:** Python 3.14, typer, fitdecode (new dependency, approved by the user, verified on the user's FIT files), stdlib statistics, pytest; no numpy.
 
-**Spec:** `docs/superpowers/specs/2026-11-17-coach-plan-design.md` section 7, and `docs/superpowers/specs/2026-11-17-zones-methods.md` (the methods doc, approved by the user): its sections 1 (common data rules), 3-9 (methods), 11 and 14 (chosen set, zone mapping, due rule, run selection and call budget) are normative; every worked example in section 14 is a required unit test with the values given there.
-Plan 5; depends on plans 1-3 (`pace.store`, `pace.plan`, `pace.sports`, `pace.load`'s fetch patterns); plan 4's skill runs after it.
+**Spec:** `docs/superpowers/specs/2026-11-17-coach-plan-design.md` section 7, and `docs/superpowers/specs/2026-11-17-zones-methods.md` (the methods doc, approved by the user): its sections 1 (common data rules), 3-9a (methods), 11 and 14 (chosen set, zone mapping, due rule, run selection and call budget, F3) are normative; every worked example in section 14 is a required unit test with the values given there.
+Plan 5; depends on plans 1-3 (`pace.store`, `pace.plan`, `pace.sports`, `pace.load`'s fetch patterns, `pace.charts.sources.sleep_stats`); plan 4's skill runs after it.
 
 ## Global Constraints
 
-- Store `$PACE_HOME/zones.json`: `{"records": [...], "current": id | None, "next_id": int, "estimates": [...]}`, same store rules as diary and plan (lock, atomic 0600 save, corrupt -> `internal` with path hint, local not_found hints never mention Garmin).
-- Record: `{"id", "date", "source": "estimate" | "field_test" | "lab", "method", "lt1": {"hr", "pace_s_per_km"}, "lt2": {"hr", "pace_s_per_km"}, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities": [ids], "confidence": "low" | "medium" | "high", "notes", "details": {...}}`; threshold values may be null.
-- Precedence: `current` changes only by `zones accept ID`, except `zones add --source lab` makes the new record current when its date is on or after the current record's date (an older lab result entered for history does not become current).
-  A lab record older than 183 days is reported `expired: true` (advisory).
-  `zones remove ID` deletes a record (refused for the current record unless `--force`; then `current` becomes None).
-- Derivation per methods doc 14.5 (rule "lt-5z-v1"); partial records: three-zone HR needs LT1 and LT2 HR, the five floors need both, pace zones need the paces; missing pieces are null and `zones push` is refused unless all five floors exist and validate.
-- `zones show` returns `current`, `expired`, `zones`, `candidates` (records newer than current, not current), `due` per methods doc 14.6 (`{"estimate": bool, "field_test": {"lt1": bool, "lt2": bool}, "reasons": [...]}`), `garmin` (the watch zones read) and `in_sync` (the current five floors equal the watch's `zone1Floor..zone5Floor` of the entry pace pushes to).
-- HR source: strap if the activity's `metadataDTO.sensors` contains an entry with `bleDeviceType == "HEART_RATE"` or an ANT+ heart-rate device (field and value pinned by the Task 0 fixtures); wrist runs are dropped from H2, H4 and H5 unless `--include-wrist`.
-- Run selection and the call budget exactly as methods doc 14.7: at most 25 Garmin calls per `zones estimate` (detail calls <= 18, 1 personal-records call, FIT downloads <= 6), FIT files cached under `$PACE_HOME/fit/` forever (they never change), "no RR" remembered so a file is never re-downloaded for H4.
-- `zones estimate --save` and `zones analyze --save` store a full record (source `estimate` / `field_test`) with inputs and confidence, so the coach never retypes numbers; without `--save` they are read-only.
+- Store `$PACE_HOME/zones.json`: `{"records": [...], "current": {"lt1": id | None, "lt2": id | None}, "next_id": int, "estimates": [...], "hr_max": {"bpm", "activity", "date"} | None, "h4": {"streak": int, "unreliable": bool, "since": date | None}}`, same store rules as diary and plan (lock, atomic 0600 save, corrupt -> `internal` with path hint, local not_found hints never mention Garmin).
+- Record: `{"id", "date", "source": "estimate" | "field_test" | "lab", "method", "lt1": {"hr", "pace_s_per_km"}, "lt2": {"hr", "pace_s_per_km"}, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities": [ids], "confidence": "low" | "medium" | "high", "notes", "details": {...}}`; threshold values may be null; estimate records store `details.h2 = {"a", "b", "v_min", "v_max"}`.
+- Current is per threshold (methods doc 10 and 14.5): `zones accept ID [--only lt1|lt2]` sets current for every threshold the record has (or only the one named; `bad_args` if the record lacks it); `zones add --source lab` sets current for each threshold the lab record has, if the record date is on or after the date of that threshold's current record (an older lab result entered for history changes nothing).
+  Lab expiry is per threshold: a current lab record older than 183 days is reported `expired: true` for that threshold (advisory).
+  `zones remove ID` deletes a record (refused while it is current for any threshold unless `--force`; then those thresholds become None).
+- Zones derive from the current LT1 record + the current LT2 record per methods doc 14.5 (rule "lt-5z-v1"); partial data: three-zone HR needs LT1 and LT2 HR, the five floors need both, pace zones need the paces; z1/z2 pace floors need an H2 (null for lab records); missing pieces are null and `zones push` is refused unless all five floors exist and validate.
+- HRmax and resting HR (methods doc 1): `hr_max` is the running maximum in `zones.json`, raised by every `zones estimate`, every saved `zones analyze`, and a record added with a higher `max_hr`; `rest_hr` = median `restingHeartRate` of the last 28 days from `sleep_stats` (plan 3; 1-2 calls, the chunks are fixed on the calendar).
+  With HRmax unknown, zone5Floor uses the 14.5 fallback, and `zones push` keeps Garmin's `maxHeartRateUsed` and validates zone5Floor < it.
+- `zones show` returns `current` (per threshold: record id, source, date, method, confidence: the provenance), `expired` (per threshold), `zones`, `records` (all records, newest first, each with `current_for: ["lt1", "lt2"]` or `[]`), `candidates` (records newer than the current record of a threshold they have, not current for it), `due` per methods doc 14.6, per threshold (`{"estimate": bool, "field_test": {"lt1": bool, "lt2": bool}, "reasons": [...]}`), `hr_max`, `h4` (status), `garmin` (the watch zones read) and `in_sync` (the current five floors equal the watch's `zone1Floor..zone5Floor` of the entry pace pushes to).
+- HR source: strap if `get_activity`'s `metadataDTO.sensors` contains an entry with `bleDeviceType == "HEART_RATE"` or an ANT+ heart-rate device (field and value pinned by the Task 0 fixtures); sensors and RPE exist only in `get_activity` (not in details, not in list rows); wrist runs are dropped from H2, H4, H5 and F3 unless `--include-wrist`.
+- Samples: `get_activity_details` is fetched with `maxchart` = 2 x the run's elapsed seconds, capped at 20000, and samples are read by raw epoch timestamps (not `details_table`); stops follow methods doc section 1 only (more than 10 s below 1.0 m/s, or a timestamp gap > 5 s at the fetched resolution).
+- Run selection and the call budget exactly as methods doc 14.7: `zones estimate --max-calls N` (default 40) is a hard cap on all Garmin calls including the 16-week extension; each picked run costs one `get_activity` and one `get_activity_details`; the result reports `calls`, `estimated_seconds` (from the `pace.ratelimit` limits) and `deferred`; zones reads of `get_activity` and `get_activity_details` for runs older than 1 day use a 60-day TTL (own cache keys), so a capped or interrupted estimate continues from cache.
+- `zones estimate` always appends a summary `{date, lt1_hr, lt2_hr, lt2_pace, methods, confidence}` to `estimates` (a local write of the log, schema `"local_write": true`); `--save` additionally stores a full record (source `estimate`).
+  `zones analyze` is read-only except with `--save` (schema `"local_write": "--save"`), which stores a field-test record per methods doc 14.3, 14.4, 14.8 and raises `hr_max`.
+- `insufficient_data` is not an error: an estimate is `ok` with per-method `status: "ok" | "insufficient_data" | "skipped" | "alpha1_unusable"` and `reasons`.
+- FIT data: the zip is read in memory and only its single `.fit` member is parsed, never extracted to disk; only derived JSON is stored, `$PACE_HOME/fit/<id>.json` (`rr_s`, per-second records without lat/lon, `start`; no device or serial fields), written atomically (tmp + `os.replace`, file 0600, directory 0700); a parse error is reported and nothing is cached; `$PACE_HOME/fit/no_rr.json` (`{id: reason}`, reason `no_hrv_messages` | `rr_rejected`) is updated under the store lock; `pace cache clear` does not clear `$PACE_HOME/fit/` (documented in CONTRACT).
+- H4 memory (methods doc 6): two consecutive "not monotonic" runs or ramps mark H4 unreliable; while marked, estimates skip H4 and make no FIT downloads, until `zones estimate --retry-h4`.
+- Heat: no weather calls; every H5 and F1 evidence row reports `temperature` (C from the FIT data, else `"unknown"`); the coach is told heat is unfiltered.
 - All arithmetic in pace; every result carries its inputs (activity ids, segment bounds, fit parameters) so the coach can explain it.
-- Garmin zone write: endpoint, body and target entry (`sport`) as verified in Task 0; the push body is built from a fresh read (never the cache); `--dry-run` payload shows `before` and `after`; success invalidates the zones read key.
+- Garmin zone write: endpoint, body and target entry (`sport`) as verified in Task 0; the push body is built from a fresh read (never the cache); `zones push --dry-run` is a documented exception to "dry-run makes no network call": it makes one live read for `before` and no write; success invalidates the zones read key; `hr_zones` is added to the write result resources.
 - No real Garmin ids, profile ids or FIT files in the repo: fixtures are synthetic or sanitized (ids replaced, `userProfileId`/serials removed).
 - Python 3.14 (`.python-version`); `.venv/bin/python -m pytest -q` and `.venv/bin/ruff check pace tests scripts` clean at every commit; ASCII only; markdown one sentence per line; no Claude attribution; implementers never run `uv` (the controller adds dependencies).
 
 ## Review Focus
 
-1. A lab record entered 7 months ago and a newer estimate: the lab stays current, `expired: true`, the estimate is a candidate; an older lab result entered for history does not replace a newer current record. Test in Task 1.
-2. A steady run with a stop or GPS dropout in the middle: the drift analysis (F1, H5) excludes stopped samples and reports the excluded time, instead of a wrong drift %. Test in Task 3.
-3. Every candidate run is a wrist run: no H2/H4/H5 estimate, with the reason, unless `--include-wrist`. Test in Task 3 and Task 5.
-4. Zone floors not strictly increasing (LT1 HR above LT2 HR): `bad_args` on add, never pushed. Test in Task 1 and Task 5.
-5. Garmin zones changed in the app since the last read: `zones push --dry-run` shows the live Garmin values as `before`. Test in Task 5.
-6. The RR series and the per-second records are aligned as verified in Task 0 (cumulative RR from the record start, gaps at pauses), so alpha1 windows get the right HR and speed. Test in Task 2.
+1. Per-threshold current: an F1 (LT1-only) record accepted keeps the current LT2; `zones accept ID --only lt2` on a full record leaves LT1 alone; a lab record entered 7 months ago stays current for its thresholds with `expired: true`, a newer estimate is a candidate; an older lab result never replaces a newer current record. Test in Task 1.
+2. Budget cap: `zones estimate` never makes more than `--max-calls` Garmin calls (extension included), counts `get_activity` and `get_activity_details` per picked run, reports `deferred`, and a rerun reuses the cached reads. Test in Task 5a (the 14.7 worked example: 40 calls, and 30 + 10 with `--max-calls 30`).
+3. A steady run with a stop or GPS dropout in the middle: the drift analysis (F1, H5) excludes stopped samples and reports the excluded time, instead of a wrong drift %. Test in Task 3b.
+4. Every candidate run is a wrist run: no H2/H4/H5 estimate, with the reason, unless `--include-wrist`. Test in Task 3a and Task 5a.
+5. Zone floors not strictly increasing (LT1 HR above LT2 HR): `bad_args` on add, never pushed. Test in Task 1 and Task 5c.
+6. Garmin zones changed in the app since the last read: `zones push --dry-run` shows the live Garmin values as `before`, with one read and no write. Test in Task 5c.
+7. The RR series and the per-second records are aligned as verified in Task 0 (cumulative RR from the record start, gaps at pauses), so alpha1 windows get the right HR, speed and cadence. Test in Task 2.
+8. Alpha1 gates: the athlete's observed ramp pattern (methods doc 6, 14.8) gives `alpha1_unusable`, never an LT1; two in a row mark H4 unreliable and stop FIT downloads. Test in Task 4 and Task 5a.
 
 ---
 
 ### Task 0: Live verification and fixtures (controller only, with the user)
 
 - [ ] **Step 1: Dependency.** `uv add fitdecode` (PyPI; `.python-version` pins 3.14); full suite green; commit `build: add fitdecode`.
-- [ ] **Step 2: Sensors fixture.** From one strap run and one wrist run (`pace activity show ID --raw`), record `metadataDTO.sensors` as sanitized fixtures `tests/fixtures/sensors_strap.json`, `sensors_wrist.json` (serials and ids replaced).
-- [ ] **Step 3: RR alignment.** On the cached FIT file of a strap run, compare cumulative RR time with the `record` timestamps (start offset, behavior at auto-pause and stops, drift over the run); write the verified alignment rule into this plan's Task 2 and the methods doc section 6; build a small synthetic FIT-derived fixture (`tests/fixtures/fit_rr_small.json`: RR list + records) that reproduces the rule.
+- [ ] **Step 2: Sensors fixture.** From one strap run and one wrist run (`pace activity show ID --raw`, which is `get_activity`), record `metadataDTO.sensors` as sanitized fixtures `tests/fixtures/sensors_strap.json`, `sensors_wrist.json` (serials and ids replaced); confirm RPE is there and not in the details or list rows; record how a list row marks a race (`eventType` key and value).
+- [ ] **Step 3: FIT parsing and RR alignment.** On a strap run's FIT file (in memory, not committed): confirm the fitdecode adapter yields `(name, fields)` pairs as `parse_messages` expects; which clock `t` uses (timer seconds, excluding pauses, or elapsed); whether speed and altitude come as `enhanced_speed`/`enhanced_altitude`; the running `cadence` unit (strides/min) and `fractional_cadence`; whether `record` carries temperature.
+  Compare cumulative RR time with the `record` timestamps (start offset, behavior at auto-pause and stops, drift over the run); write the verified alignment rule into Task 2 and methods doc section 6; build a synthetic fixture `tests/fixtures/fit_rr_small.json` (a list of `(name, fields)` messages: RR + records) that reproduces the rule.
+  A tiny real FIT fixture is added only if it can be fully sanitized (no ids, serials, GPS); otherwise none.
 - [ ] **Step 4: Zone write.** With the user's yes: read `GET /biometric-service/heartRateZones` (list per `sport`), capture the request the Garmin Connect web app sends when HR zones are saved (Playwright, network tab) or try a `PUT` of the read payload unchanged; then change one floor by 1 bpm, read back, check the next day and on the watch, revert.
-  Record method, path, body fields, which entry to write (`DEFAULT` or `RUNNING`, and whether `trainingMethod`/`restingHrAutoUpdateUsed` must be set so Garmin keeps custom floors) in this plan (Task 5) and the spec, with ids redacted; never commit captured requests, cookies or HAR files.
-  If nothing verifies, Task 5 drops `zones push` and `zones show` prints the floors for the user to enter in the Garmin app.
+  Record method, path, body fields, which entry to write (`DEFAULT` or `RUNNING`, and whether `trainingMethod`/`restingHrAutoUpdateUsed` must be set so Garmin keeps custom floors) in this plan (Task 5c) and the spec, with ids redacted; never commit captured requests, cookies or HAR files.
+  If nothing verifies, Task 5c drops `zones push` and `zones show` prints the floors for the user to enter in the Garmin app.
+- [ ] **Step 5: Detail resolution.** On a run longer than 4000 s, call `get_activity_details` with `maxchart` = 2 x elapsed seconds and check the sample spacing (about 1 s, not 4 s) and the raw epoch timestamp field; pin the unit of `directRunCadence` (steps/min or strides/min) against the list row's `averageRunningCadenceInStepsPerMinute`; write both into Task 3a.
 
 ---
 
 ### Task 1: Zone store, precedence, derivation, due rule
+
+Can run before Task 0 completes (no Garmin data needed).
 
 **Files:** Create `pace/zones.py`; Test `tests/test_zones.py`.
 
@@ -62,25 +77,30 @@ Plan 5; depends on plans 1-3 (`pace.store`, `pace.plan`, `pace.sports`, `pace.lo
 
 ```python
 SOURCES = ("estimate", "field_test", "lab")
+THRESHOLDS = ("lt1", "lt2")
 LAB_VALID_DAYS = 183
 ZONE_RULE = "lt-5z-v1"
+def R(x: float) -> int                                     # floor(x + 0.5), methods doc 14.5
 def load() -> dict
 @contextmanager
 def transaction() -> Iterator[dict]
-def add_record(data: dict, record: dict, *, today: date) -> dict
-def accept(data: dict, record_id: int) -> dict
+def add_record(data: dict, record: dict, *, today: date) -> dict   # lab: per-threshold current rule; raises hr_max if max_hr higher
+def accept(data: dict, record_id: int, *, only: str | None = None) -> dict
 def remove(data: dict, record_id: int, *, force: bool) -> dict
-def current(data: dict) -> dict | None
-def derive(record: dict, *, h2: dict | None = None) -> dict
+def current(data: dict) -> dict                            # {"lt1": record | None, "lt2": record | None}
+def derive(record_lt1: dict | None, record_lt2: dict | None, *, h2: dict | None, hr_max: int | None) -> dict
     # {"rule", "three_hr": [...], "three_pace": [...], "floors": {"zone1Floor".."zone5Floor", "maxHeartRateUsed"} | None,
-    #  "pace_floors": {"z1".."z5"}}; methods doc 14.5; h2 = {"a", "b", "v_min", "v_max"} for z1/z2 pace floors
-def due(data: dict, *, today: date, runs_since: list[dict]) -> dict      # methods doc 14.6
+    #  "pace_floors": {"z1".."z5"}}; methods doc 14.5; h2 from the LT1 record's details, else the LT2 record's
+def log_estimate(data: dict, summary: dict) -> None        # appends to "estimates"
+def update_hr_max(data: dict, bpm: int, *, activity: int, day: date) -> bool
+def record_alpha1_outcome(data: dict, outcome: str, *, day: date) -> None   # "usable" | "not_monotonic" | "one_sided"; streak, unreliable
+def due(data: dict, *, today: date, runs_since: list[dict]) -> dict      # methods doc 14.6, per threshold, reads "estimates"
 def status(data: dict, *, today: date, garmin_zones: list[dict] | None, runs_since: list[dict]) -> dict
 ```
 
-  Validation (`bad_args`): source in SOURCES; date parses, not in the future; HR values int 30..230; LT1 HR < LT2 HR < max HR when present; LT1 pace slower than LT2 pace; at least one threshold value.
+  Validation (`bad_args`): source in SOURCES; date parses, not in the future; HR values int 30..230; LT1 HR < LT2 HR < max HR when present; LT1 pace slower than LT2 pace; at least one threshold value; `--only` names a threshold the record has.
 
-- [ ] **Step 1: Write failing tests**: add/accept/current/remove (+ `--force` for current); lab newer becomes current, lab older does not; lab older than 183 days `expired` and stays current, newer estimate in `candidates`; invalid orderings -> `bad_args`; `derive` reproduces methods doc 14.5 worked example exactly (floors 114, 128, 142, 160, 173; pace floors 463, 368, 304, 250, 235; HRmax unknown -> 169); partial records give null pieces; `due` reproduces the 14.6 worked example; `in_sync` true/false against a Garmin zones list; corrupt file -> `internal`.
+- [ ] **Step 1: Write failing tests**: add/accept/current/remove (+ `--force` for current); accept of an LT1-only record keeps current LT2; `--only`; lab newer becomes current per threshold, lab older does not, lab with only LT2 leaves LT1; lab older than 183 days `expired` for its thresholds and stays current, newer estimate in `candidates`; invalid orderings -> `bad_args`; `R(312.5) == 313` (unlike `round()`), `R(142.3) == 142`; `derive` reproduces methods doc 14.5 worked example exactly (H2 fitted on 2.0..4.0 m/s; floors 114, 128, 142, 160, 173; pace floors 463, 368, 304, 250, 235; HRmax unknown -> 169), z1 null with the 14.1 range 2.8..3.8, z1/z2 null for a lab record; partial records give null pieces; `due` reproduces the 14.6 worked example per threshold from `estimates`; `hr_max` only rises; the H4 streak (2 x not_monotonic -> unreliable; usable resets; one_sided unchanged); `status` returns `records` newest first with `current_for`; `in_sync` true/false against a Garmin zones list; corrupt file -> `internal`.
 - [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
 - [ ] **Step 5: Commit** `feat: threshold store, zone derivation and due rule`.
 
@@ -94,89 +114,168 @@ def status(data: dict, *, today: date, garmin_zones: list[dict] | None, runs_sin
 
 ```python
 # pace/fit.py
-def fit_dir() -> Path                                   # $PACE_HOME/fit/
-async def get_fit(activity_id: int, *, tracker) -> Path | None
-    # cached file if present (no call); else one safe_call("download_activity", id, ORIGINAL), unzip the .fit into fit_dir, return path
-def read_fit(path: Path) -> dict                        # {"rr_s": [float], "records": [{"t", "hr", "speed", "dist", "alt"}], "start": iso}
-def aligned_rr(fit: dict) -> list[dict]                 # [{"t_s", "rr_s", "hr", "speed"}] per the Task 0 alignment rule
-def no_rr(activity_id: int) -> bool / mark_no_rr(...)   # remembered in $PACE_HOME/fit/no_rr.json
+def fit_dir() -> Path                                   # $PACE_HOME/fit/ (0700)
+def parse_messages(messages: Iterable[tuple[str, dict]]) -> dict
+    # pure: {"rr_s": [float], "records": [{"t", "hr", "speed", "dist", "alt", "cadence", "temp"?}], "start": iso}
+    # t = timer seconds per Task 0; speed = enhanced_speed or speed; alt = enhanced_altitude or altitude;
+    # cadence in steps/min = 2 x (cadence + fractional_cadence); lat/lon and device fields dropped
+def read_fit_bytes(data: bytes) -> dict                 # thin fitdecode adapter: zip in memory, the single .fit member -> parse_messages
+async def get_fit(activity_id: int, *, tracker) -> dict | None
+    # cached <id>.json if present (no call); else one safe_call("download_activity", id, ORIGINAL) -> read_fit_bytes;
+    # atomic write (tmp + os.replace, 0600); parse error -> reported, nothing cached; no RR -> mark_no_rr
+def aligned_rr(fit: dict) -> list[dict]                 # [{"t_s", "rr_s", "hr", "speed", "dist", "alt", "cadence"}] per the Task 0 rule
+def no_rr(activity_id: int) -> str | None / mark_no_rr(activity_id, reason)   # $PACE_HOME/fit/no_rr.json under the store lock
 
 # pace/hrv.py
 def correct_artifacts(rr: list[float]) -> tuple[list[float], list[bool]]   # methods doc section 6 (21-beat median, 20% band, split/merge/replace, > 2 s = gap)
-def dfa_alpha1(rr: list[float], *, n_min: int = 4, n_max: int = 16) -> float | None   # smoothness-priors detrending (lambda 500) per section 6
-def windows(aligned: list[dict], *, size_s: int = 120, step_s: int = 5) -> list[dict]  # alpha1, mean HR, mean speed, artifact share, beats; qualifying rules of section 6
+def smoothness_detrend(x: list[float], lam: float = 500.0) -> list[float]  # banded pentadiagonal LDL' solve, O(N)
+def dfa_alpha1(rr: list[float], *, n_min: int = 4, n_max: int = 16) -> float | None
+def windows(aligned: list[dict], *, size_s: int = 120, step_s: int = 5) -> dict
+    # {"windows": [{alpha1, hr, speed, cadence, artifact_share, beats, t_mid}], "dropped_coupling": int}; qualifying rules of section 6
 ```
 
-- [ ] **Step 1: Write failing tests**: the artifact-correction worked example of 14.2 exactly; the alpha1 statistical tests of 14.2 with a seeded generator and the stated tolerances (white 0.58 +/- 0.03, 1/f 1.03 +/- 0.05, Brownian 1.50 +/- 0.05, affine invariance, constant -> None, detrending, artifact robustness); window qualification (4% vs 6% artifacts, 190 beats skipped); `read_fit`/`aligned_rr` on the Task 0 fixture; `get_fit` uses the cache without a call and marks "no RR".
+- [ ] **Step 1: Write failing tests**: the artifact-correction worked example of 14.2 exactly; `smoothness_detrend` equals a dense reference solve on a small N (written in the test) within 1e-9; the alpha1 statistical tests of 14.2 with 50 seeded series per case and the stated tolerances (white 0.58 +/- 0.03, 1/f 1.03 +/- 0.05, Brownian 1.50 +/- 0.05, affine invariance, constant -> None, detrending, artifact robustness); window qualification (4% vs 6% artifacts, 190 beats skipped, coupling: HR 176 at cadence 185 dropped and counted, HR 160 at cadence 172 kept, HR 88 at cadence 172 dropped by the cadence / 2 check); `parse_messages` on the JSON fixture (enhanced fields preferred, cadence doubled with the fraction, lat/lon absent); `aligned_rr` on the Task 0 fixture; `get_fit` uses the cache without a call, writes atomically with mode 0600, caches nothing on a parse error, and marks `no_hrv_messages`; a zip with a path-traversal member name is read without touching the disk.
 - [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
 - [ ] **Step 5: Commit** `feat: FIT parsing, RR artifact correction and DFA alpha1`.
 
 ---
 
-### Task 3: History methods H1, H2, H3, H5, field tests F1, F2, test workouts
+### Task 3a: History methods H1, H2, H3
 
 **Files:** Create `pace/thresholds.py`; Test `tests/test_thresholds.py`.
 
 **Interfaces:**
 
 ```python
-def hr_source(activity: dict) -> str                        # "strap" | "wrist" (Task 0 fixtures)
-def moving_samples(table: dict, *, min_speed_mps: float = 0.5) -> tuple[list[dict], int]   # samples without stops/gaps, excluded seconds (section 1 rules)
-def critical_speed(tables: list[dict], *, prs: list[dict] | None) -> dict   # H1: windows 180/420/720 s, OLS, gates, confidence
-def hr_speed(tables: list[dict]) -> dict                    # H2: segments, OLS a, b, SEE, n, runs, v range
+def hr_source(activity: dict) -> str                        # "strap" | "wrist", from get_activity (Task 0 fixtures)
+def samples(details: dict) -> list[dict]                    # raw epoch timestamps -> [{"t", "hr", "speed", "dist", "alt", "cadence"}], cadence in steps/min (Task 0 Step 5)
+def moving_samples(rows: list[dict]) -> tuple[list[dict], int]   # methods doc 1 stop rule only (> 10 s below 1.0 m/s, gap > 5 s); excluded seconds
+def critical_speed(tables: list[list[dict]], *, prs: list[dict] | None) -> dict   # H1: windows 180/420/720 s, OLS, gates, confidence, status
+def hr_speed(tables: list[list[dict]]) -> dict             # H2: segments, OLS a, b, SEE, n, runs, v_min, v_max, status
 def lt1_from_cs(cs: dict, h2: dict | None) -> dict          # H3
-def drift(table: dict, *, warmup_s: int, treadmill: bool) -> dict   # F1 drift % and verdict (14.3)
-def drift_bounds(runs: list[dict]) -> dict                  # H5 (section 7, 14.2): bounds, errors, estimate, confidence, notes
-def time_trial(table: dict) -> dict                         # F2 (14.4)
-def test_workout(kind: str, *, lt1_hr: int | None, lt2_hr: int | None) -> dict   # DSL for "drift" | "time_trial" per 14.3/14.4; must pass build_workout
 ```
 
-- [ ] **Step 1: Write failing tests**: every worked example of 14.1 (CS 4.000, D' 180, LT2 HR 160), 14.2 H3 (142 bpm, 304 s/km) and H5 (all cases incl. one-sided, 40-min and 27 C rejection), 14.3 (4.94% at LT1; 2.50% below; 8.16% above; 35-min rejected), 14.4 (LT2 HR 168, 250 s/km, no fade); stop in the middle excluded and reported (Review Focus 2); wrist runs dropped; `test_workout` outputs pass `build_workout`; `hr_source` on both fixtures.
+- [ ] **Step 1: Write failing tests**: every worked example of 14.1 (CS 4.000, D' 180, LT2 HR 160), 14.2 H3 (142 bpm, 304 s/km); `moving_samples` with a 12 s stretch at 0.8 m/s (stop) vs a 9 s stretch (not a stop) and a 6 s timestamp gap (stop); wrist runs dropped from H2 with the reason; `insufficient_data` status with reasons (not an error); `hr_source` on both fixtures.
 - [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
-- [ ] **Step 5: Commit** `feat: threshold history methods and field test analysis`.
+- [ ] **Step 5: Commit** `feat: threshold history methods H1-H3`.
 
 ---
 
-### Task 4: H4 from RR data, combination, run selection
+### Task 3b: H5, field tests F1 and F2, test workouts
 
 **Files:** Modify `pace/thresholds.py`; Test `tests/test_thresholds.py`.
 
 **Interfaces:**
 
 ```python
-def alpha1_lt1(run_windows: list[list[dict]]) -> dict      # H4: per-run regressions, 0.75 crossing, median, spread, confidence (section 6, 14.2)
-def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | None) -> dict   # 14.2 combination
-def select_runs(rows: list[dict], *, today: date, ref_hr: int | None, weeks: int) -> dict
-    # 14.7: {"effort": [...], "steady": [...], "drift": [...], "skipped": [{"id", "reason"}]}
-def select_fit(detailed: list[dict], *, ref_hr: int | None, cached: set[int], no_rr: set[int], rr_since: date) -> list[int]   # 14.7 span score, <= 6
+def drift_candidate(row: dict, rows: list[dict]) -> bool    # H5 list-row filter incl. the 24 h after a race / aerobicTrainingEffect >= 4.0 rule
+def drift_segment(table: list[dict], *, temp: list[float] | None) -> dict   # H5 step 1: evidence row {h, drift, label, bounds, length_s, temperature} | {"rejected": reason}
+def drift_bounds(evidence: list[dict]) -> dict              # H5 step 2 (section 7, 14.2): bounds, errors, estimate, confidence, notes
+def drift(table: list[dict], *, laps: list[dict], treadmill: bool) -> dict   # F1 drift %, verdict, temperature, saveable (14.3)
+def time_trial(table: list[dict], *, laps: list[dict]) -> dict              # F2 (14.4), confidence
+def test_workout(kind: str, *, lt1_hr: int | None, lt1_pace: int | None, h2: dict | None) -> dict
+    # DSL for "drift" | "time_trial" | "ramp" per 14.3, 14.4, 14.8; must pass build_workout
 ```
 
-- [ ] **Step 1: Write failing tests**: the H4 regression worked example (runs A, B -> 146 bpm, 291 s/km, medium) with alpha1 injected; no-crossing note; the combination worked examples (144 / 298 s/km medium; disagreement -> H5 142 low with F1 suggestion at 147; fallback to H3); the 14.7 selection worked example (29 candidates, 6 + 6 picks, 4 more drift details, 4 FIT downloads, 21 calls).
+- [ ] **Step 1: Write failing tests**: 14.2 H5 bounds examples (evidence rows only, incl. one-sided and E = 1), H5 segment examples (40-min rejection, 27 C rejection from FIT temperature, `temperature: "unknown"`), H5 candidate examples (20 h vs 30 h after a race or a run with `aerobicTrainingEffect` 4.2); 14.3 (4.94% at LT1 and saveable; 2.50% below; 8.16% above; 35-min rejected; uneven pace not saveable); 14.4 (LT2 HR 168, 250 s/km, no fade; a faded TT has confidence low); a stop in the middle excluded and reported (Review Focus 3); `test_workout("drift", lt1_pace=304)` has a steady step with pace target 294..314 s/km, without a record no target and the note "conversational, constant pace"; `test_workout("ramp")` from LT1 142 gives step HRs 124..154, pace targets with an H2, HR targets without, `bad_args` without any LT1; every output passes `build_workout`.
 - [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
-- [ ] **Step 5: Commit** `feat: DFA alpha1 LT1, method combination and run selection`.
+- [ ] **Step 5: Commit** `feat: drift bounds, field test analysis and test workouts`.
 
 ---
 
-### Task 5: `zones` commands, schema, docs, Garmin sync
+### Task 4: H4 and F3 from RR data, combination, run selection
 
-**Files:** Create `pace/commands/zones.py`; Modify `pace/cli.py`, `pace/commands/schema.py` (entries, group, `known`, manifest block `zones` with `rule`, `lab_valid_days`, `sources`, `due` rules, call budget; writes set in `tests/test_schema.py` gains `zones push`), `docs/CONTRACT.md`, `README.md`, the spec (post-hoc notes); Test `tests/test_zones_cmd.py`, `tests/test_schema.py`.
+**Files:** Modify `pace/thresholds.py`; Test `tests/test_thresholds.py`.
+
+**Interfaces:**
+
+```python
+def spearman(x: list[float], y: list[float]) -> float       # average ranks for ties
+def alpha1_gate(points: list[dict]) -> dict                 # {"usable": bool, "outcome": "usable" | "not_monotonic" | "one_sided", "rho", "reasons"}
+def alpha1_lt1(run_windows: list[dict]) -> dict             # H4: per-run gate, regressions, 0.75 crossing, median, spread, confidence, per-run outcomes
+def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict   # F3 (section 9a, 14.8): per-step windows, coupling drop, gate, fit, saveable
+def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | None) -> dict   # 14.2 combination
+def select_history(rows_8w: list[dict], *, exclude: set[int] = frozenset()) -> dict
+    # 14.7 phase 1: {"effort": [...], "steady": [...], "skipped": [{"id", "reason"}]}; list-row ranking only
+def select_drift(rows_12w: list[dict], *, ref_hr: int | None) -> dict
+    # 14.7 phase 2: alternate below/above ref, continue on the other side; percentiles without ref
+def select_fit(detailed: list[dict], *, ref_hr: int | None, cached: set[int], no_rr: set[int], rr_since: date, unreliable: bool) -> list[int]   # 14.7 span score, <= 6, [] if unreliable
+```
+
+  Percentiles are nearest-rank (value at rank ceil(p / 100 x n), ascending); every tie is broken newest first, then lowest id; with fewer candidates than slots, all are picked once, never duplicated.
+
+- [ ] **Step 1: Write failing tests**: the H4 regression worked example (runs A, B -> 146 bpm, 291 s/km, medium) with alpha1 injected; the one-sided run (outcome `one_sided`, note); the H4 gate test on the observed pattern (40 coupling drops, rho +0.49, `not_monotonic`); the F3 worked examples of 14.8 (145 bpm, 294 s/km, medium; 6% artifact step -> `one_sided`; the observed 13-step ramp -> 2 coupling drops, rho 0.49, `alpha1_unusable`); `spearman` with ties; the combination worked examples (144 / 298 s/km medium; disagreement -> H5 142 low with F1 suggestion at 147; fallback to H3); selection: effort ranking from list rows (race, then `maxHR`, then `averageSpeed`), nearest-rank steady picks with ties and fewer candidates than slots, drift alternation when one side runs out, `select_fit` returns [] when H4 is unreliable.
+- [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
+- [ ] **Step 5: Commit** `feat: DFA alpha1 LT1 and ramp test, method combination and run selection`.
+
+---
+
+### Task 5a: Estimate orchestrator
+
+**Files:** Create `pace/commands/zones.py` (orchestrator part); Test `tests/test_zones_estimate.py`.
+
+**Interfaces:**
+
+```python
+class Fetcher(Protocol):                                    # injected; counts calls; real one wraps cached_call / get_fit
+    async def list_rows(self, start: date, end: date) -> list[dict]
+    async def activity(self, activity_id: int) -> dict      # get_activity, 60-day TTL if older than 1 day
+    async def details(self, activity_id: int, *, maxchart: int) -> dict
+    async def prs(self) -> list[dict]
+    async def sleep(self, start: date, end: date) -> list[dict]
+    async def fit(self, activity_id: int) -> dict | None
+    calls: int                                              # Garmin calls made (cache hits not counted)
+def estimated_seconds(calls: int, *, min_interval: float, per_minute: int) -> int   # methods doc 14.7 formula, pace.ratelimit limits
+async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, max_calls: int = 40, include_wrist: bool = False,
+                       retry_h4: bool = False) -> dict
+    # {"lt1", "lt2", "methods": {name: {"status", "reasons", ...}}, "runs_used", "runs_skipped", "deferred",
+    #  "calls", "estimated_seconds", "hr_max", "rest_hr", "summary"}; updates hr_max, h4 streak, estimates log in data
+```
+
+- [ ] **Step 1: Write failing tests** with a fake fetcher on synthetic list rows and tables: the 14.7 worked example (29 candidates, 6 + 6 history picks, 4 new drift runs, 4 FIT downloads, 40 calls, `estimated_seconds` 198); the same with `max_calls=30` (30 calls, 3 drift runs and 4 FIT downloads in `deferred`) and a rerun on a caching fake (10 more calls, same result); the 16-week extension stays within the cap; wrist steady/drift picks are not fetched in detail; all-wrist candidates -> H2/H4/H5 `insufficient_data` with reasons (Review Focus 4); H4 unreliable -> H4 `skipped`, no FIT call; two not-monotonic runs mark it unreliable; `hr_max` updated; the summary is appended to `estimates` with or without save.
+- [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
+- [ ] **Step 5: Commit** `feat: zones estimate orchestrator with call budget`.
+
+---
+
+### Task 5b: `zones` commands, schema, docs
+
+**Files:** Modify `pace/commands/zones.py`, `pace/cli.py`, `pace/commands/schema.py` (entries, group, `known`, manifest block `zones` with `rule`, `lab_valid_days`, `sources`, `due` rules, `max_calls` default and the budget rule), `docs/CONTRACT.md`, `README.md`, the spec (post-hoc notes); Test `tests/test_zones_cmd.py`, `tests/test_schema.py`.
 
 | command | kind | `data` |
 |---|---|---|
 | `zones show [--no-cache]` | read (local + zones read + list rows since the last estimate for `due`) | `status(...)` |
-| `zones estimate [--weeks 8] [--include-wrist] [--save] [--no-cache]` | read; `--save` local_write | `{"lt1", "lt2", "methods": {...}, "runs_used", "runs_skipped", "calls", "record"?}` |
-| `zones analyze ACTIVITY_ID --test drift|time_trial [--treadmill] [--save]` | read; `--save` local_write | analysis + `record`? |
-| `zones test-workout drift|time_trial` | pure | `{"workout": DSL}` |
+| `zones estimate [--weeks 8] [--max-calls 40] [--include-wrist] [--retry-h4] [--save] [--no-cache]` | local_write (`true`: estimates log, hr_max, H4 status; `--save` adds a record) | `run_estimate(...)` + `"record"`? |
+| `zones analyze ACTIVITY_ID --test drift\|time_trial\|ramp [--treadmill] [--save]` | read; `--save` local_write (`"--save"`) | analysis + `"record"`? (calls: `get_activity`, `get_activity_details`, `get_activity_splits`, FIT for `ramp` unless cached) |
+| `zones test-workout drift\|time_trial\|ramp` | pure (local read of the current records) | `{"workout": DSL}` |
 | `zones add --source S [--date] [--lt1-hr] [--lt1-pace] [--lt2-hr] [--lt2-pace] [--max-hr] [--rest-hr] [--method] [--confidence] [--activity ID]... [--notes]` | local_write | `{"record", "current"}` |
-| `zones accept ID` | local_write | `{"current"}` |
-| `zones remove ID [--force]` | local_write | `{"removed"}` |
-| `zones push [--dry-run]` | Garmin write (Task 0 contract) | `run_write` result; dry-run payload `{"before", "after", "body"}` |
+| `zones accept ID [--only lt1\|lt2]` | local_write | `{"current"}` |
+| `zones remove ID [--force]` | local_write | `{"removed", "current"}` |
 
   `required_flags`: `zones add` `["--source"]`, `zones analyze` `["--test"]`.
   Paces accept `m:ss` per km (`pace.workout.parse_pace` semantics), stored as s/km.
-  `zones estimate` reports `calls` used and never exceeds the 14.7 budget; the skill passes a long enough Bash timeout (documented in CONTRACT: up to about 1 minute cold, near-instant from cache).
+  `zones analyze --save` refusals (`bad_args`, nothing stored, the analysis still in the error detail): F1 other than "at LT1" with even pace (with the verdict and the next-test suggestion); F2 rejected tests; F3 `alpha1_unusable` or not bracketed (steps with artifacts > 5% are already dropped).
+  F2 saves with confidence low if faded or stops; F1 with confidence low if the newest F3 of the last 28 days disagrees by more than 5 bpm (methods doc 9a).
+  CONTRACT and the skill note: a cold `zones estimate` takes up to about 4 minutes (40 calls at 10 per minute plus response times), near-instant from cache; callers use a 10-minute Bash timeout; `pace cache clear` does not clear `$PACE_HOME/fit/`.
 
-- [ ] **Step 1: Write failing tests** with `fake_api` and synthetic tables/FIT fixtures: show combines local + Garmin + `in_sync` + `due`; estimate respects the budget and reports skipped wrist runs; `--save` stores a full record; analyze both tests (+ `--save`); add lab -> current (and older lab not current); accept; remove; push dry-run shows live `before` and makes no write; push sends the Task 0 body, invalidates the zones read, refused without a complete current record or with invalid floors.
+- [ ] **Step 1: Write failing tests** with `fake_api` and synthetic tables/FIT fixtures: show combines local + Garmin + `in_sync` + `due` + `records` with `current_for` + per-threshold provenance; estimate without `--save` appends to `estimates` and stores no record, with `--save` stores a full record; schema markers `zones estimate` `"local_write": true` and `zones analyze` `"local_write": "--save"`; analyze drift/time_trial/ramp with laps (+ `--save` and each refusal); add lab -> current per threshold (and older lab not current); accept with and without `--only`; remove.
 - [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
-- [ ] **Step 5: Live check (controller, read-only)**: `pace zones show`, `pace zones estimate` on the user's account; look at the candidates with the user before anything is saved, accepted or pushed.
-- [ ] **Step 6: Docs and commit** `feat: zones commands and Garmin zone sync`.
+- [ ] **Step 5: Live check (controller, read-only on Garmin)**: `pace zones show`, `pace zones estimate` on the user's account (it logs the estimate locally); look at the candidates with the user before anything is saved, accepted or pushed.
+- [ ] **Step 6: Docs and commit** `feat: zones commands`.
+
+---
+
+### Task 5c: Garmin zone sync (after Task 0 Step 4)
+
+**Files:** Modify `pace/commands/zones.py`, `pace/writes.py` (resource `hr_zones`), `pace/commands/schema.py` (writes set in `tests/test_schema.py` gains `zones push`), `docs/CONTRACT.md` (writes section: the `zones push --dry-run` exception and `hr_zones` in the `resource` list); Test `tests/test_zones_cmd.py`.
+
+| command | kind | `data` |
+|---|---|---|
+| `zones push [--dry-run]` | Garmin write (Task 0 contract) | `run_write` result, resource `hr_zones`; dry-run payload `{"before", "after", "body"}` |
+
+  `--dry-run` makes exactly one live read (never the cache) to build `before` and `body`, and no write; its option help says so instead of the shared "make no network call" text.
+  With HRmax unknown the body keeps Garmin's `maxHeartRateUsed`, and zone5Floor must be below it.
+
+- [ ] **Step 1: Write failing tests**: push dry-run shows live `before`, makes one read and no write (Review Focus 6); push sends the Task 0 body, invalidates the zones read, refused without a complete current LT1 + LT2 or with invalid floors (Review Focus 5); HRmax unknown keeps Garmin's `maxHeartRateUsed` and refuses zone5Floor >= it.
+- [ ] **Step 2: Run** -> fail. **Step 3: Implement**. **Step 4: Run** full suite and ruff -> green.
+- [ ] **Step 5: Docs and commit** `feat: Garmin zone sync`.

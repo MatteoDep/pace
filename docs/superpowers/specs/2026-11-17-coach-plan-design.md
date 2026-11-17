@@ -380,18 +380,19 @@ The coach helps the user find their lactate thresholds (LT1, LT2) and keeps trai
 ### Sources of a threshold record, and precedence
 
 - **Estimate** from past workouts, computed by pace (default, kept current as data arrives).
-- **Field test**: a specific test run the coach plans with the user (for example a heart-rate drift / aerobic decoupling run for LT1, a time trial for LT2), analyzed by pace.
+- **Field test**: a specific test run the coach plans with the user (for example a heart-rate drift / aerobic decoupling run or a DFA alpha1 ramp for LT1, a time trial for LT2), analyzed by pace.
 - **Lab test** reported by the user (values typed in).
 
 A record holds: date, source, method, LT1 and LT2 as heart rate and pace where known, max and resting HR used, the activities it came from, a confidence note.
-The **current** record is the one the zones come from; it changes only on the user's yes, except that a reported lab test becomes current when entered.
+The **current** record is the one the zones come from, kept per threshold (the current LT1 and the current LT2 may come from different records); it changes only on the user's yes, except that a reported lab test becomes current, for each threshold it has, when entered (unless it is older than that threshold's current record).
 A lab test stays current while it is less than 6 months old (user's call); after that the coach suggests a retest and shows newer estimates or field tests next to it without applying them until the user accepts one.
 
 ### Methods
 
-The builder researches the state of the art and records each method in `coaching.md` with evidence grade and verified sources, as for the other principles.
+The normative source for every method (formulas, evidence grades, verified sources, worked examples) is `docs/superpowers/specs/2026-11-17-zones-methods.md`; `coaching.md` carries a summary of it (written in plan 4).
 Constraints that are already known:
-- The user's Forerunner 55 has no Garmin lactate threshold detection and its wrist sensor gives no beat-to-beat data, so DFA alpha1 is out.
+- The user's Forerunner 55 has no Garmin lactate threshold detection, and its wrist sensor gives no beat-to-beat data.
+  With the chest strap, though, the original FIT file of a run holds RR intervals in `hrv` messages (verified on the user's account, since about September 2026), so DFA alpha1 is usable on strap runs (methods doc sections 6 and 9a).
 - The user runs with a chest strap on almost every run (24 of the last 25, checked 2026-11-17); each activity's `metadataDTO.sensors` shows a heart-rate sensor (`bleDeviceType: HEART_RATE`) when the strap was used.
   Threshold estimates use strap runs only, or weight wrist runs down, and say which they used.
 - Candidates to check, not to trust: critical speed from best efforts or race results for LT2; average HR of the last 20 minutes of a 30-minute time trial for LT2 HR; HR drift / aerobic decoupling (pace:HR) over a long steady run for LT1.
@@ -410,9 +411,9 @@ Run reviews (section 5B) and workout DSL HR targets use pace's zones once a curr
 
 | command | effect |
 |---|---|
-| `zones show` | current record, derived zones, history, and Garmin's zones on the watch |
-| `zones estimate` | estimates from recent history per method, with the activities used and confidence; no write |
-| `zones analyze ACTIVITY_ID --test KIND` | analysis of a test run (drift, time trial) |
+| `zones show` | current record per threshold, derived zones, history (all records), and Garmin's zones on the watch |
+| `zones estimate` | estimates from recent history per method, with the activities used and confidence; logs a summary locally, no Garmin write |
+| `zones analyze ACTIVITY_ID --test KIND` | analysis of a test run (drift, time trial, ramp) |
 | `zones test-workout KIND` | a DSL workout for the test, to add to the plan |
 | `zones add` | add a record (lab, field test, estimate) |
 | `zones accept ID` | make a record current |

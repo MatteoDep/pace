@@ -1,7 +1,7 @@
 # Threshold and zone methods (research notes for coach plan 5)
 
 Date: 2026-11-17.
-Scope: how `pace` estimates LT1 and LT2 (HR and pace) for one runner, analyzes the two field tests, accepts lab values, and derives three zones and five Garmin HR zone floors.
+Scope: how `pace` estimates LT1 and LT2 (HR and pace) for one runner, analyzes the three field tests, accepts lab values, and derives three zones and five Garmin HR zone floors.
 This file is the reference for `pace/thresholds.py`, `pace/zones.py` and the "Thresholds and zones" section of the coaching skill.
 
 ## 0. Terms, athlete constraints and evidence grades
@@ -11,8 +11,13 @@ LT2 is the second threshold: the boundary between the heavy and severe domains; 
 CS is the asymptote of the speed-duration relation; D' (metres) is the distance that can be covered above CS.
 Athlete: Garmin Forerunner 55, chest strap on almost all runs, no Garmin lactate threshold detection, no running power.
 Beat-to-beat RR intervals: checked on the user's account, the original FIT file of chest-strap runs contains `hrv` messages (field `time`, seconds) since about September 2026; a 3 h run held 30,232 beats, with artifacts such as 0.267 s and 3.891 s.
-Data per run: per-sample HR, speed, distance, elevation, cadence at about 1-5 s; laps; summary; Garmin personal records; RPE and feel; daily resting HR.
-RR intervals come only from the original FIT file: one extra Garmin API call per run (about 200 KB zipped), parsed with the `fitdecode` library.
+Data and where it comes from (one Garmin call per item unless stated):
+- activity list rows (one read for the whole range): type, start, duration, `averageHR`, `maxHR`, `averageSpeed`, elevation gain, `eventType`, `aerobicTrainingEffect`, `averageRunningCadenceInStepsPerMinute`, `hrTimeInZone_*`;
+- `get_activity` per run: HR sensors (`metadataDTO.sensors`), RPE and feel; these exist only here, not in the list rows nor in the details;
+- `get_activity_details` per run: per-sample HR, speed, distance, elevation, cadence (section 1 for the resolution);
+- `get_activity_splits` per run: laps (field tests only);
+- Garmin personal records; daily resting HR from the sleep-stats range read.
+RR intervals come only from the original FIT file: one extra Garmin API call per run (about 200 KB zipped), parsed with the `fitdecode` library; only derived data is kept (plan 5).
 Max HR is known only from data.
 
 Evidence grades used below:
@@ -24,17 +29,23 @@ Rules marked "pace heuristic" are engineering choices made for this tool; no sou
 
 ## 1. Common data rules (apply to every method)
 
-Strap only: an activity is used only if its HR came from a chest strap (plan 5 sensor check); wrist runs need `--include-wrist` and lower the confidence to low.
+Strap only: an activity is used only if its HR came from a chest strap (plan 5 sensor check on `get_activity`'s `metadataDTO.sensors`); wrist runs need `--include-wrist` and lower the confidence to low.
 Outdoor only for speed: treadmill runs on the Forerunner 55 get speed from the wrist accelerometer, so they are excluded from every speed or pace calculation; a treadmill drift test is analyzed on HR only (section 8).
+Sample resolution: `get_activity_details` returns at most `maxchart` samples (default 2000, which gave 4 s spacing on an 8348 s run), so `pace` requests `maxchart` = 2 x the run's elapsed seconds, capped at 20000, and reads the samples by their raw epoch timestamps (not the local-time table of `pace activity details`); plan 5 Task 0 checks that Garmin honours `maxchart`.
 Resampling: convert samples to a 1 s grid by linear interpolation of cumulative distance and HR, but only inside gaps of at most 5 s.
-Stops and auto-pause: a timestamp gap of more than 5 s, or a stretch of more than 10 s with speed below 1.0 m/s, is a stop; no analysis window may contain a stop.
+Stops and auto-pause: a timestamp gap of more than 5 s at the fetched resolution, or a stretch of more than 10 s with speed below 1.0 m/s, is a stop; no analysis window may contain a stop.
+This is the only stop rule: every method and field test uses it, with no other speed threshold.
+Window clock: windows, segments and halves are measured in elapsed time on the sample timestamps; an auto-pause leaves a timestamp gap of more than 5 s, so it is a stop and no window spans it (controller ruling).
 Speed from distance: window speed is (distance at window end minus distance at window start) / window seconds; never average the instantaneous GPS speed (pace heuristic, GPS speed samples are noisy).
 Warm-up: the first 600 s of every run are excluded from the history methods; field tests use the lap the user pressed or, without it, the protocol warm-up time.
 Grade: a window is "flat" if abs(elevation end minus elevation start) / window distance <= 0.02 and total ascent inside it <= 10 m per km (pace heuristic; Forerunner 55 elevation is GPS-based and noisy, so only coarse limits make sense).
 Walking: windows with mean cadence below 140 steps/min are excluded (pace heuristic).
+Cadence is always in steps/min: running FIT `cadence` is in strides/min, so steps/min = 2 x (cadence + fractional_cadence), with fractional_cadence as decoded (FIT scale 1/128 already applied); the unit of the Garmin details `directRunCadence` is pinned in plan 5 Task 0.
 HR artefacts: HR samples outside 30..230 are dropped; the first 300 s of a run are ignored for max HR because dry-strap spikes are common there (pace heuristic).
-Max HR (HRmax): highest 5-s rolling median HR across strap runs in the last 365 days, excluding the first 300 s of each run.
+Max HR (HRmax): a running maximum kept in `zones.json`: the highest 5-s rolling median HR (first 300 s excluded) among the strap runs `pace` has examined, updated by every `zones estimate` and every saved `zones analyze`; it never decreases on its own, and a record entered with a higher `max_hr` (for example a lab test) raises it (controller ruling).
+When HRmax is unknown (no strap run examined yet), zone 5 uses the fallback of section 14.5.
 Using the highest HR recorded in training as HRmax follows Smyth et al. 2022, who found it higher and more plausible than the age-predicted value (187 +/- 8 vs 178 +/- 18 bpm).
+Resting HR: median of `restingHeartRate` over the last 28 days from the sleep-stats range read (`pace wellness sleep-range`, plan 3); it is stored with the record and does not enter any formula here.
 
 ## 2. What the evidence says about thresholds, field markers and rules of thumb
 
@@ -186,6 +197,8 @@ skip the window if: it contains a gap or a stop (section 1); artifact share > 5%
 x = corrected RR in the window (s), N values
 detrend (smoothness priors, Tarvainen et al. 2002):
         z = x - (I + 500^2 * D2' D2)^-1 x     D2 = (N-2) x N second-difference matrix (rows 1, -2, 1)
+        computed by solving (I + 500^2 * D2' D2) s = x with a banded (pentadiagonal) LDL' solver, O(N);
+        never a dense inverse (O(N^3)); pure Python, no numpy
 DFA (Peng et al. 1995):
         y_i = cumulative sum of (z_j - mean(z)) for j <= i
         for n in 4..16: split y into floor(N / n) non-overlapping boxes from the start (the tail is dropped);
@@ -195,13 +208,22 @@ DFA (Peng et al. 1995):
 window HR    = 60 / mean(x)
 window speed = (distance at window end - distance at window start) / 120   (section 1)
 ```
+Measured cost of this pure-Python implementation: about 1.7 ms per 330-beat window, so about 1.3 s per run with windows limited to 600-4500 s (780 windows at a 5 s step).
 Qualifying windows in a training run:
 - the whole window lies between 600 s and 4500 s of the run (warm-up excluded; fatigue lowers alpha1 at a given load later in long sessions: from 0.71 to 0.32 at 3 m/s after a 6 h run in Rogers et al. 2021c, and a bias of -12.3 bpm on a second ramp in Van Hooren et al. 2025);
 - outdoor, flat, stop-free, mean cadence >= 140 (section 1);
+- no cardio-locomotor coupling risk: the window is dropped when abs(HR - c) / c <= 0.05 or abs(HR - c / 2) / (c / 2) <= 0.05, with c the window's mean cadence in steps/min (pace heuristic, see "Observed on this athlete" below); the number of windows dropped by this rule is reported;
 - speed of each 30 s sub-window within +/-10% of the window speed (pace heuristic);
 - the 120 s before the window have a mean speed within +/-10% of the window speed, and the 180 s before the window contain no 30 s stretch faster than 1.10 x the window speed (pace heuristic: alpha1 lags changes in load, and Andriolo et al. 2024 found raw load-alpha1 pairs from everyday workouts poorly correlated for this reason).
 
-Per-run crossing (alpha1-vs-HR and alpha1-vs-speed regressions):
+Per-run gate (pace heuristic, see "Observed on this athlete" below):
+```
+Q   = all qualifying windows of the run (any alpha1)
+rho = Spearman rank correlation of window HR and alpha1 over Q (average ranks for ties)
+usable only if: rho <= -0.6 and >= 3 windows of Q with alpha1 > 0.75 and >= 3 with alpha1 < 0.75
+otherwise:      status "alpha1_unusable" with the reason ("not monotonic, rho = x" or "one-sided"), never an estimate
+```
+Per-run crossing (alpha1-vs-HR and alpha1-vs-speed regressions), only on usable runs:
 ```
 P = qualifying windows with 0.5 <= alpha1 <= 1.0   (the near-linear part; Rogers et al. 2020)
 need: >= 60 points (5 min of window centres) with alpha1 > 0.75 and >= 60 points with alpha1 < 0.75;
@@ -228,7 +250,18 @@ Short reps (under about 4 min) give no qualifying windows because of the lag rul
 LT2 at alpha1 0.5: computed only as a note, never stored as LT2.
 Reasons: individual limits of agreement with VT2 were -24 to +16 bpm (Rogers et al. 2021b); during 30 min of constant running at MLSS alpha1 stayed above 0.5 (0.64 after about 18 min; van Rassel et al. 2025); 6 of 21 runners could not finish 20 min at the alpha1 0.5 speed (Gronwald et al. 2024); chest-strap alpha1 disagrees most with ECG at high intensity and low alpha1 (Schaffarczyk et al. 2022); artifact correction pushes low alpha1 values upward (Rogers et al. 2021a).
 LT2 stays with H1 + H2 and F2.
-Inputs: FIT file (RR intervals, `record` HR, distance, cadence, altitude); the per-sample data already fetched for the run.
+Per-athlete memory (controller ruling on the details): `zones.json` keeps an H4 status with a streak of consecutive runs or F3 ramps that failed the gate as "not monotonic" (runs counted oldest first; a usable run or ramp resets the streak to 0; "one-sided" runs, such as steady easy runs, do not count either way).
+At a streak of 2, H4 is marked "unreliable for this athlete": `zones estimate` skips H4 and makes no FIT downloads, reports H4 as status "skipped" with that reason, and the coach suggests F1 instead of F3, until the user asks to retry (`zones estimate --retry-h4`, which clears the mark and the streak).
+
+Observed on this athlete (one ramp test on 2026-09-09: 13 steps of 3 min, chest strap, RR artifacts 0.1%, alpha1 of the last 120 s of each step after smoothness-priors detrending; running cadence 166-188 steps/min):
+```
+step HR  126   133   136   139   142   148   151   156   159   164   170   176   180
+alpha1   0.54  0.65  0.45  0.35  0.37  0.35  0.46  0.61  0.63  1.03  1.13  0.99  0.35
+```
+alpha1 did not fall with intensity: it was already below 0.75 at the easiest steps, and rose above 1.0 at 164-176 bpm, where HR approached the step rate.
+A likely explanation is cardio-locomotor coupling (the heart rate locking to the step rate, which imposes a periodic structure on the RR series); this is uncited reasoning, no study on coupling and DFA alpha1 in running was opened for this note, so the grade of the coupling claim is weak.
+Consequence for this athlete: H5 (history) and F1 (field test) are the primary LT1 methods; H4 and F3 contribute only when their gates pass, and the coupling exclusion and the monotonicity gate exist so that a pattern like this one produces "alpha1_unusable" rather than a wrong LT1.
+Inputs: data derived from the FIT file (RR intervals; per-second `record` HR, speed, distance, cadence, altitude); the per-sample data already fetched for the run.
 Known error and validity:
 - Recreational male runners, incremental treadmill, ECG: HR at alpha1 0.75 vs gas-exchange VT1 152 +/- 21 vs 154 +/- 20 bpm, bias -1.9 bpm, limits of agreement -12 to +8 bpm, n = 15 (Rogers et al. 2020).
 - Runners with a consumer chest belt: bias -0.9 bpm, limits of agreement -12.2 to +10.5 bpm on a first ramp; on a second ramp after fatigue the bias was -12.3 bpm (limits -30.4 to +5.9), n = 14 (Van Hooren et al. 2025).
@@ -272,7 +305,8 @@ Logic: F1 reads drift <= 5% at constant pace as "at or below LT1" and > 5% as "a
 Segment and drift:
 ```
 candidate run: strap, outdoor (not treadmill, not trail), in the last 12 weeks;
-               not within 24 h after a run with RPE >= 8 or longer than 120 min (pace heuristic)
+               not starting within 24 h after the start of a race (list-row `eventType` race)
+               or of a run with list-row `aerobicTrainingEffect` >= 4.0 (pace heuristic; list rows only, no extra call)
 for each start s = 900, 960, 1020, ... s (15 min warm-up, 60 s steps):
     extend the segment in 60 s steps while all hold:
       stop-free (section 1); mean cadence >= 140 in each 60 s sub-window;
@@ -281,11 +315,13 @@ for each start s = 900, 960, 1020, ... s (15 min warm-up, 60 s steps):
 keep the longest segment over all s (tie: earliest); need length >= 2700 s
 recheck the +/-5% speed rule against the final segment mean speed
 reject if: total ascent of the segment > 10 m per km;
-           mean temperature >= 24 C when one exists (FIT `record` field temperature,
-           else the activity summary average temperature) (pace heuristic)
+           mean temperature >= 24 C, only when the run's cached FIT data carries the `record` field
+           temperature (pace heuristic; no weather calls are made)
 halves H1, H2 of equal time; EF_k = speed_k / HR_k; drift % = (EF_1 / EF_2 - 1) * 100   (as F1)
 h = R(mean HR of H1); label = "below" if drift <= 5.0 else "above"
 ```
+Temperature: the Forerunner 55 records none, so in practice heat is not filtered; every evidence row reports `temperature` in C when the FIT data carries it and `"unknown"` otherwise, and the coach is told that heat is unfiltered for "unknown" rows.
+The method has two steps, tested separately: segment (one run's samples -> an evidence row `{h, drift, label, segment bounds, length, temperature}` or a rejection with its reason) and bounds (the evidence rows -> bounds, estimate, confidence).
 A "below" run says LT1 HR >= h; an "above" run says LT1 HR <= h.
 F1's "at LT1" band (3.5-5%) counts as "below" here, because at or below LT1 both give a lower bound.
 Combining the bounds:
@@ -305,7 +341,7 @@ H5 LT1 pace = R(1000 / v(H5 LT1 HR)) with v from H2; null if H2 failed
 Contradictions (a "below" run at a higher HR than an "above" run) are absorbed by minimising errors; the interval then covers both runs, so the gap widens and the confidence drops.
 All numbers in this method (5% split, 45-75 min, 24 C, the confidence limits) are pace heuristics except where F1 or the sources below give them.
 `pace` does not normalise drift for segment length, although drift grows with duration (below); it reports each run's length so the coach can weigh short segments less.
-Inputs: per-sample HR, distance, time, elevation, cadence (the detail data already fetched); temperature if present; run list for the previous-day rule.
+Inputs: per-sample HR, distance, time, elevation, cadence (the detail data already fetched); temperature if the cached FIT data has it; list rows for the previous-day rule.
 Known error and validity:
 - No study validates LT1 bounds from training-run drift; F1 itself is unvalidated (section 8).
 - Drift happens below LT1 too: at 90% of LT1 speed, HR rose 5.5-5.9% over 90 min in 31 recreational runners, and LT1 speed fell 5-6% (Nuuttila et al. 2025); near VT1 speed HR rose 3.7% in 20 min (Gronwald et al. 2024); the HR slow component grows with relative intensity (Teso et al. 2025).
@@ -313,7 +349,7 @@ Known error and validity:
 - Cardiovascular drift is a progressive fall in stroke volume with a rise in HR after 10-20 min of exercise (Coyle and Gonzalez-Alonso 2001), which is why the first 15 min are excluded.
 - Heat: hyperthermia (core temperature +1 C) and dehydration (4% of body mass) each lowered stroke volume by 7-8% with a compensating HR rise, and much more when combined (Gonzalez-Alonso et al. 1997); speed at VT1 was about 7% lower at 30 C than at 19 C in trained runners (Hunter et al. 2026).
   In heat the same pace is a higher relative intensity and HR rises more, so a hot run can read as "above" for reasons unrelated to the runner's usual LT1.
-- Durability tests should control nutrition (carbohydrate availability), hydration and environment, and in cycling terrain is listed as a factor to control (Hunter et al. 2025); `pace` can filter heat, hills and stops, but not glycogen or hydration, which it cannot see.
+- Durability tests should control nutrition (carbohydrate availability), hydration and environment, and in cycling terrain is listed as a factor to control (Hunter et al. 2025); `pace` filters hills and stops, heat only when the FIT data carries temperature (not on the Forerunner 55), and not glycogen or hydration, which it cannot see.
 - Decoupling of HR from speed is a validated durability measure in large data sets (Smyth et al. 2022), which supports the measurement but not its use as an LT1 detector.
 - Expected direction of error: undetected heat, dehydration or low glycogen create false "above" runs and pull the estimate down.
 Evidence grade: weak/expert opinion.
@@ -356,7 +392,8 @@ also report speed CV across 60 s sub-windows; if > 3%, verdict carries "uneven p
 At constant pace the outdoor and treadmill formulas give the same value, and both equal the Uphill Athlete hand formula ((second-half HR / first-half HR) - 1) x 100.
 TrainingPeaks computes Pa:HR decoupling by comparing the first and second half of a steady effort with the same 5% threshold (Friel).
 Deviation from Uphill Athlete: they set AeT HR to the starting HR of the test; `pace` uses the first-half mean HR because a single starting value is noisy; with drift at most 5% the two differ by about 1-3 bpm.
-Inputs: per-sample HR, distance, time, elevation; laps.
+Inputs: per-sample HR, distance, time, elevation; laps (one `get_activity_splits` call).
+The analysis reports `temperature` as in section 7 (`"unknown"` on the Forerunner 55), so the coach knows heat was not checked.
 Known error and validity:
 - No peer-reviewed study validates the drift test or the 3.5-5% band against lab LT1/VT1.
 - HR drifts at intensities below and around LT1: at a speed close to VT1 HR rose from 148.4 to 153.9 bpm (+3.7%) in 20 min with stable VO2, and at a speed close to VT2 from 166.6 to 175.7 bpm (+5.5%) (Gronwald et al. 2024); at about 89% of VT1 speed over about 2.5 h HR drift was measurable and moderately to well reproducible (Malinen et al. 2026); the HR slow component grows with relative intensity (Teso et al. 2025).
@@ -389,7 +426,7 @@ LT2 pace = 1800 s / distance_km over the whole 30 min    (s/km)
 pacing check: speed of the second 15 min / speed of the first 15 min;
               < 0.95 -> flag "faded, started too fast", confidence low
 ```
-Inputs: per-sample HR, distance, time, elevation; laps; RPE (expected 9-10).
+Inputs: per-sample HR, distance, time, elevation; laps (one `get_activity_splits` call); RPE from `get_activity` (expected 9-10, reported only).
 Known error and validity:
 - In 27 competitive runners and triathletes, speed from a 30-min time trial did not differ from the lab LT (4 mmol/L), SEE 0.21 m/s; the HR estimate also did not differ, SEE 8.0 bpm (McGehee et al. 2005).
 - Friel's "last 20 min" HR rule is practitioner guidance described by its author as an approximation.
@@ -406,9 +443,56 @@ Sources:
 - Lipkova L et al. 2025. (as in section 3) (full text)
 - Anderson M et al. 2026. (as in section 3) (full text)
 
+## 9a. Method F3: DFA alpha1 ramp test (LT1 field test)
+
+Numbered 9a so that the later section numbers, which other documents cite, stay unchanged (controller ruling).
+Protocol (adapted from the incremental ramps of Rogers et al. 2020 and Van Hooren et al. 2025 to a stepped outdoor run, pace heuristic):
+- Chest strap; flat route or track; no stops; calm, cool weather.
+- Warm-up 10 min easy; press lap.
+- 6-8 steps of 3-4 min each at constant pace, pressing lap at each step change; the first step about 15-20 bpm below the current LT1 estimate, each step about 5-6 bpm higher, the last clearly above LT1.
+  At least 6 steps, because the gate below needs 3 usable steps on each side of alpha1 0.75 (controller ruling; the user's first ruling said 5-6 steps).
+- Cool-down 5-10 min.
+- Hold the pace of each step, not its HR; RPE rises from about 2 to about 6 of 10.
+Analysis:
+```
+steps = the laps between the warm-up lap and the cool-down lap (or none: the test is refused, steps need laps)
+per step: one alpha1 window = the last 120 s of the step (the first 1-2 min absorb the alpha1 lag after the
+          pace change, section 6), with the section 6 RR extraction, artifact correction, DFA and skip rules
+          (gap, stop, < 200 corrected beats); window HR, window speed and artifact share as in section 6
+drop a step whose window has artifact share > 5%
+drop a step at coupling risk (the section 6 rule on the step's HR and mean cadence); report the count
+gate (as section 6): rho = Spearman of step HR and alpha1 over the kept steps;
+      need rho <= -0.6 and >= 3 kept steps with alpha1 > 0.75 and >= 3 with alpha1 < 0.75;
+      otherwise status "alpha1_unusable" with the reason, no estimate, nothing saved
+P = kept steps with 0.5 <= alpha1 <= 1.0
+refuse if: no step in P with alpha1 > 0.75 or none with alpha1 < 0.75 (the ramp does not cross 0.75),
+           or the HR fit fails (d >= 0)
+fit HR = c + d * alpha1 and v = e + f * alpha1 by OLS on P (need d < 0; v only outdoors, need f < 0)
+LT1 HR   = R(c + d * 0.75)        LT1 pace = R(1000 / (e + f * 0.75))   (treadmill: HR only)
+bracketed = the gate passed and at least 1 step in P on each side of 0.75
+confidence: medium if >= 2 steps in P on each side of 0.75 and the median artifact share of the kept steps <= 3%;
+            otherwise low; never high
+```
+Why the confidence is higher than for H4: the protocol sets steady, known paces and the steps cross the threshold by design, so the lag and steadiness problems of training runs (section 6) are controlled.
+Recommended pairing (the coach's default LT1 suggestion while H4 is not marked unreliable, section 6): run F3 first, then one F1 drift test at the ramp's LT1 HR.
+An "alpha1_unusable" ramp counts toward the H4 streak of section 6; on this athlete the one ramp so far would have failed the gate, so F1 is the expected primary LT1 test.
+`zones analyze --test drift` compares an "at LT1" F1 result with the newest F3 record of the last 28 days: within 5 bpm the F1 record keeps confidence medium and notes the agreement; more than 5 bpm apart it is saved with confidence low and the note "F3 and F1 disagree by N bpm" (controller ruling).
+Inputs: data derived from the FIT file (RR intervals, per-second records), laps (one `get_activity_splits` call), the per-sample data of the run.
+Known error and validity:
+- HR at alpha1 0.75 agreed with VT1 at group level on continuous incremental ramps (bias -1.9 bpm, limits -12 to +8 bpm, Rogers et al. 2020; bias -0.9 bpm, limits -12.2 to +10.5 bpm with a consumer chest belt, Van Hooren et al. 2025); section 6 lists the negative findings.
+- No opened study validates a stepped outdoor ramp of 3-4 min steps with one window per step; the step length follows the alpha1 lag noted in section 6 (pace heuristic).
+- On this athlete a 13-step ramp gave alpha1 that did not fall with intensity (section 6, "Observed on this athlete").
+Evidence grade: moderate for group-level agreement with VT1 on incremental tests; weak for an individual and for this stepped field protocol.
+
+Sources:
+- Rogers B et al. 2020. (as in section 6) (full text)
+- Van Hooren B et al. 2025. (as in section 6) (abstract)
+- Rogers B, Gronwald T. 2022. (as in section 6) (full text)
+
 ## 10. Lab tests (source "lab")
 
-Protocol: the user enters LT1 and LT2 HR and/or pace from a lab report with `zones add --source lab`; the record becomes current (plan 5).
+Protocol: the user enters LT1 and LT2 HR and/or pace from a lab report with `zones add --source lab`; the record becomes current for each threshold it has, if its date is on or after the date of that threshold's current record (plan 5).
+A lab record has no H2 regression, so it gives no z1/z2 pace floors (section 14.5).
 Store `method` as the lab's own criterion when known (for example "VT1/VT2", "LT1 2 mmol/L / OBLA 4 mmol/L", "D-max").
 Do not convert lab values; note that lab lactate LT2 is usually slower than CS (Rainsberger et al. 2026; Galan-Rioja et al. 2020), so a later history estimate with a faster LT2 pace is not by itself evidence of improvement.
 Lab treadmill speeds are often at 0-1% grade and treadmill speed differs from outdoor GPS pace; HR values transfer better than pace (pace heuristic).
@@ -449,9 +533,9 @@ Sources:
 ## 13. Rejected methods
 
 %HRmax or %HRR rules (for example LT1 = 75% HRmax): rejected; LT ranged 60-90% HRmax across individuals (Iannetta et al. 2020; Jamnick et al. 2020).
-`pace` never fills a threshold from %HRmax; with no usable data it reports `insufficient_data` and suggests a field test.
+`pace` never fills a threshold from %HRmax; with no usable data the method reports status `insufficient_data` with its reasons (not an error) and `pace` suggests a field test.
 DFA alpha1 = 0.5 as LT2: rejected; individual agreement with VT2 is poor and alpha1 stays above 0.5 at MLSS in constant runs (section 6).
-DFA alpha1 = 0.75 for LT1 is used (H4).
+DFA alpha1 = 0.75 for LT1 is used (H4, F3).
 Conconi HR deflection: not studied further; McGehee et al. 2005 found the 30-min time trial better among four field tests.
 Garmin lactate threshold detection: not available on the Forerunner 55.
 
@@ -490,28 +574,35 @@ final confidence = medium only if the picked result's own confidence is medium,
                    and no method with own confidence medium disagrees with it;
                    otherwise low; never high (no field test)
 ```
-H5 wins a tie because its result is checked by the same measurement the F1 field test uses, and its known failure modes (heat, hills, stops) are filtered; H4 wins when its own confidence is higher, because its marker has lab validation at group level.
+H5 wins a tie because its result is checked by the same measurement the F1 field test uses, and two of its known failure modes (hills, stops) are filtered (heat is not, section 7); H4 wins when its own confidence is higher, because its marker has lab validation at group level.
 The record's `method` lists the methods used (for example "H4+H5"), with H3's value and any one-sided H4 or H5 notes in the details.
 Worked example, H3 (same data as 14.1):
 - LT1 speed = 0.823 x 4.0 = 3.292 m/s; LT1 pace = 303.77 -> 304 s/km (5:04/km).
 - LT1 HR = 60 + 25 x 3.292 = 142.3 -> 142 bpm.
-Worked example, H5 (unit test):
+Worked example, H5 bounds (unit test; input is evidence rows only):
 - Accepted runs (h, drift %): (132, 2.1), (136, 3.0), (138, 4.6) -> "below"; (146, 6.2), (149, 7.5), (152, 9.0) -> "above".
 - errors(c) = 0 for c in 138..146 -> cL = 138, cU = 146, E = 0, gap = 8; H5 LT1 HR = R(142.0) = 142; 3 runs per label -> medium.
 - H5 LT1 pace with H2 (a = 60, b = 25): v = (142 - 60) / 25 = 3.28 m/s -> 304.9 -> 305 s/km.
 - Add (144, 3.2) "below" and (141, 6.0) "above": errors = 1 for c in 138..141 and 144..146, 2 for 142..143 -> E = 1, cL = 138, cU = 146, estimate 142, 8 runs -> low.
 - Only the three "below" runs -> one-sided "LT1 HR >= 138", no estimate.
-- A run whose steady segment lasts 40 min (2400 s) -> not accepted (needs >= 2700 s); a run with mean temperature 27 C -> not accepted.
+Worked example, H5 segment (unit test; input is one run's samples):
+- A run whose steady segment lasts 40 min (2400 s) -> rejection "segment shorter than 2700 s".
+- A run whose cached FIT data has mean temperature 27 C over the segment -> rejection "mean temperature >= 24 C".
+- A run without temperature data -> evidence row with `temperature: "unknown"`.
+Worked example, H5 candidates (unit test; list rows only):
+- A run starting 20 h after the start of a race, or of a run with `aerobicTrainingEffect` 4.2 -> not a candidate; the same run 30 h after -> candidate.
 Worked example, H4 regression (unit test):
-- Run A, qualifying windows (alpha1, HR, speed m/s), each repeated 20 times (60 points per side of 0.75): (1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52), (0.60, 154, 3.76), (0.50, 160, 4.00).
+- Run A, qualifying windows (alpha1, HR, speed m/s), cadence 172 steps/min, each repeated 20 times (60 points per side of 0.75; gate: rho = -1, so usable): (1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52), (0.60, 154, 3.76), (0.50, 160, 4.00).
 - Fits: HR = 190 - 60 x alpha1, v = 5.20 - 2.40 x alpha1, r = -1; run LT1 HR = 145, run LT1 speed = 3.40 m/s.
 - Run B: same alpha1 values, HR 2 bpm higher and speed 0.08 m/s higher -> HR = 192 - 60 x alpha1, v = 5.28 - 2.40 x alpha1 -> 147 bpm, 3.48 m/s.
 - H4: LT1 HR = median(145, 147) = 146; LT1 pace = R(1000 / 3.44) = 291 s/km; spread 2; with median artifact share 1.5% -> medium.
-- A run with windows only at alpha1 1.00, 0.90, 0.80 -> no crossing, note "alpha1 above 0.75 up to 142 bpm".
+- A run with windows only at alpha1 1.00, 0.90, 0.80 -> "alpha1_unusable", reason "one-sided", note "alpha1 above 0.75 up to 142 bpm"; the H4 streak is unchanged.
+- Gate (unit test): a run whose windows follow the observed pattern of section 6 (the 13 (HR, alpha1) pairs, each repeated 20 times, cadences as in the 14.8 gate test) -> coupling drops reported (40 windows), rho = +0.49 -> "alpha1_unusable", reason "not monotonic"; two such runs in a row (streak 2) -> H4 marked unreliable, and the next `zones estimate` reports H4 "skipped" and makes no FIT download; `--retry-h4` clears the mark.
 - A window of 300 raw beats with 12 flagged (4%) is used; with 18 flagged (6%) it is skipped; a window with 190 corrected beats is skipped.
 Worked example, artifact correction (unit test), values in s around a local median of 0.400:
 - 0.800 -> 0.400, 0.400 (missed beat); 0.150 followed by 0.250 -> 0.400 (extra beat, 2 flags); 0.267 followed by 0.400 -> replaced by 0.400; 3.891 -> gap, no correction; 0.430 -> valid (7.5% from the median).
-Test strategy for alpha1 (an exact small example is not practical, so test statistical properties with a seeded generator; the expected values below come from a pace simulation of the algorithm in section 6 with 200 series of N = 300, not from a published source):
+Test strategy for alpha1 (an exact small example is not practical, so test statistical properties with a seeded generator; the expected values below come from a pace simulation of the algorithm in section 6 with 200 series of N = 300, not from a published source).
+The unit tests use 50 seeded series per case with the same tolerances, to keep the pure-Python suite fast; with the simulated SDs the standard error of a 50-series mean is at most 0.012, well inside each tolerance:
 - Gaussian white noise: mean alpha1 0.58 +/- 0.03 (simulation: 0.584, SD 0.056).
   The theoretical 0.5 is not reached because DFA with box sizes 4..16 is biased upward for white noise; N = 2000 gave the same 0.585, so the bias comes from the box sizes, not the length.
 - 1/f noise by spectral synthesis (random phases, amplitude k^-0.5 at frequency index k): mean 1.03 +/- 0.05 (simulation: 1.033, SD 0.079).
@@ -529,8 +620,10 @@ Worked example, combination (unit test), H2 a = 60, b = 25:
 
 Workout: 15 min warm-up building to target (last 3 min at target) + lap; 60 min steady at a constant pace that starts at the current LT1 HR, flat route or treadmill, no stops + lap; 10 min cool-down.
 Intensity guidance: conversational, full sentences possible; hold pace, let HR drift; RPE about 3-4 of 10.
+Workout DSL (`zones test-workout drift`): the steady step carries a pace target of the current LT1 pace +/- 10 s/km, so the watch guides pace, not HR; without a current LT1 record the step has no target and the note "conversational, constant pace".
 Analysis: drift % = (EF_1 / EF_2 - 1) x 100 outdoors, (HR_2 / HR_1 - 1) x 100 on a treadmill; band 3.5-5% sets LT1 HR = HR_1 and LT1 pace = 1000 / speed_1; below 3.5% retest +5 bpm; above 5% retest -5 bpm.
 Confidence: medium when the verdict is "at LT1" with even pace, otherwise the record is not created (the verdict only steers the next test).
+`zones analyze --save` therefore stores a record only for "at LT1" with even pace; any other verdict, or "at LT1" with "uneven pace", is refused with the verdict and the next-test suggestion.
 Worked examples (unit tests):
 - Halves (speed m/s, HR): H1 (3.20, 140), H2 (3.18, 146): drift = (3.20/140) / (3.18/146) - 1 = 4.94% -> at LT1; LT1 HR 140, LT1 pace 1000/3.20 = 312.5 -> 313 s/km (5:13/km).
 - H1 (3.10, 138), H2 (3.09, 141): drift = 2.50% -> below LT1, retest at start HR + 5.
@@ -543,6 +636,8 @@ Workout: 15 min easy + 3 x 20 s strides + 3 min easy; lap; 30 min even, maximal 
 Intensity guidance: race effort for 30 min, start controlled (first 5 min should feel slightly too easy), RPE 9-10 at the end.
 Analysis: LT2 HR = mean HR from 600 s to 1800 s; LT2 pace = 1800 / distance_km; fade flag if second-half speed < 0.95 x first-half speed.
 Confidence: medium; low if faded or if stops occurred.
+`zones analyze --save` stores a record for every test that is not rejected, with that confidence; a rejected test is not saved.
+Workout DSL (`zones test-workout time_trial`): the steps of the workout line above (warm-up, strides, recovery, 30 min at maximal sustainable effort with no target, cool-down).
 Worked example (unit test):
 - 30 min, distance 7200 m, mean HR 0-600 s = 158, mean HR 600-1800 s = 168; first 15 min 3600 m, second 15 min 3600 m.
 - LT2 HR = 168 bpm; LT2 pace = 1800 / 7.2 = 250 s/km (4:10/km); speed ratio 1.00 -> no fade flag.
@@ -550,6 +645,10 @@ Worked example (unit test):
 ### 14.5 Zone mapping (rule name "lt-5z-v1")
 
 Rounding: R(x) = floor(x + 0.5) on bpm and s/km.
+This differs from Python's `round()`, which rounds halves to even: R(312.5) = 313 but `round(312.5)` = 312 (unit test).
+Inputs: the zones come from the current LT1 record (LT1 HR and pace) and the current LT2 record (LT2 HR and pace, CS, D'), which may be different records (plan 5).
+The H2 regression (a, b and its fitted speed range v_min..v_max) is taken from the current LT1 record's details, else from the current LT2 record's details (controller ruling); a record without one (for example a lab record) gives null z1 and z2 pace floors.
+HRmax is the running maximum of section 1.
 Three zones (HR): Z1 HR < LT1; Z2 LT1 <= HR < LT2; Z3 HR >= LT2.
 Three zones (pace, s/km): Z1 slower than LT1 pace; Z2 from LT1 pace down to LT2 pace (exclusive); Z3 at or faster than LT2 pace.
 Five Garmin HR zone floors:
@@ -561,12 +660,14 @@ zone4Floor = LT2                           # Tonnessen Z3/Z4 ~ 4 mmol/L
 zone5Floor = LT2 + R(0.5 * (HRmax - LT2))  # Tonnessen Z5 ~ midway LT2..HRmax
              if HRmax unknown: LT2 + R(0.5 * (LT2 - LT1))
 maxHeartRateUsed = HRmax (if known)
+                   if HRmax unknown: the push keeps Garmin's current maxHeartRateUsed
 ```
 Watch zones sum to the three-zone model as Z1+Z2 | Z3 | Z4+Z5.
-Five pace floors (s/km): z1, z2 = 1000 / v(floor HR) from the H2 regression (null if no regression or outside the fitted speed range by more than 10%); z3 = LT1 pace; z4 = LT2 pace; z5 = 1000 / (CS + D'/720) when D' is known (speed for a 12-min maximal effort), else null.
-Validation: floors must be strictly increasing and zone5Floor < HRmax; otherwise `bad_args` and no push.
+Five pace floors (s/km): z1, z2 = 1000 / v(floor HR) from the H2 regression (null if no regression, or if v is outside the fitted speed range by more than 10%, that is v < 0.9 x v_min or v > 1.1 x v_max); z3 = LT1 pace; z4 = LT2 pace; z5 = 1000 / (CS + D'/720) when D' is known (speed for a 12-min maximal effort), else null.
+Validation: floors must be strictly increasing and zone5Floor < HRmax; with HRmax unknown, `zones push` checks zone5Floor < Garmin's current `maxHeartRateUsed` instead; otherwise `bad_args` and no push.
 The 0.80 and 0.90 factors and the zone 5 midpoint are conventions (weak/expert opinion); only zone3Floor and zone4Floor carry physiological meaning.
-Worked example (unit test), LT1 = 142, LT2 = 160, HRmax = 186, H2 a = 60, b = 25, CS = 4.0, D' = 180:
+Worked example (unit test), LT1 = 142, LT2 = 160, HRmax = 186, H2 a = 60, b = 25 fitted on speeds 2.0..4.0 m/s, CS = 4.0, D' = 180.
+The H2 speed range here (2.0..4.0) is wider than the 14.1 example's (2.8..3.8) on purpose: with 2.8..3.8, z1 would be null because 2.16 < 0.9 x 2.8 = 2.52.
 - floors 114, 128, 142, 160, 173.
 - three zones: Z1 < 142, Z2 142-159, Z3 >= 160.
 - pace floors: z1 1000/2.16 = 463, z2 1000/2.72 = 368, z3 304, z4 250, z5 1000/4.25 = 235 s/km.
@@ -574,38 +675,68 @@ Worked example (unit test), LT1 = 142, LT2 = 160, HRmax = 186, H2 a = 60, b = 25
 
 ### 14.6 When a new estimate or retest is due
 
+The rule reads the `estimates` log of `zones.json`: every `zones estimate`, saved or not, appends a summary `{date, lt1_hr, lt2_hr, lt2_pace, methods, confidence}` (plan 5).
 Run the history estimate (`zones estimate`) when any of these holds (pace heuristic built on section 12):
-- 28 days or more since the last estimate;
-- a new run with RPE >= 8 or a race since the last estimate (new best-effort data);
+- 28 days or more since the last entry in `estimates` (or none yet);
+- a race (list-row `eventType` race) or a run with list-row `aerobicTrainingEffect` >= 4.0 since the last estimate (new best-effort data; list rows carry no RPE, controller ruling);
 - 14 or more days without runs, then 2 weeks of training after the break (detraining).
-A field test is due when any of these holds:
-- the current record is a history estimate (confidence low) and no field test exists for that threshold;
+A field test is due per threshold (LT1 and LT2 separately, each against its own current record) when any of these holds:
+- the current record for that threshold is a history estimate (confidence low) and no field test exists for that threshold (for LT1, F1 or F3; for LT2, F2);
 - the latest field test for that threshold is 84 days (12 weeks) old or older;
-- a new history estimate differs from the current record by >= 4 bpm in LT1 or LT2 HR (above the 3-4 bpm daily noise) or by >= 3% in LT2 pace, on two consecutive estimates.
-A lab record stays current until another is accepted and is flagged `expired` after 183 days (plan 5).
-Worked example (unit test): today 2026-11-17, current record field_test dated 2026-08-01 -> 108 days >= 84 -> "retest due"; current LT2 HR 160, last two estimates 165 and 164 -> both differ by >= 4 -> "retest due"; estimates 163 and 165 -> first differs by 3 only -> not due on that rule.
+- the last two entries in `estimates` both differ from the current record for that threshold by >= 4 bpm in HR (above the 3-4 bpm daily noise), or, for LT2, by >= 3% in pace.
+A lab record stays current for its thresholds until another is accepted, and is flagged `expired` per threshold after 183 days (plan 5).
+Worked example (unit test): today 2026-11-17, current LT2 record field_test dated 2026-08-01 -> 108 days >= 84 -> LT2 "retest due"; current LT2 HR 160, last two estimates 165 and 164 -> both differ by >= 4 -> LT2 "retest due"; estimates 163 and 165 -> the first differs by 3 only -> not due on that rule; the LT1 result is computed separately from the current LT1 record.
 
-### 14.7 Choosing which runs to examine and the call budget (at most 25 calls)
+### 14.7 Choosing which runs to examine and the call budget (hard cap `--max-calls`, default 40)
 
+One list read covers the last 16 weeks (1 call; the 8-week, 12-week and extension windows are cut from it, controller ruling).
 Pre-filter from list rows only (no extra calls): activity type running (not treadmill, not trail), within the last 8 weeks, duration >= 20 min, average HR present, elevation gain <= 15 m per km.
-Pick up to 6 "effort" runs, ranked by: races first, then RPE >= 7, then max HR / HRmax, then average speed; these feed H1.
-Pick up to 6 "steady" runs, 30-90 min long, spread over average speed by taking the run nearest each of the 10th, 30th, 50th, 70th, 90th and 100th percentiles of average speed among the remaining candidates; these feed H2 (effort runs also contribute steady segments if any pass the filters).
-Add the Garmin personal-records call (1 call) for H1's optional extra points.
-If H1 has fewer than 3 valid durations or H2 fails its requirements, extend the window once to 16 weeks with the same caps; if it still fails, return `insufficient_data` with the runs used and skipped, and suggest the matching field test.
-Reference HR for the LT1 picks: ref = the current LT1 record's HR if one exists, else this estimate's H3 LT1 HR, else none.
-Pick up to 6 "drift" runs for H5 from list rows of the last 12 weeks: running (not treadmill, not trail), 60-120 min, average HR present, elevation gain <= 10 m per km; with a ref, take alternately the run with the nearest average HR below ref and above ref; without one, the runs nearest the 10th, 30th, 50th, 70th, 90th and 100th percentiles of average HR.
-A run picked in more than one group costs one detail call; the strap check (plan 5) runs on the detail data and drops wrist runs from H4 and H5.
-FIT downloads for H4 (one call each, about 200 KB zipped), at most 6 per estimate including the 16-week extension:
+Selection runs in two phases, because the drift picks need a reference HR that may come from H3, which needs the history details first.
+Phase 1, history picks (8-week candidates):
+- up to 6 "effort" runs for H1, ranked by list rows only: races (`eventType` race) first, then list-row `maxHR` (highest first), then `averageSpeed` (fastest first); RPE is not used for ranking (it is only in `get_activity`);
+- up to 6 "steady" runs for H2, 30-90 min long, among the candidates not picked as effort runs: for p in 10, 30, 50, 70, 90, 100, the target is the nearest-rank percentile of `averageSpeed` (the value at rank ceil(p / 100 x n) in ascending order of the n candidates), and the pick is the not yet picked candidate whose `averageSpeed` is nearest the target; effort runs also contribute steady segments if any pass the filters.
+Phase 2, drift picks for H5 (12-week list rows: running, not treadmill, not trail, 60-120 min, average HR present, elevation gain <= 10 m per km, the previous-day rule of section 7):
+- ref = the HR of the current LT1 record if one exists, else this estimate's H3 LT1 HR, else none;
+- with a ref, up to 6 picks alternating, starting below: the not yet picked run with the nearest `averageHR` below ref, then the nearest at or above ref; when one side runs out, continue on the other side;
+- without a ref, the nearest-rank percentiles of `averageHR` as for the steady picks.
+Ties in every ranking and nearest match: newest first, then lowest activity id.
+With fewer candidates than slots every candidate is picked once; a run is never picked twice within a group, and a run picked in more than one group is fetched once.
+Calls per picked run: one `get_activity` (sensors for the strap check, RPE for the notes), then one `get_activity_details` (with `maxchart`, section 1).
+A wrist run picked only as a steady or drift run is not fetched in detail unless `--include-wrist` (it could not be used; controller ruling); effort runs are always fetched, since H1 uses speed only.
+Other calls: the Garmin personal-records call (1 call) for H1's optional extra points; the sleep-stats read for the resting HR (section 1; 1 or 2 calls, because its 28-day chunks are fixed on the calendar and the last 28 days usually span two of them).
+If H1 has fewer than 3 valid durations or H2 fails its requirements, extend once to 16 weeks: phase 1 runs again on the weeks 9-16 candidates not yet picked, with the same per-group caps; if it still fails, that method reports status `insufficient_data` with the runs used and skipped, and the matching field test is suggested.
+FIT downloads for H4 (one call each, about 200 KB zipped), at most 6 per estimate including the 16-week extension, and none while H4 is marked unreliable for the athlete (section 6):
 - candidates: strap runs already fetched in detail, dated on or after the first date with RR data (2026-09-01 until `pace` has seen an earlier one);
 - span score = min(minutes of qualifying 2-min windows (section 6, without the RR rules) with HR in [ref - 15, ref), minutes with HR in [ref, ref + 15)); without a ref, the minutes with HR spread over the run's middle 80% of HR;
-- download in order of span score (ties: newest first), only runs with a span score >= 5 min, skipping runs whose FIT file is already in the local cache (a cached file costs no call; FIT files do not change, so they are kept);
-- a downloaded file without `hrv` messages is recorded as "no RR" so it is never downloaded again for H4.
-Budget: detail calls <= 18 (6 effort + 6 steady + 6 drift, overlaps once) per pass, 1 PR call, FIT downloads <= 6; at most 25 calls without the extension.
-Worked example (unit test):
-- 40 list rows in 8 weeks, of which 3 treadmill, 2 trail, 5 under 20 min, 1 without HR -> 29 candidates; 2 races and 4 runs with RPE >= 7 fill the 6 effort slots; 6 steady runs chosen by speed percentile; 12 detail calls, plus 1 PR call.
-- H3 gives ref = 142; 60 list rows in 12 weeks give 14 drift candidates (60-120 min, gain <= 10 m per km); 6 picked around 142 (3 below, 3 above), 2 of them already among the steady runs -> 4 more detail calls (16 in total).
+- download in order of span score (ties: newest first, then lowest id), only runs with a span score >= 5 min, skipping runs whose derived FIT data is already cached (a cached run costs no call; FIT files do not change, so the derived data is kept);
+- a downloaded file without `hrv` messages, or whose RR data fail the section 6 sanity check, is recorded as "no RR" so it is never downloaded again for H4.
+Budget: `--max-calls N` (default 40) is a hard cap on all Garmin calls of one `zones estimate`, the 16-week extension included.
+Calls are issued in this order: list read, personal records, sleep-stats, phase 1 picks in rank order, extension picks, phase 2 picks, FIT downloads by span score; when the next call would exceed the cap, no further call is made, the methods run on what was fetched, and the result lists the skipped work as `deferred`.
+Garmin reads already cached cost no call, so a rerun continues where the capped run stopped: zones reads of `get_activity` and `get_activity_details` for runs that started more than 1 day ago are cached for 60 days (under their own cache keys), and the derived FIT data is kept with no expiry.
+The result reports `calls` (calls made) and `estimated_seconds`, the minimum time the rate limiter imposes on that many calls with the `pace.ratelimit` limits (2 s minimum interval, 10 calls per minute): for c calls, 60 x floor((c - 1) / 10) + 2 x ((c - 1) mod 10), and 0 for c = 0; response times come on top, so a cold estimate takes up to about 4 minutes.
+Worked example (unit test, today 2026-11-17, all picked runs strap, nothing cached):
+- 1 list read; 40 list rows in 8 weeks, of which 3 treadmill, 2 trail, 5 under 20 min, 1 without HR -> 29 candidates; 2 races and the 4 non-race runs with the highest `maxHR` fill the 6 effort slots; 6 steady runs chosen by speed percentile -> 12 runs x 2 calls = 24 calls.
+- 1 personal-records call; the sleep-stats read for 2026-10-21..2026-11-17 spans two fixed chunks -> 2 calls.
+- H3 gives ref = 142; 60 list rows in 12 weeks give 14 drift candidates; 6 picked around 142 (3 below, 3 above), 2 of them already among the steady runs -> 4 new runs x 2 calls = 8 calls.
 - 13 detailed strap runs date from 2026-09-01 or later; 5 have a span score >= 5 min; 1 of them is cached -> 4 FIT downloads.
-- Total Garmin calls = 16 + 1 + 4 = 21 <= 25.
+- Total Garmin calls = 1 + 24 + 1 + 2 + 8 + 4 = 40 <= 40 (the default cap is reached exactly, nothing deferred); estimated_seconds = 60 x 3 + 2 x 9 = 198.
+- The same estimate with `--max-calls 30`: the calls stop after the list read, the PR and sleep-stats calls, the 12 phase 1 runs (28 calls) and the `get_activity` and `get_activity_details` of the first of the 4 new drift runs (30 calls); the other 3 new drift runs and the 4 FIT downloads are listed as `deferred`; a rerun finds the 30 reads cached and makes the remaining 10 calls (the list read is cached for 600 s and the sleep-stats chunk ending today for 1 h, so a later rerun may add those back).
+
+### 14.8 LT1 field test: DFA alpha1 ramp (F3)
+
+The field tests of the chosen set are F1 and F3 for LT1 and F2 for LT2; the coach's default LT1 suggestion is F3 followed by one F1 at the ramp's LT1 HR (section 9a), or F1 alone while H4 is marked unreliable for the athlete (section 6).
+Workout (`zones test-workout ramp`): 10 min easy + lap; 6 steps of 4 min, each followed by a lap; 10 min cool-down.
+Step k (k = 1..6) aims at HR_k = L - 18 + 6 x (k - 1), where L is the current LT1 HR (or this estimate's, if there is no current LT1 record); with the current LT1 record's H2 regression each step carries a pace target R(1000 / v(HR_k)) +/- 5 s/km, without it an HR target HR_k +/- 3 bpm and the note "hold the pace steady within the step" (controller ruling).
+With no LT1 value at all the command refuses with `bad_args` and suggests `zones estimate` first.
+Example: L = 142 -> step HR 124, 130, 136, 142, 148, 154.
+Analysis and confidence: section 9a; `zones analyze --test ramp --save` stores a record when the ramp is bracketed (refusals of section 9a are not saved), with the section 9a confidence.
+Worked example (unit test, alpha1 injected per step, artifact share 1% and cadence 172 steps/min on every step):
+- Steps (alpha1, HR, speed m/s): (1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52), (0.60, 154, 3.76), (0.50, 160, 4.00).
+- Gate: no coupling drop (160 vs 172 is 7.0% apart), rho = -1, 3 steps on each side -> usable.
+- Fits: HR = 190 - 60 x alpha1, v = 5.20 - 2.40 x alpha1; LT1 HR = R(145.0) = 145; LT1 pace = R(1000 / 3.40) = R(294.1) = 294 s/km; 3 steps on each side, median artifact share 1% -> medium.
+- The step at alpha1 0.70 with artifact share 6% -> dropped; 3 steps above and 2 below -> "alpha1_unusable", reason "one-sided" (fewer than 3 steps below 0.75), nothing saved.
+- Only the first three steps (all alpha1 > 0.75) -> "alpha1_unusable", reason "one-sided".
+- Gate test with the pattern observed on this athlete (unit test): the 13 (HR, alpha1) steps of section 6 with cadences 166, 168, 169, 170, 171, 172, 174, 176, 178, 180, 182, 185, 188 -> the steps at 176 bpm (4.9% from 185) and 180 bpm (4.3% from 188) are dropped for coupling (count 2 reported); over the 11 kept steps rho = +0.49 and only 2 steps lie above 0.75 -> "alpha1_unusable", reasons "not monotonic, rho = 0.49" and "one-sided"; the H4 streak rises by 1.
 
 ## 15. Source log
 
