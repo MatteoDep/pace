@@ -42,7 +42,7 @@ Grade: a window is "flat" if abs(elevation end minus elevation start) / window d
 Walking: windows with mean cadence below 140 steps/min are excluded (pace heuristic).
 Cadence is always in steps/min: running FIT `cadence` is in strides/min, so steps/min = 2 x (cadence + fractional_cadence), with fractional_cadence as decoded (FIT scale 1/128 already applied); the unit of the Garmin details `directRunCadence` is pinned in plan 5 Task 0.
 HR artefacts: HR samples outside 30..230 are dropped; the first 300 s of a run are ignored for max HR because dry-strap spikes are common there (pace heuristic).
-Max HR (HRmax): a running maximum kept in `zones.json`: the highest 5-s rolling median HR (first 300 s excluded) among the strap runs `pace` has examined, updated by every `zones estimate` and every saved `zones analyze`; it never decreases on its own, and a record entered with a higher `max_hr` (for example a lab test) raises it (controller ruling).
+Max HR (HRmax): a running maximum kept in `zones.json`: the highest 5-s rolling median HR (first 300 s excluded) among the strap runs `pace` has examined, updated by every `zones estimate` and every `zones analyze` (saved or not); it never decreases on its own, and a record entered with a higher `max_hr` (for example a lab test) raises it (controller ruling).
 When HRmax is unknown (no strap run examined yet), zone 5 uses the fallback of section 14.5.
 Using the highest HR recorded in training as HRmax follows Smyth et al. 2022, who found it higher and more plausible than the age-predicted value (187 +/- 8 vs 178 +/- 18 bpm).
 Resting HR: median of `restingHeartRate` over the last 28 days from the sleep-stats range read (`pace wellness sleep-range`, plan 3); it is stored with the record and does not enter any formula here.
@@ -221,7 +221,8 @@ Per-run gate (pace heuristic, see "Observed on this athlete" below):
 Q   = all qualifying windows of the run (any alpha1)
 rho = Spearman rank correlation of window HR and alpha1 over Q (average ranks for ties)
 usable only if: rho <= -0.6 and >= 3 windows of Q with alpha1 > 0.75 and >= 3 with alpha1 < 0.75
-otherwise:      status "alpha1_unusable" with the reason ("not monotonic, rho = x" or "one-sided"), never an estimate
+otherwise:      status "alpha1_unusable" with the reasons ("not monotonic, rho = x" and/or "one-sided";
+                "not monotonic" takes precedence as the outcome), never an estimate
 ```
 Per-run crossing (alpha1-vs-HR and alpha1-vs-speed regressions), only on usable runs:
 ```
@@ -250,7 +251,10 @@ Short reps (under about 4 min) give no qualifying windows because of the lag rul
 LT2 at alpha1 0.5: computed only as a note, never stored as LT2.
 Reasons: individual limits of agreement with VT2 were -24 to +16 bpm (Rogers et al. 2021b); during 30 min of constant running at MLSS alpha1 stayed above 0.5 (0.64 after about 18 min; van Rassel et al. 2025); 6 of 21 runners could not finish 20 min at the alpha1 0.5 speed (Gronwald et al. 2024); chest-strap alpha1 disagrees most with ECG at high intensity and low alpha1 (Schaffarczyk et al. 2022); artifact correction pushes low alpha1 values upward (Rogers et al. 2021a).
 LT2 stays with H1 + H2 and F2.
-Per-athlete memory (controller ruling on the details): `zones.json` keeps an H4 status with a streak of consecutive runs or F3 ramps that failed the gate as "not monotonic" (runs counted oldest first; a usable run or ramp resets the streak to 0; "one-sided" runs, such as steady easy runs, do not count either way).
+Per-athlete memory (controller ruling on the details): `zones.json` keeps an H4 status with a streak of consecutive runs or F3 ramps that failed the gate as "not monotonic", and the ids of the runs and ramps already counted.
+Runs and ramps are counted in start-time order, each at most once: re-evaluating a counted run (for example from cache in a later estimate) never changes the streak again.
+A usable run or ramp resets the streak to 0; "one-sided" runs, such as steady easy runs, do not count either way; when both reasons apply, "not monotonic" takes precedence (the run counts).
+`zones analyze --test ramp` always records its gate outcome here, with or without `--save`.
 At a streak of 2, H4 is marked "unreliable for this athlete": `zones estimate` skips H4 and makes no FIT downloads, reports H4 as status "skipped" with that reason, and the coach suggests F1 instead of F3, until the user asks to retry (`zones estimate --retry-h4`, which clears the mark and the streak).
 
 Observed on this athlete (one ramp test on 2026-09-09: 13 steps of 3 min, chest strap, RR artifacts 0.1%, alpha1 of the last 120 s of each step after smoothness-priors detrending; running cadence 166-188 steps/min):
@@ -316,7 +320,8 @@ keep the longest segment over all s (tie: earliest); need length >= 2700 s
 recheck the +/-5% speed rule against the final segment mean speed
 reject if: total ascent of the segment > 10 m per km;
            mean temperature >= 24 C, only when the run's cached FIT data carries the `record` field
-           temperature (pace heuristic; no weather calls are made)
+           temperature (pace heuristic; no weather calls are made); the FIT records are matched to the
+           segment by elapsed seconds since the activity start (FIT `t`, and detail epoch minus start)
 halves H1, H2 of equal time; EF_k = speed_k / HR_k; drift % = (EF_1 / EF_2 - 1) * 100   (as F1)
 h = R(mean HR of H1); label = "below" if drift <= 5.0 else "above"
 ```
@@ -449,8 +454,8 @@ Numbered 9a so that the later section numbers, which other documents cite, stay 
 Protocol (adapted from the incremental ramps of Rogers et al. 2020 and Van Hooren et al. 2025 to a stepped outdoor run, pace heuristic):
 - Chest strap; flat route or track; no stops; calm, cool weather.
 - Warm-up 10 min easy; press lap.
-- 6-8 steps of 3-4 min each at constant pace, pressing lap at each step change; the first step about 15-20 bpm below the current LT1 estimate, each step about 5-6 bpm higher, the last clearly above LT1.
-  At least 6 steps, because the gate below needs 3 usable steps on each side of alpha1 0.75 (controller ruling; the user's first ruling said 5-6 steps).
+- 8 steps of 3-4 min each at constant pace (the default; at least 6), pressing lap at each step change; the first step about 21 bpm below the current LT1 estimate, each step about 6 bpm higher, the last clearly above LT1.
+  At least 6 steps, because the gate below needs 3 usable steps on each side of alpha1 0.75; 8 leave room for steps dropped for artifacts or coupling (controller ruling; the user's first ruling said 5-6 steps).
 - Cool-down 5-10 min.
 - Hold the pace of each step, not its HR; RPE rises from about 2 to about 6 of 10.
 Analysis:
@@ -475,7 +480,7 @@ confidence: medium if >= 2 steps in P on each side of 0.75 and the median artifa
 ```
 Why the confidence is higher than for H4: the protocol sets steady, known paces and the steps cross the threshold by design, so the lag and steadiness problems of training runs (section 6) are controlled.
 Recommended pairing (the coach's default LT1 suggestion while H4 is not marked unreliable, section 6): run F3 first, then one F1 drift test at the ramp's LT1 HR.
-An "alpha1_unusable" ramp counts toward the H4 streak of section 6; on this athlete the one ramp so far would have failed the gate, so F1 is the expected primary LT1 test.
+`zones analyze --test ramp` records the gate outcome in the H4 memory of section 6 on every run of the command (a local write even without `--save`); an "alpha1_unusable" ramp counts toward the streak; on this athlete the one ramp so far would have failed the gate, so F1 is the expected primary LT1 test.
 `zones analyze --test drift` compares an "at LT1" F1 result with the newest F3 record of the last 28 days: within 5 bpm the F1 record keeps confidence medium and notes the agreement; more than 5 bpm apart it is saved with confidence low and the note "F3 and F1 disagree by N bpm" (controller ruling).
 Inputs: data derived from the FIT file (RR intervals, per-second records), laps (one `get_activity_splits` call), the per-sample data of the run.
 Known error and validity:
@@ -609,7 +614,7 @@ The unit tests use 50 seeded series per case with the same tolerances, to keep t
 - Brownian noise (cumulative sum of white noise): mean 1.50 +/- 0.05 (simulation: 1.498, SD 0.082).
 - Invariance: alpha1(a * x + b) equals alpha1(x) within 1e-9 for a > 0; a constant series returns null.
 - Detrending: white noise (SD 0.01 s around 0.400 s) plus a trend of 0.0005 s per beat: with smoothness priors detrending alpha1 stays within 0.01 of the trend-free value (simulation: max 0.006); without detrending it rises by about 0.05.
-- Artifact correction: on 40 seeded 1/f^0.6 series (theoretical alpha1 0.8) mapped to RR around 0.400 s, merging 3% of beats into missed-beat pairs and correcting changes mean alpha1 by at most 0.02 (simulation: mean +0.008 at 3%, +0.017 at 6%, upward on average, as Rogers et al. 2021a report).
+- Artifact correction: on 50 seeded 1/f^0.6 series (the simulation used 40) (theoretical alpha1 0.8) mapped to RR around 0.400 s, merging 3% of beats into missed-beat pairs and correcting changes mean alpha1 by at most 0.02 (simulation: mean +0.008 at 3%, +0.017 at 6%, upward on average, as Rogers et al. 2021a report).
 - The per-run regression and run combination are tested with alpha1 values injected by replacing the DFA function, as in the H4 regression example above.
 Worked example, combination (unit test), H2 a = 60, b = 25:
 - H3 142 (low), H5 142 (medium), H4 146 (medium): agree(H4, H5) since 4 <= 5 -> LT1 HR = R(144.0) = 144; LT1 pace = R(1000 / 3.36) = R(297.6) = 298 s/km (4:58/km); H3 142 also agrees -> medium.
@@ -620,9 +625,12 @@ Worked example, combination (unit test), H2 a = 60, b = 25:
 
 Workout: 15 min warm-up building to target (last 3 min at target) + lap; 60 min steady at a constant pace that starts at the current LT1 HR, flat route or treadmill, no stops + lap; 10 min cool-down.
 Intensity guidance: conversational, full sentences possible; hold pace, let HR drift; RPE about 3-4 of 10.
-Workout DSL (`zones test-workout drift`): the steady step carries a pace target of the current LT1 pace +/- 10 s/km, so the watch guides pace, not HR; without a current LT1 record the step has no target and the note "conversational, constant pace".
+Workout DSL (`zones test-workout drift`), one rule shared with the ramp (14.8):
+- current LT1 record with a pace: the steady step carries a pace target of that pace +/- 10 s/km, so the watch guides pace, not HR;
+- otherwise, the newest `estimates` entry with an `lt1_hr`: HR targets only, on the last 3 min of the warm-up (`lt1_hr` +/- 3 bpm), and a steady step with no target and the note "hold the pace reached at the end of the warm-up; let HR drift" (controller ruling);
+- with no estimate either: no targets, the warm-up note "build to conversational effort, RPE 3-4" and the steady note "conversational, constant pace".
 Analysis: drift % = (EF_1 / EF_2 - 1) x 100 outdoors, (HR_2 / HR_1 - 1) x 100 on a treadmill; band 3.5-5% sets LT1 HR = HR_1 and LT1 pace = 1000 / speed_1; below 3.5% retest +5 bpm; above 5% retest -5 bpm.
-Confidence: medium when the verdict is "at LT1" with even pace, otherwise the record is not created (the verdict only steers the next test).
+Confidence: medium when the verdict is "at LT1" with even pace, lowered to low when the newest F3 record of the last 28 days disagrees by more than 5 bpm (section 9a); otherwise the record is not created (the verdict only steers the next test).
 `zones analyze --save` therefore stores a record only for "at LT1" with even pace; any other verdict, or "at LT1" with "uneven pace", is refused with the verdict and the next-test suggestion.
 Worked examples (unit tests):
 - Halves (speed m/s, HR): H1 (3.20, 140), H2 (3.18, 146): drift = (3.20/140) / (3.18/146) - 1 = 4.94% -> at LT1; LT1 HR 140, LT1 pace 1000/3.20 = 312.5 -> 313 s/km (5:13/km).
@@ -675,7 +683,7 @@ The H2 speed range here (2.0..4.0) is wider than the 14.1 example's (2.8..3.8) o
 
 ### 14.6 When a new estimate or retest is due
 
-The rule reads the `estimates` log of `zones.json`: every `zones estimate`, saved or not, appends a summary `{date, lt1_hr, lt2_hr, lt2_pace, methods, confidence}` (plan 5).
+The rule reads the `estimates` log of `zones.json`: every `zones estimate`, saved or not, appends a summary `{date, lt1_hr, lt2_hr, lt2_pace, methods, confidence, partial}` (plan 5); `partial` is true when the call cap deferred work, and the rule skips partial entries.
 Run the history estimate (`zones estimate`) when any of these holds (pace heuristic built on section 12):
 - 28 days or more since the last entry in `estimates` (or none yet);
 - a race (list-row `eventType` race) or a run with list-row `aerobicTrainingEffect` >= 4.0 since the last estimate (new best-effort data; list rows carry no RPE, controller ruling);
@@ -689,8 +697,9 @@ Worked example (unit test): today 2026-11-17, current LT2 record field_test date
 
 ### 14.7 Choosing which runs to examine and the call budget (hard cap `--max-calls`, default 40)
 
-One list read covers the last 16 weeks (1 call; the 8-week, 12-week and extension windows are cut from it, controller ruling).
-Pre-filter from list rows only (no extra calls): activity type running (not treadmill, not trail), within the last 8 weeks, duration >= 20 min, average HR present, elevation gain <= 15 m per km.
+`--weeks N` (default 8) sets the history window; the extension doubles it to 2N weeks; the drift window stays 12 weeks.
+One list read covers the last max(2N, 12) weeks (1 call; the history, drift and extension windows are cut from it, controller ruling).
+Pre-filter from list rows only (no extra calls): activity type running (not treadmill, not trail), within the last N weeks, duration >= 20 min, average HR present, elevation gain <= 15 m per km.
 Selection runs in two phases, because the drift picks need a reference HR that may come from H3, which needs the history details first.
 Phase 1, history picks (8-week candidates):
 - up to 6 "effort" runs for H1, ranked by list rows only: races (`eventType` race) first, then list-row `maxHR` (highest first), then `averageSpeed` (fastest first); RPE is not used for ranking (it is only in `get_activity`);
@@ -702,34 +711,36 @@ Phase 2, drift picks for H5 (12-week list rows: running, not treadmill, not trai
 Ties in every ranking and nearest match: newest first, then lowest activity id.
 With fewer candidates than slots every candidate is picked once; a run is never picked twice within a group, and a run picked in more than one group is fetched once.
 Calls per picked run: one `get_activity` (sensors for the strap check, RPE for the notes), then one `get_activity_details` (with `maxchart`, section 1).
-A wrist run picked only as a steady or drift run is not fetched in detail unless `--include-wrist` (it could not be used; controller ruling); effort runs are always fetched, since H1 uses speed only.
+A wrist run picked only as a steady or drift run is not fetched in detail unless `--include-wrist` (it could not be used): its `get_activity` call is counted, and it is replaced by the next candidate of the same ranking; effort runs are always fetched, since H1 uses speed only.
 Other calls: the Garmin personal-records call (1 call) for H1's optional extra points; the sleep-stats read for the resting HR (section 1; 1 or 2 calls, because its 28-day chunks are fixed on the calendar and the last 28 days usually span two of them).
-If H1 has fewer than 3 valid durations or H2 fails its requirements, extend once to 16 weeks: phase 1 runs again on the weeks 9-16 candidates not yet picked, with the same per-group caps; if it still fails, that method reports status `insufficient_data` with the runs used and skipped, and the matching field test is suggested.
-FIT downloads for H4 (one call each, about 200 KB zipped), at most 6 per estimate including the 16-week extension, and none while H4 is marked unreliable for the athlete (section 6):
+If H1 has fewer than 3 valid durations or H2 fails its requirements, extend once to 2N weeks: phase 1 runs again on the candidates of weeks N+1..2N not yet picked, with the same per-group caps; if it still fails, that method reports status `insufficient_data` with the runs used and skipped, and the matching field test is suggested.
+FIT downloads for H4 (one call each, about 200 KB zipped), at most 6 per estimate including the extension, and none while H4 is marked unreliable for the athlete (section 6):
 - candidates: strap runs already fetched in detail, dated on or after the first date with RR data (2026-09-01 until `pace` has seen an earlier one);
 - span score = min(minutes of qualifying 2-min windows (section 6, without the RR rules) with HR in [ref - 15, ref), minutes with HR in [ref, ref + 15)); without a ref, the minutes with HR spread over the run's middle 80% of HR;
 - download in order of span score (ties: newest first, then lowest id), only runs with a span score >= 5 min, skipping runs whose derived FIT data is already cached (a cached run costs no call; FIT files do not change, so the derived data is kept);
 - a downloaded file without `hrv` messages, or whose RR data fail the section 6 sanity check, is recorded as "no RR" so it is never downloaded again for H4.
-Budget: `--max-calls N` (default 40) is a hard cap on all Garmin calls of one `zones estimate`, the 16-week extension included.
-Calls are issued in this order: list read, personal records, sleep-stats, phase 1 picks in rank order, extension picks, phase 2 picks, FIT downloads by span score; when the next call would exceed the cap, no further call is made, the methods run on what was fetched, and the result lists the skipped work as `deferred`.
+Budget: `--max-calls N` (default 40) is a hard cap on all Garmin calls of one `zones estimate`, the extension included.
+Reads are made in this order: list read, personal records, sleep-stats, phase 1 picks in rank order, extension picks, phase 2 picks, FIT downloads by span score.
+Every read checks the cache first; a cache hit costs no call and is served even when the cap is reached; a read that needs a call once the cap is reached is not made and is listed as `deferred`; the methods run on what was read, and the estimate is logged with `partial: true`.
 Garmin reads already cached cost no call, so a rerun continues where the capped run stopped: zones reads of `get_activity` and `get_activity_details` for runs that started more than 1 day ago are cached for 60 days (under their own cache keys), and the derived FIT data is kept with no expiry.
-The result reports `calls` (calls made) and `estimated_seconds`, the minimum time the rate limiter imposes on that many calls with the `pace.ratelimit` limits (2 s minimum interval, 10 calls per minute): for c calls, 60 x floor((c - 1) / 10) + 2 x ((c - 1) mod 10), and 0 for c = 0; response times come on top, so a cold estimate takes up to about 4 minutes.
+The result reports `calls` (calls made) and `estimated_seconds`, the minimum time the rate limiter imposes on that many calls with the `pace.ratelimit` limits (2 s minimum interval, 10 calls per minute, 100 per hour), assuming no earlier calls in the process: for c calls and k = c - 1, 3600 x floor(k / 100) + 60 x floor((k mod 100) / 10) + 2 x (k mod 10), and 0 for c = 0; response times come on top, so a cold estimate takes up to about 4 minutes.
 Worked example (unit test, today 2026-11-17, all picked runs strap, nothing cached):
 - 1 list read; 40 list rows in 8 weeks, of which 3 treadmill, 2 trail, 5 under 20 min, 1 without HR -> 29 candidates; 2 races and the 4 non-race runs with the highest `maxHR` fill the 6 effort slots; 6 steady runs chosen by speed percentile -> 12 runs x 2 calls = 24 calls.
 - 1 personal-records call; the sleep-stats read for 2026-10-21..2026-11-17 spans two fixed chunks -> 2 calls.
 - H3 gives ref = 142; 60 list rows in 12 weeks give 14 drift candidates; 6 picked around 142 (3 below, 3 above), 2 of them already among the steady runs -> 4 new runs x 2 calls = 8 calls.
 - 13 detailed strap runs date from 2026-09-01 or later; 5 have a span score >= 5 min; 1 of them is cached -> 4 FIT downloads.
 - Total Garmin calls = 1 + 24 + 1 + 2 + 8 + 4 = 40 <= 40 (the default cap is reached exactly, nothing deferred); estimated_seconds = 60 x 3 + 2 x 9 = 198.
-- The same estimate with `--max-calls 30`: the calls stop after the list read, the PR and sleep-stats calls, the 12 phase 1 runs (28 calls) and the `get_activity` and `get_activity_details` of the first of the 4 new drift runs (30 calls); the other 3 new drift runs and the 4 FIT downloads are listed as `deferred`; a rerun finds the 30 reads cached and makes the remaining 10 calls (the list read is cached for 600 s and the sleep-stats chunk ending today for 1 h, so a later rerun may add those back).
+- The same estimate with `--max-calls 30`: the calls stop after the list read, the PR and sleep-stats calls, the 12 phase 1 runs (28 calls) and the `get_activity` and `get_activity_details` of the first of the 4 new drift runs (30 calls); the other 3 new drift runs and the 4 FIT downloads are listed as `deferred` and the log entry is `partial: true`; a rerun with the same cap finds the 30 reads cached (served at no cost) and makes the remaining 10 calls (the list read is cached for 600 s and the sleep-stats chunk ending today for 1 h, so a later rerun may add those back).
 
 ### 14.8 LT1 field test: DFA alpha1 ramp (F3)
 
 The field tests of the chosen set are F1 and F3 for LT1 and F2 for LT2; the coach's default LT1 suggestion is F3 followed by one F1 at the ramp's LT1 HR (section 9a), or F1 alone while H4 is marked unreliable for the athlete (section 6).
-Workout (`zones test-workout ramp`): 10 min easy + lap; 6 steps of 4 min, each followed by a lap; 10 min cool-down.
-Step k (k = 1..6) aims at HR_k = L - 18 + 6 x (k - 1), where L is the current LT1 HR (or this estimate's, if there is no current LT1 record); with the current LT1 record's H2 regression each step carries a pace target R(1000 / v(HR_k)) +/- 5 s/km, without it an HR target HR_k +/- 3 bpm and the note "hold the pace steady within the step" (controller ruling).
-With no LT1 value at all the command refuses with `bad_args` and suggests `zones estimate` first.
-Example: L = 142 -> step HR 124, 130, 136, 142, 148, 154.
-Analysis and confidence: section 9a; `zones analyze --test ramp --save` stores a record when the ramp is bracketed (refusals of section 9a are not saved), with the section 9a confidence.
+Workout (`zones test-workout ramp`): 10 min easy + lap; 8 steps of 4 min, each followed by a lap; 10 min cool-down.
+Step k (k = 1..8) aims at HR_k = L - 21 + 6 x (k - 1), where L is the current LT1 HR, else the `lt1_hr` of the newest `estimates` entry (the same fallback as 14.3).
+Targets: with the current LT1 record and an H2 chosen as in 14.5 (the LT1 record's, else the LT2 record's), each step carries a pace target R(1000 / v(HR_k)) +/- 5 s/km if v(HR_k) is inside the fitted range by the 14.5 rule (0.9 x v_min <= v <= 1.1 x v_max); otherwise, and always when L comes from an estimate, an HR target HR_k +/- 3 bpm and the note "hold the pace steady within the step" (controller ruling).
+With no LT1 record and no estimate, the steps have no targets and RPE notes rising from 2 to 6 of 10 over the 8 steps (RPE 2, 2-3, 3, 3-4, 4, 4-5, 5, 6).
+Example: L = 142 -> step HR 121, 127, 133, 139, 145, 151, 157, 163.
+Analysis and confidence: section 9a; `zones analyze --test ramp` always records the gate outcome in the H4 memory (section 6), and with `--save` it also stores a record when the ramp is bracketed (refusals of section 9a are not saved), with the section 9a confidence.
 Worked example (unit test, alpha1 injected per step, artifact share 1% and cadence 172 steps/min on every step):
 - Steps (alpha1, HR, speed m/s): (1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52), (0.60, 154, 3.76), (0.50, 160, 4.00).
 - Gate: no coupling drop (160 vs 172 is 7.0% apart), rho = -1, 3 steps on each side -> usable.

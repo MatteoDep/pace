@@ -269,6 +269,16 @@ For one-off questions outside these kinds, the skill may render an ad hoc chart 
 In a terminal session the skill passes `--out` into the current repo root (the user opens files from there) and gives the path.
 In project 2 the same file is sent as a Telegram photo.
 
+### Post-hoc notes (plan 3, implemented 2026-11-17)
+
+- `pace load` takes `--weeks N` (back, default 16) and `--weeks-ahead N` (default through the plan's last session, at most 26), not `--ahead`; rows carry `actual`, `planned` (with `missing`), `projected` and per day `effective` and `rolling7`; the data includes `today`.
+  `rolling7` on a week's Sunday equals that week's `projected`; the aggregation reads 6 days before the first row so the first rolling values are complete.
+- Chart kinds as built: `volume` (weeks flags, `--metric km|elev|hours`, `--sport`), `plan`, `recovery`, `sleep`, `weight`, `intensity` (`--sport`, default 56 days back and 14 ahead snapped to whole ISO weeks), `activity ID`.
+  The `hrv` kind became `recovery`: daily resting HR with a 7-day mean, HRV on a second axis only when the watch records it (the Forerunner 55 does not); the sleep score is drawn only when present.
+- Health charts read the new `pace wellness sleep-range` (sleep-stats range endpoint, fixed 28-day windows) instead of per-day reads, which keeps them inside the rate limit.
+- Volume file names carry the metric and the sport (`volume-<metric>[-all]-<from>-<to>.png`); without planned sessions the rolling line stops at today.
+- matplotlib (3.11.2, PyPI) is imported only when a chart is drawn; `.python-version` pins Python 3.14.
+
 ## 4. Artifacts
 
 The user accepts their training data on claude.ai (private artifacts); no per-publish confirmation is needed.
@@ -384,8 +394,8 @@ The coach helps the user find their lactate thresholds (LT1, LT2) and keeps trai
 - **Lab test** reported by the user (values typed in).
 
 A record holds: date, source, method, LT1 and LT2 as heart rate and pace where known, max and resting HR used, the activities it came from, a confidence note.
-The **current** record is the one the zones come from, kept per threshold (the current LT1 and the current LT2 may come from different records); it changes only on the user's yes, except that a reported lab test becomes current, for each threshold it has, when entered (unless it is older than that threshold's current record).
-A lab test stays current while it is less than 6 months old (user's call); after that the coach suggests a retest and shows newer estimates or field tests next to it without applying them until the user accepts one.
+The **current** records are the ones the zones come from, one per threshold (the current LT1 and the current LT2 may come from different records); it changes only on the user's yes, except that a reported lab test becomes current, for each threshold it has, when entered (unless it is older than that threshold's current record).
+A lab test stays current until the user accepts another record, but is flagged expired after 6 months (user's call); the coach then suggests a retest and shows newer estimates or field tests next to it without applying them until the user accepts one.
 
 ### Methods
 
@@ -401,11 +411,11 @@ All arithmetic (drift %, critical speed, zone boundaries) is done by pace, deter
 
 ### Zones
 
-Zones are derived from the current LT1 and LT2: a three-zone model (below LT1, between, above LT2) and a five-zone mapping for the watch, with the mapping rule documented in `pace schema`.
+Zones are derived once both thresholds have a current record, from the current LT1 and the current LT2: a three-zone model (below LT1, between, above LT2) and a five-zone mapping for the watch, with the mapping rule documented in `pace schema`.
 HR zones and pace zones are both kept; HR is primary (terrain distorts pace).
-pace keeps the watch's HR zones in sync with the current record (user's call): a Garmin write, shown and confirmed like every other.
+pace keeps the watch's HR zones in sync with the current zones (user's call): a Garmin write, shown and confirmed like every other.
 Garmin's current zones are readable today (`GET /biometric-service/heartRateZones`: method, max and resting HR used, five zone floors); the write endpoint is verified live before it is built.
-Run reviews (section 5B) and workout DSL HR targets use pace's zones once a current record exists, Garmin's zones before.
+Run reviews (section 5B) and workout DSL HR targets use pace's zones once both thresholds have a current record, Garmin's zones before.
 
 ### Commands (names are the design; flags the builder's)
 
