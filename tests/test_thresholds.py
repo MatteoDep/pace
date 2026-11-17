@@ -649,3 +649,50 @@ def test_workout_unknown_kind():
     from pace.envelope import PaceError
     with pytest.raises(PaceError):
         th.test_workout("nope", lt1_record=None, estimate_lt1_hr=None, h2=None)
+
+
+# --- fix round 1 ---
+
+def test_f2_short_gap_is_low_not_rejected():
+    tbl = [r for r in tt_table() if not 1700 <= r["t"] < 1708]      # 8 rows missing: an 8 s stop
+    out = th.time_trial(tbl, laps=TT_LAPS)
+    assert out["status"] == "ok" and out["confidence"] == "low" and out["excluded_s"] == 8
+    assert any("stops" in r for r in out["reasons"]) and out["lt2"]["hr"] == 168
+
+
+def test_f2_hr_window_is_relative_to_trial_start():
+    # warm-up HR 100 then 158/168 inside the trial; the trial starts in the middle of a block (t0 = 0)
+    out = th.time_trial(tt_table(), laps=TT_LAPS)
+    assert out["lt2"]["hr"] == 168 and out["bounds"][0] == 900
+
+
+def test_lap_elapsed_duration_covers_a_pause():
+    laps = [lap(0, 900), dict(lap(900, 1700), elapsedDuration=1800.0), lap(2700, 600)]
+    assert th._lap_spans(laps)[1] == (900, 2700)
+    laps2 = [dict(lap(0, 900)), dict(lap(900, 600)), dict(lap(1500, 1100), elapsedDuration=1200.0), lap(2700, 600)]
+    assert th.time_trial(tt_table(), laps=laps2)["bounds"] == [900, 2700]
+
+
+def test_f1_auto_laps_fall_back_to_900_4500():
+    auto = [dict(lap(300 * k, 300), distance=900.0) for k in range(17)]
+    out = th.drift(f1_table(3.20, 140, 3.18, 146), laps=auto, treadmill=False)
+    assert out["bounds"] == [900, 4500] and out["verdict"] == "at LT1"
+    # manual laps with a short steady part still reject
+    short = th.drift(f1_table(3.2, 140, 3.18, 146, steady=2100), laps=f1_laps(2100), treadmill=False)
+    assert short["status"] == "rejected"
+
+
+def test_f1_uneven_pace_reason_on_any_verdict():
+    def spd(t):
+        return 2.0 if t <= 900 else (3.0 if ((t - 901) // 60) % 2 == 0 else 3.4)
+    out = th.drift(f1_table(3.2, 140, 3.2, 141, spd=spd), laps=F1_LAPS, treadmill=False)
+    assert out["verdict"] == "below LT1" and out["uneven_pace"] is True and "uneven pace" in out["reasons"]
+
+
+def test_h5_bounds_wrist_caps_confidence_and_pace_guard():
+    rows = [dict(e, wrist=True) if e["h"] == 132 else e for e in BASE]
+    out = th.drift_bounds(rows)
+    assert out["estimate"] == 142 and out["confidence"] == "low"
+    # v = (142 - 200) / 25 < 0: no pace instead of a negative or failing one
+    assert th.drift_bounds(BASE, h2={"a": 200, "b": 25})["pace_s_per_km"] is None
+    assert th.drift_bounds(BASE, h2={"a": 142, "b": 25})["pace_s_per_km"] is None

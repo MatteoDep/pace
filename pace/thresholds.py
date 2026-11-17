@@ -64,6 +64,8 @@ F1_CV_LIMIT = 0.03
 F1_WARMUP_S = 900          # no-laps fallback: steady part 900 s .. 900 s + 3600 s
 F1_STEADY_S = 3600
 F1_RETEST_STEP = 5
+AUTO_LAP_M = 1100
+AUTO_LAP_S = 480
 F3_DISAGREE = 5
 F2_MIN_S = 1680
 F2_S = 1800
@@ -498,6 +500,11 @@ def _cv(blocks: list[_Block], a: float, b: float) -> float | None:
     return statistics.pstdev(speeds) / statistics.fmean(speeds)
 
 
+def _lap_len(lap: dict) -> float:
+    """Elapsed lap length (pauses included) when Garmin gives it, else the lap duration."""
+    return lap.get("elapsedDuration") or lap["duration"]
+
+
 def _lap_spans(laps: list[dict]) -> list[tuple[float, float]]:
     """(start, end) of each lap in elapsed s from the first lap's startTimeGMT; cumulative durations if unparsable."""
     try:
@@ -507,8 +514,8 @@ def _lap_spans(laps: list[dict]) -> list[tuple[float, float]]:
         starts, acc = [], 0.0
         for lp in laps:
             starts.append(acc)
-            acc += lp["duration"]
-    return [(st, st + lp["duration"]) for st, lp in zip(starts, laps)]
+            acc += _lap_len(lp)
+    return [(st, st + _lap_len(lp)) for st, lp in zip(starts, laps)]
 
 
 # --- H5 ---
@@ -612,7 +619,8 @@ def drift_bounds(evidence: list[dict], h2: dict | None = None) -> dict:
     h2 (optional {"a", "b"}) gives the LT1 pace. Returns {status, estimate, pace_s_per_km, confidence, errors, gap,
     bounds {lower, upper}, n, notes, reasons, runs}; one-sided or too wide evidence has no estimate.
     """
-    runs = [{"id": e.get("id"), "h": e["h"], "label": e["label"], "drift": e.get("drift")} for e in evidence]
+    runs = [{"id": e.get("id"), "h": e["h"], "label": e["label"], "drift": e.get("drift"),
+             **({"wrist": True} if e.get("wrist") else {})} for e in evidence]
     out: dict[str, Any] = {"status": "insufficient_data", "estimate": None, "pace_s_per_km": None,
                            "confidence": None, "errors": None, "gap": None,
                            "bounds": {"lower": None, "upper": None}, "n": len(runs), "notes": [], "reasons": [],
@@ -647,20 +655,30 @@ def drift_bounds(evidence: list[dict], h2: dict | None = None) -> dict:
         out["reasons"].append("bounds too wide" if errors == 0 else "inconsistent drift evidence")
         return out
     est = R((lo + hi) / 2)
+    if any(e.get("wrist") for e in evidence):
+        conf = "low"
+        out["notes"].append("wrist HR evidence included: confidence low")
     out.update(status="ok", estimate=est, confidence=conf)
     if h2 and h2.get("b"):
-        out["pace_s_per_km"] = R(1000 / ((est - h2["a"]) / h2["b"]))
+        v = (est - h2["a"]) / h2["b"]
+        out["pace_s_per_km"] = R(1000 / v) if v > 0 else None
     return out
 
 
 # --- F1 ---
+
+def _auto_laps(laps: list[dict]) -> bool:
+    """Every lap is short (about 1 km or 8 min or less): the watch's auto-laps, not the user's lap presses."""
+    return all((lp.get("distance") or 0) and lp["distance"] <= AUTO_LAP_M or _lap_len(lp) <= AUTO_LAP_S for lp in laps)
+
 
 def _steady_window(table: list[dict], laps: list[dict]) -> tuple[float, float]:
     """F1 steady part: the longest lap (needs 2+ laps), else 900 s .. 900 s + 3600 s capped at the table end."""
     if laps and len(laps) >= 2:
         spans = _lap_spans(laps)
         k = max(range(len(laps)), key=lambda i: (spans[i][1] - spans[i][0], -i))
-        return spans[k]
+        if spans[k][1] - spans[k][0] >= F1_MIN_S or not _auto_laps(laps):
+            return spans[k]
     end = max((r["t"] for r in table), default=0)
     return F1_WARMUP_S, min(F1_WARMUP_S + F1_STEADY_S, end)
 
@@ -717,8 +735,8 @@ def drift(table: list[dict], *, laps: list[dict], treadmill: bool, fit_records: 
             if f3_hr is not None and abs(f3_hr - hr1) > F3_DISAGREE:
                 out["confidence"] = "low"
                 out["reasons"].append(f"newest F3 LT1 HR {f3_hr} differs from {hr1} by more than {F3_DISAGREE} bpm")
-        elif uneven:
-            out["reasons"].append("uneven pace")
+    if uneven:
+        out["reasons"].append("uneven pace")
     return out
 
 
@@ -760,30 +778,36 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     a, b = win
     rows = [r for r in table if a <= r["t"] <= b]
     blocks, excluded = _blocks(rows)
+    stops = _stop_lengths(rows, a, b)
     base: dict[str, Any] = {"bounds": [a, b], "duration_s": b - a, "excluded_s": excluded}
     reasons = []
     if b - a < F2_MIN_S:
         reasons.append(f"trial shorter than {F2_MIN_S} s")
-    if excluded or len(blocks) != 1:
+    if stops and max(stops) > STOP_SECONDS:
         reasons.append("a stop longer than 10 s")
     if blocks and _ascent_per_km(blocks, a, b) > MAX_ASCENT_M_PER_KM:
         reasons.append("ascent above 10 m per km")
+    dists = [r["dist"] for r in rows if isinstance(r.get("dist"), (int, float))]
+    if not blocks or len(dists) < 2:
+        reasons.append("distance missing")
     if reasons:
         return {"status": "rejected", "reasons": reasons, **base}
-    blk = blocks[0]
-    dist = blk.dist[-1] - blk.dist[0]
-    n = blk.n - 1
-    hr_n = (n - 600) - (blk.bad_hr[n] - blk.bad_hr[600])
-    if dist <= 0 or n <= 600 or hr_n < HR_COVERAGE * (n - 600):
+    dist = dists[-1] - dists[0]
+    last = _half_stats(blocks, a + 600, b)           # offsets 600 s.. of the trial, from the trial start
+    mid = a + (b - a) / 2
+    first, second = _half_stats(blocks, a, mid), _half_stats(blocks, mid, b)
+    if dist <= 0 or last["hr"] is None or not first["speed"] or not second["speed"]:
         return {"status": "rejected", "reasons": ["distance or HR missing"], **base}
-    hr = (blk.hr_sum[n] - blk.hr_sum[600]) / hr_n
-    mid = blk.t0 + n / 2
-    first, second = _half_stats([blk], blk.t0, mid), _half_stats([blk], mid, blk.t0 + n)
     ratio = second["speed"] / first["speed"]
     fade = ratio < F2_FADE
-    return {"status": "ok", "lt2": {"hr": R(hr), "pace_s_per_km": R(n / (dist / 1000))}, "distance_m": dist,
-            "speed_ratio": ratio, "fade": fade, "confidence": "low" if fade else "medium",
-            "reasons": ["faded, started too fast"] if fade else [], **base}
+    notes = []
+    if fade:
+        notes.append("faded, started too fast")
+    if stops:
+        notes.append(f"stops of {sum(stops)} s excluded (none above 10 s)")
+    return {"status": "ok", "lt2": {"hr": R(last["hr"]), "pace_s_per_km": R((b - a) / (dist / 1000))},
+            "distance_m": dist, "speed_ratio": ratio, "fade": fade,
+            "confidence": "low" if fade or stops else "medium", "reasons": notes, **base}
 
 
 # --- test workouts ---
