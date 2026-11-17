@@ -12,7 +12,7 @@ _REF_HELP = "session:<id>, activity:<id> or entry:<id>."
 
 
 @app.command("show")
-def show(since: str | None = typer.Option(None, "--since", help="Only entries on/after this date."),
+def show(since: str | None = typer.Option(None, "--since", help="Only entries on/after this date or ISO datetime."),
          kind: str | None = typer.Option(None, "--kind", help=f"One of {', '.join(diary.KINDS)}."),
          ref: str | None = typer.Option(None, "--ref", help=f"Only entries with this ref: {_REF_HELP}"),
          limit: int = typer.Option(20, "--limit", help="Max entries returned (newest first).")) -> None:

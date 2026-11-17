@@ -27,14 +27,27 @@ def load_json(path: Path, empty: dict[str, Any], what: str) -> dict[str, Any]:
     return data
 
 
+def _mkdir(path: Path) -> None:
+    """Create the store directory, private (0700) when newly created."""
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
 def save_json(path: Path, data: dict[str, Any]) -> None:
-    """Write atomically: <path>.tmp then os.replace."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write atomically and durably: <path>.tmp (0600), flush + fsync, then os.replace."""
+    _mkdir(path.parent)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    os.replace(tmp, path)
+    try:
+        payload = json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @contextmanager
@@ -44,7 +57,7 @@ def locked(path: Path, timeout_s: float = 10.0) -> Iterator[None]:
     flock is per open file description: a nested locked() on the same path in one process
     blocks until timeout, so callers never nest transactions.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir(path.parent)
     lock_path = path.with_name(path.name + ".lock")
     deadline = time.monotonic() + timeout_s
     with lock_path.open("a") as fh:

@@ -77,3 +77,36 @@ def test_fresh_dir_is_created(tmp_path) -> None:
     with locked(p):
         save_json(p, {"a": 1})
     assert load_json(p, {}, "x") == {"a": 1}
+
+
+def test_saved_file_is_private_and_dir_is_0700(tmp_path) -> None:
+    p = tmp_path / "new" / "x.json"
+    save_json(p, {"a": 1})
+    assert p.stat().st_mode & 0o777 == 0o600
+    assert p.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_failed_write_leaves_old_file_and_no_tmp(tmp_path, monkeypatch) -> None:
+    p = tmp_path / "x.json"
+    save_json(p, {"a": 1})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("pace.store.json.dumps", boom)
+    with pytest.raises(RuntimeError):
+        save_json(p, {"a": 2})
+    assert load_json(p, {}, "x") == {"a": 1}
+    assert not (tmp_path / "x.json.tmp").exists()
+
+
+def test_failed_replace_removes_tmp(tmp_path, monkeypatch) -> None:
+    p = tmp_path / "x.json"
+
+    def boom(*_a, **_k):
+        raise OSError("nope")
+
+    monkeypatch.setattr("pace.store.os.replace", boom)
+    with pytest.raises(OSError):
+        save_json(p, {"a": 2})
+    assert not (tmp_path / "x.json.tmp").exists()

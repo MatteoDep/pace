@@ -255,3 +255,57 @@ def test_unicode_text_round_trip() -> None:
     with diary.transaction() as d:
         _add(d, kind="feedback", text=text)
     assert diary.load()["entries"][0]["text"] == text
+
+
+def test_not_found_hint_is_not_garmin() -> None:
+    data = diary.load()
+    with pytest.raises(PaceError) as exc:
+        diary.remove_entry(data, 9)
+    assert exc.value.code == "not_found"
+    assert "Garmin" not in (exc.value.hint or "") and "pace diary show" in exc.value.hint
+
+
+_ENTRY = {"id": 1, "date": "2026-01-01", "kind": "note", "text": "x", "tags": []}
+
+
+@pytest.mark.parametrize("doc", [
+    {"profile": {}, "entries": [{k: v for k, v in _ENTRY.items() if k != "date"}], "next_id": 2},
+    {"profile": {}, "entries": [{**_ENTRY, "refs": None}], "next_id": 2},
+    {"profile": {}, "entries": [{**_ENTRY, "tags": [1]}], "next_id": 2},
+    {"profile": {}, "entries": [{**_ENTRY, "text": 5}], "next_id": 2},
+    {"profile": {}, "entries": [{**_ENTRY, "due": 5}], "next_id": 2},
+    {"profile": {"event": "x"}, "entries": [], "next_id": 1},
+])
+def test_malformed_shape_is_internal(tmp_path, doc) -> None:
+    p = tmp_path / "diary.json"
+    p.write_text(json.dumps(doc))
+    with pytest.raises(PaceError) as exc:
+        diary.load()
+    assert exc.value.code == "internal" and "unexpected shape" in exc.value.message
+    assert str(p) in (exc.value.hint or "")
+
+
+def test_show_since_accepts_datetime_with_offset() -> None:
+    data = diary.load()
+    _add(data, on="2026-11-16")
+    keep = _add(data, on="2026-11-17")
+    out, _ = diary.show(data, since="2026-11-17T12:00:00+01:00", kind=None, ref=None, limit=20)
+    assert [e["id"] for e in out["entries"]] == [keep["id"]]
+
+
+def test_resolve_future_and_reopen_non_active_refused() -> None:
+    data = diary.load()
+    inj = _add(data, kind="injury", on="2026-03-01")
+    note = _add(data)
+    with pytest.raises(PaceError) as exc:
+        diary.resolve(data, inj["id"], "+1d")
+    assert exc.value.code == "bad_args"
+    with pytest.raises(PaceError) as exc:
+        diary.reopen(data, note["id"])
+    assert exc.value.code == "bad_args"
+
+
+def test_tags_stripped_deduplicated() -> None:
+    data = diary.load()
+    e = _add(data, tags=[" a ", "", "b", "a", "  "])
+    assert e["tags"] == ["a", "b"]

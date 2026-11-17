@@ -6,8 +6,8 @@ import typer
 
 from pace import __version__
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
-from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.commands.workout import WORKOUT_LIST_FIELDS
+from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
 from pace.ratelimit import CONCURRENCY, limiter

@@ -119,11 +119,11 @@ Changes:
   schema marks diary writes `local_write` (not `write`), so the Garmin confirmation rule and `--dry-run` loop stay untouched.
 - Entries may carry an optional `due` date (designer's call).
   `decision` entries set it to when the outcome should be checked.
-  `diary show` returns a `due` list: entries whose `due` is today or earlier and that have no later entry closing them (the skill closes one by `diary set-due ID none` or by removing the date; builder picks the mechanism).
+  `diary show` returns a `due` list: entries whose `due` is today or earlier and that have no later entry closing them (the skill closes one by `diary set-due ID --clear` or by removing the date; builder picks the mechanism).
   Purpose: due checks surface at session start without the model rereading every decision, which matters in unattended project 2 runs.
 - Check-in state is stored, so a new session (and every scheduled project 2 run) knows what was already asked (designer's call):
   profile key `checkin.last` (ISO datetime of the last completed check-in), set by the skill at the end of the check-in;
-  a declined feedback question is recorded as `diary add --kind feedback --ref activity:<id> "declined"`, which counts as handled.
+  an unanswered feedback question is recorded as `diary add --kind feedback --ref activity:<id> "no comment"`, which counts as handled.
   On the first run (`checkin.last` unset) the check-in looks back 7 days only.
   `activity list` does not carry RPE/feel, so finding unrated activities costs one `activity show` per activity (rate limit 10 per minute); the `checkin.last` bound keeps that small, and activities that already have a `feedback` entry are skipped without a call.
 

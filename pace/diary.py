@@ -20,6 +20,7 @@ REF_PATTERN = r"(session|activity|entry):[1-9][0-9]*"  # always used with re.ful
 EMPTY: dict[str, Any] = {"profile": {}, "entries": [], "next_id": 1}
 
 _BOOKKEEPING_PREFIXES = ("checkin.", "dashboard.")
+_PARENT_KEYS = ("event", "checkin", "dashboard")
 
 
 def diary_path() -> Path:
@@ -30,15 +31,29 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _str_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _entry_ok(e: Any) -> bool:
+    return (isinstance(e, dict) and _is_int(e.get("id"))
+            and all(isinstance(e.get(k), str) for k in ("date", "kind", "text"))
+            and all(k not in e or _str_list(e[k]) for k in ("tags", "refs"))
+            and all(e.get(k) is None or isinstance(e[k], str) for k in ("due", "resolved")))
+
+
 def load() -> dict[str, Any]:
     path = diary_path()
     data = store.load_json(path, EMPTY, "diary")
     entries = data.get("entries")
-    if (not isinstance(data.get("profile"), dict) or not isinstance(entries, list)
-            or not all(isinstance(e, dict) and _is_int(e.get("id")) for e in entries)):
+    profile = data.get("profile")
+    if (not isinstance(profile, dict) or not isinstance(entries, list)
+            or any(k in profile and not isinstance(profile[k], dict) for k in _PARENT_KEYS)
+            or not all(_entry_ok(e) for e in entries)):
         raise PaceError("internal", "diary has an unexpected shape",
                         hint=f"Inspect or move {path}; pace never overwrites it.")
     for e in entries:
+        e.setdefault("tags", [])
         e.setdefault("refs", [])
         e.setdefault("due", None)
         e.setdefault("resolved", None)
@@ -134,6 +149,17 @@ def _iso(value: str | None) -> str:
     return parse_date(value).isoformat()
 
 
+def _since_iso(value: str) -> str:
+    """A date form, or an ISO datetime (offset-aware ones are converted to the local zone)."""
+    if "T" in value:
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            raise _bad(f"invalid --since {value!r}; use a date or an ISO datetime") from None
+        return (moment.astimezone() if moment.tzinfo else moment).date().isoformat()
+    return _iso(value)
+
+
 def add_entry(data: dict[str, Any], *, kind: str, text: str, on: str | None, tags: list[str],
               refs: list[str], due: str | None) -> dict[str, Any]:
     if kind not in KINDS:
@@ -144,7 +170,7 @@ def add_entry(data: dict[str, Any], *, kind: str, text: str, on: str | None, tag
         if not re.fullmatch(REF_PATTERN, ref):
             raise _bad(f"invalid ref {ref!r}; use session:<id>, activity:<id> or entry:<id>")
     entry = {"id": data["next_id"], "date": _iso(on), "kind": kind, "text": text.strip(),
-             "tags": [t for t in tags if t], "refs": list(refs),
+             "tags": list(dict.fromkeys(t.strip() for t in tags if t.strip())), "refs": list(refs),
              "due": _iso(due) if due is not None else None, "resolved": None}
     data["next_id"] += 1
     data["entries"].append(entry)
@@ -155,7 +181,8 @@ def _find(data: dict[str, Any], entry_id: int) -> dict[str, Any]:
     for e in data["entries"]:
         if e["id"] == entry_id:
             return e
-    raise PaceError("not_found", f"no diary entry with id {entry_id}")
+    raise PaceError("not_found", f"no diary entry with id {entry_id}",
+                    hint="List ids with `pace diary show`.")
 
 
 def remove_entry(data: dict[str, Any], entry_id: int) -> dict[str, Any]:
@@ -175,6 +202,8 @@ def resolve(data: dict[str, Any], entry_id: int, on: str | None) -> dict[str, An
     if entry["kind"] not in ACTIVE_KINDS:
         raise _bad(f"only {' or '.join(ACTIVE_KINDS)} entries can be resolved, not {entry['kind']!r}")
     when = _iso(on)
+    if when > date.today().isoformat():
+        raise _bad(f"resolved date {when} is in the future")
     if when < entry["date"]:
         raise _bad(f"resolved date {when} is before the entry date {entry['date']}")
     entry["resolved"] = when
@@ -183,6 +212,8 @@ def resolve(data: dict[str, Any], entry_id: int, on: str | None) -> dict[str, An
 
 def reopen(data: dict[str, Any], entry_id: int) -> dict[str, Any]:
     entry = _find(data, entry_id)
+    if entry["kind"] not in ACTIVE_KINDS:
+        raise _bad(f"only {' or '.join(ACTIVE_KINDS)} entries can be reopened, not {entry['kind']!r}")
     entry["resolved"] = None
     return entry
 
@@ -196,7 +227,7 @@ def show(data: dict[str, Any], *, since: str | None, kind: str | None, ref: str 
     if limit < 1:
         raise _bad("--limit must be >= 1")
     today_iso = (today or date.today()).isoformat()
-    since_iso = _iso(since) if since else None
+    since_iso = _since_iso(since) if since else None
     entries = sorted(data["entries"], key=lambda e: (e["date"], e["id"]), reverse=True)
     if since_iso:
         entries = [e for e in entries if e["date"] >= since_iso]

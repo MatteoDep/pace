@@ -204,6 +204,7 @@ Ids increment and are never reused, even after `remove`.
 An entry is `{"id", "date", "kind", "text", "tags", "refs", "due", "resolved"}`:
 - `date`: ISO date, `--date` (default today); accepts the usual date words and `-Nd`/`+Nd`.
 - `kind`: one of `note`, `plan`, `recommendation`, `feedback`, `constraint`, `injury`, `decision`.
+- `tags`: list of strings from repeated `--tag`, stripped, empties dropped, duplicates removed in order.
 - `refs`: list of `session:<id>`, `activity:<id>` or `entry:<id>` (positive integer id; pattern in `diary.ref_pattern`).
   Repeat `--ref`; one feedback entry can name an activity and a session.
 - `due`: ISO date or null; the date to look at the entry again.
@@ -220,24 +221,31 @@ Dotted keys are stored nested (`event.name` under `event`).
 Setting or unsetting any key except `checkin.*` and `dashboard.*` stamps `profile.updated` with today's date.
 `diary unset KEY` removes the key and is a no-op when it is not set.
 
+`--since` also accepts an ISO datetime (for example `2026-11-17T08:00:00+01:00`); its local date is used.
 `diary show [--since D] [--kind K] [--ref R] [--limit N]` returns `data = {"profile", "active", "due", "entries"}`.
 `entries` are newest first, filtered, and cut to `--limit` (default 20); `truncated` is true when the cut dropped some.
 `active` is every unresolved `constraint` and `injury`, oldest first, regardless of the filters.
 `due` is every entry whose `due` is today or earlier, oldest due first, regardless of the filters.
 Clear a due entry with `diary set-due ID --clear`, or move it with `--date D`; give exactly one of the two.
-`diary resolve ID` sets `resolved` to `--date` (default today, not before the entry date); `--reopen` clears it.
+`diary resolve ID` sets `resolved` to `--date` (default today, not before the entry date and not in the future); `--reopen` clears it.
+`--reopen` applies only to `constraint` and `injury` entries, like resolving; other kinds are `bad_args`.
 Neither `--date` nor `--reopen` means today; both is `bad_args`.
 
 TEXT for `diary add` is one or more words, joined with spaces.
 Put it after `--` when it may start with `-`: `pace diary add --kind feedback -- -5 kg on the scale`.
 No positional argument takes a date, so `-1d` is never misread as a flag; dates go in `--date`, `--due` and `--since`.
 
+An unknown entry id is `not_found` with the hint to list ids with `pace diary show`.
+
 Locking: every mutating command takes an exclusive lock on `diary.json.lock` for its read-modify-write.
 A second writer waits up to 10 s, then fails with `internal` ("busy").
 The `.lock` file stays in `$PACE_HOME`; that is normal.
 `diary show` takes no lock and reads a complete file, since saves are atomic.
+Saves write a temp file, `fsync` it, then rename it over `diary.json`; on failure the temp file is removed and the old file stays.
+The file is created with mode 0600, and `$PACE_HOME` with 0700 when pace creates it.
 
 Corrupt file: unreadable JSON or an unexpected shape is `internal` with a hint naming the path.
+Unexpected shape includes an entry missing `date`, `kind` or `text`, a non-list `tags` or `refs` (null included), a non-string `due` or `resolved`, and a non-object `event`, `checkin` or `dashboard` in the profile.
 pace never overwrites or repairs it; the user inspects or moves it.
 
 ## Keeping this file honest
