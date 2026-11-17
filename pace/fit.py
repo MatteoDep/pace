@@ -2,7 +2,7 @@
 
 Only derived JSON is stored, at $PACE_HOME/fit/<id>.json (`start`, per-second records without GPS, RR values and
 the position of each `hrv` message; no device or serial fields). The original zip is read in memory and never
-extracted. $PACE_HOME/fit/no_rr.json maps activity ids to `no_hrv_messages` | `rr_rejected`.
+extracted. $PACE_HOME/fit/no_rr.json maps activity ids to `no_hrv_messages` | `rr_rejected` | `fit_unreadable`.
 Alignment rule: plan 5 "Task 0 results" and methods doc section 6.
 """
 
@@ -25,7 +25,7 @@ from pace import api, config, store
 from pace.cache import CacheTracker
 from pace.envelope import PaceError
 
-NO_RR_REASONS = ("no_hrv_messages", "rr_rejected")
+NO_RR_REASONS = ("no_hrv_messages", "rr_rejected", "fit_unreadable")
 RR_INVALID_S = 65.5          # 0xFFFF / 1000: FIT padding
 RESYNC_S = 3.0               # beat clock vs record clock tolerance
 GAP_RR_S = 2.0               # a raw RR above this is a signal dropout

@@ -355,5 +355,5 @@ def effort(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
     # Prefix invalidation also drops ids that extend this one; harmless over-invalidation.
     spec = WriteSpec(resource="activity_effort", action="update", method="connectapi", args=(path,),
                      kwargs={"method": "PUT", "json": body}, payload={"path": path, "json": body}, echo=echo,
-                     invalidate=(f"get_activity:{activity_id}",))
+                     invalidate=(f"get_activity:{activity_id}", f"zones:get_activity:{activity_id}"))
     run(cmd, args, lambda: run_write(spec, dry_run=dry_run))

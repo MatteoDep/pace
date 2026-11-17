@@ -296,7 +296,8 @@ def test_mark_no_rr_round_trip(_home) -> None:
     assert fit.no_rr(1) is None
     fit.mark_no_rr(1, "rr_rejected")
     fit.mark_no_rr(2, "no_hrv_messages")
-    assert fit.no_rr(1) == "rr_rejected" and fit.no_rr(2) == "no_hrv_messages"
+    fit.mark_no_rr(3, "fit_unreadable")
+    assert fit.no_rr(1) == "rr_rejected" and fit.no_rr(2) == "no_hrv_messages" and fit.no_rr(3) == "fit_unreadable"
     path = _home / "fit" / "no_rr.json"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     with pytest.raises(ValueError):

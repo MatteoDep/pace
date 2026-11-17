@@ -229,6 +229,30 @@ def test_effort_real_run_result_and_invalidation(fake_api) -> None:
     assert _get_activity_calls(fake_api) == 2  # cached row was invalidated
 
 
+def test_effort_invalidates_the_zones_activity_key(fake_api) -> None:
+    import asyncio
+
+    from pace.cache import Cache
+    from pace.commands._helpers import cached_call
+
+    async def read():
+        cache = Cache()
+        try:
+            await cached_call("get_activity", 9, cache=cache, ttl=3600, key_prefix="zones")
+        finally:
+            cache.close()
+
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 9}
+    asyncio.run(read())
+    asyncio.run(read())
+    assert _get_activity_calls(fake_api) == 1
+    fake_api["payload"] = lambda m, a, kw: None
+    runner.invoke(app, ["effort", "9", "--rpe", "6"])
+    fake_api["payload"] = lambda m, a, kw: {"activityId": 9}
+    asyncio.run(read())
+    assert _get_activity_calls(fake_api) == 2  # the zones key was invalidated too
+
+
 def test_effort_both_flags(fake_api) -> None:
     doc = json.loads(runner.invoke(app, ["effort", "9", "--rpe", "10", "--feel", "weak", "--dry-run"]).stdout)
     assert doc["data"]["payload"]["json"]["summaryDTO"] == {"directWorkoutRpe": 100, "directWorkoutFeel": 25}

@@ -15,6 +15,7 @@ from pace import config, fit, hrv, thresholds, zones
 from pace.cache import Cache
 from pace.charts.sources import sleep_chunks
 from pace.commands import zones as ze
+from pace.envelope import PaceError
 
 TODAY = date(2026, 11, 17)
 EMPTY_FIT = {"records": [], "rr_s": [], "rr_msgs": [], "start": None}
@@ -55,8 +56,9 @@ def d(month, day):
 class FakeFetcher:
     """In-memory cache keyed per read; a miss is one call; at the cap a miss raises Deferred."""
 
-    def __init__(self, rows, *, wrist=(), peaks=None, fits=None, cache=None):
+    def __init__(self, rows, *, wrist=(), peaks=None, fits=None, cache=None, errors=None):
         self.rows, self.wrist, self.peaks, self.fits = rows, set(wrist), peaks or {}, fits or {}
+        self.errors = errors or {}   # key -> PaceError code raised by that call (the call is counted)
         self.cache = {} if cache is None else cache
         self.calls, self.max_calls, self.log, self.list_range = 0, None, [], None
 
@@ -67,6 +69,8 @@ class FakeFetcher:
             raise ze.Deferred(str(key))
         self.calls += 1
         self.log.append(key)
+        if key in self.errors:
+            raise PaceError(self.errors[key], f"injected {self.errors[key]}")
         self.cache[key] = value = make()
         return value
 
@@ -438,3 +442,92 @@ def test_garmin_fetcher_fit(monkeypatch):
             cache.close()
 
     assert asyncio.run(go()) == 1 and got == [21, 22]
+
+
+# --- fix round 1: Garmin errors, skip lists, wrist reasons, suggestions, sleep chunks ---
+
+def test_rate_limited_mid_estimate_is_partial_and_rerun_completes(stubs):
+    full, _ = run(worked_fetcher())
+    f = worked_fetcher(errors={("details", 207): "rate_limited"})
+    res, data = run(f)
+    assert f.log[-1] == ("details", 207) and res["calls"] == f.calls == 4 + 2 * 6 + 2 * 2
+    assert {"kind": "run", "id": 207, "group": "steady", "error": "rate_limited"} in res["deferred"]
+    assert {x["id"] for x in res["deferred"] if x["kind"] == "run"} >= {211, 216, 220, 222, 301, 302, 303, 304}
+    assert res["summary"]["partial"] is True and data["estimates"][-1]["partial"] is True
+    again = FakeFetcher(worked_rows(), cache=f.cache)
+    res2, _ = run(again, data)
+    assert res2["deferred"] == [] and res2["calls"] == 40 - 4 - 2 * 6 - 2 - 1
+    assert res2["summary"] == full["summary"]
+
+
+def test_auth_error_propagates(stubs):
+    f = worked_fetcher(errors={("activity", 101): "auth_required"})
+    with pytest.raises(PaceError) as exc:
+        run(f)
+    assert exc.value.code == "auth_required"
+
+
+def test_unreadable_fit_is_skipped_and_marked(stubs):
+    f = worked_fetcher(errors={("fit", 101): "internal"})
+    res, data = run(f)
+    assert fit.no_rr(101) == "fit_unreadable"
+    assert any(x["id"] == 101 and x["reason"] == "fit_unreadable" for x in res["methods"]["H4"]["rejected"])
+    assert {k[1] for k in f.log if k[0] == "fit"} == {101, 103, 203, 207} and res["deferred"] == []
+    g = FakeFetcher(worked_rows(), cache=f.cache)
+    run(g, data)
+    assert ("fit", 101) not in g.log
+
+
+def test_not_found_run_is_skipped(stubs):
+    f = worked_fetcher(errors={("activity", 203): "not_found"})
+    res, _ = run(f)
+    assert any(x["id"] == 203 and x["group"] == "steady" and "not found" in x["reason"] for x in res["runs_skipped"])
+    assert 203 not in {r["id"] for r in res["runs_used"]} and res["deferred"] == []
+
+
+def test_runs_skipped_never_lists_used_runs(stubs):
+    res, _ = run(worked_fetcher())
+    skipped = {x["id"] for x in res["runs_skipped"]}
+    used = {r["id"] for r in res["runs_used"]}
+    assert not skipped & {101, 102, 103, 104, 105, 106, 203, 207, 220, 222}
+    assert not skipped & used
+    assert {x["group"] for x in res["runs_skipped"]} <= {"history", "drift"}
+    assert any(x["id"] == 401 and x["group"] == "history" for x in res["runs_skipped"])
+
+
+def test_wrist_effort_run_without_drift_candidates_gives_no_h5_wrist_reason(stubs):
+    f = FakeFetcher([row(1, d(11, 10)), row(2, d(11, 3))], wrist={1})
+    res, _ = run(f)
+    assert res["methods"]["H5"]["status"] == "insufficient_data"
+    assert ze.ALL_WRIST not in res["methods"]["H5"]["reasons"]
+
+
+def test_strap_runs_before_rr_data_give_no_h4_wrist_reason(stubs):
+    f = FakeFetcher([row(1, d(8, 28)), row(2, d(8, 29))], wrist={2})
+    res, _ = run(f, weeks=12)
+    assert {r["id"] for r in res["runs_used"]} == {1, 2}
+    assert ze.ALL_WRIST not in res["methods"]["H4"]["reasons"]
+
+
+def test_failed_extension_suggests_field_tests(stubs):
+    stubs.setattr(thresholds, "critical_speed", lambda runs, *, prs: copy.deepcopy(CS_SHORT))
+    stubs.setattr(thresholds, "hr_speed", lambda runs, *, include_wrist=False: copy.deepcopy(H2_NONE))
+    res, _ = run(FakeFetcher(ext_rows()), weeks=4)
+    m = res["methods"]
+    assert res["extended"] is True
+    assert m["H1"]["suggest"] == {"test": "F2"} and res["lt2"]["suggest"] == {"test": "F2"}
+    assert m["H2"]["suggest"] == {"test": "F1"} and m["H5"]["suggest"] == {"test": "F1"}
+
+
+def test_no_suggestion_without_extension(stubs):
+    res, _ = run(worked_fetcher())
+    assert res["extended"] is False
+    assert all("suggest" not in res["methods"][k] for k in ("H1", "H2", "H5")) and "suggest" not in res["lt2"]
+
+
+def test_served_sleep_chunk_kept_when_the_second_is_deferred(stubs):
+    f = worked_fetcher()
+    res, data = run(f, max_calls=3)  # list, prs, the first sleep chunk
+    assert res["rest_hr"] == 45
+    assert {"kind": "sleep", "id": "2026-11-08"} in res["deferred"]
+    assert data["estimates"][-1]["partial"] is True

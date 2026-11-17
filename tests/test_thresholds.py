@@ -1090,3 +1090,10 @@ def test_select_fit_order_cache_no_rr_and_cap():
                          rr_since=date(2026, 9, 1)) == []
     many = [det(10 + k, 1 + k) for k in range(7)]
     assert th.select_fit(many, cached=set(), no_rr=set(), **kw) == [16, 15, 14, 13, 12, 11]
+
+
+def test_tie_key_newest_first_then_lowest_id():
+    rows = [{"activityId": 3, "startTimeGMT": "2026-11-01 07:00:00"},
+            {"activityId": 2, "startTimeGMT": "2026-11-02 07:00:00"},
+            {"activityId": 1, "startTimeGMT": "2026-11-01 07:00:00"}]
+    assert [r["activityId"] for r in sorted(rows, key=th.tie_key)] == [2, 1, 3]

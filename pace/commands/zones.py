@@ -17,8 +17,9 @@ from typing import Any, Protocol
 from pace import fit as fitmod
 from pace import hrv, thresholds, zones
 from pace.cache import Cache, CacheTracker
-from pace.charts.sources import sleep_stats
+from pace.charts.sources import sleep_chunks, sleep_stats
 from pace.commands._helpers import cached_call
+from pace.envelope import PaceError
 from pace.ratelimit import limiter
 from pace.spec import TTL_STATIC
 
@@ -30,6 +31,7 @@ LIST_TTL = 600
 OLD_RUN_TTL = 60 * 86400        # zones reads of runs started more than 1 day ago
 NEW_RUN_TTL = 3600
 PR_DISTANCES_M = {1: 1000.0, 2: 1609.344, 3: 5000.0}   # Garmin PR typeId: 1 km, 1 mile, 5 km
+STOP_CODES = ("rate_limited", "network")   # a read failing with these defers every later miss
 ALL_WRIST = "no chest-strap run to examine: wrist HR runs were skipped (use --include-wrist)"
 
 
@@ -170,7 +172,7 @@ def _nearest(rows: list[dict], key: str, target: float) -> int | None:
     """The row nearest `target` by `key` (ties: newest first, then lowest id, as in thresholds selection)."""
     if not rows:
         return None
-    return _rid(min(rows, key=lambda r: (round(abs(r[key] - target), 9), *thresholds._tie(r))))
+    return _rid(min(rows, key=lambda r: (round(abs(r[key] - target), 9), *thresholds.tie_key(r))))
 
 
 def _pr_points(prs: list[dict] | None, since: date) -> list[dict]:
@@ -212,19 +214,44 @@ class _Reads:
         self.runs: dict[int, dict] = {}         # id -> {"id", "date", "start", "hr_source", "table", "groups"}
         self.drift_ids: list[int] = []
         self.deferred: list[dict] = []
-        self.skipped: dict[int, str] = {}
+        self.skipped: list[dict] = []           # {"id", "group", "reason"}, one per (id, group)
+        self.dropped: dict[str, set[int]] = {}  # group -> wrist picks not fetched in detail
+        self.fit_errors: list[dict] = []
+
+    def _defer(self, entry: dict) -> None:
+        if not any(d["kind"] == entry["kind"] and d.get("id") == entry.get("id") for d in self.deferred):
+            self.deferred.append(entry)
 
     async def read(self, entry: dict, factory: Callable[[], Awaitable[Any]]) -> Any:
+        """Run one read; None when it was deferred (cap, or a rate-limit/network error that stops further calls),
+        when a picked run is not found (skipped), or when a FIT file is unreadable (marked fit_unreadable).
+        auth_required and every other error propagate."""
         try:
             return await factory()
         except Deferred:
-            if not any(d["kind"] == entry["kind"] and d.get("id") == entry.get("id") for d in self.deferred):
-                self.deferred.append(entry)
+            self._defer(entry)
             return None
+        except PaceError as err:
+            if err.code in STOP_CODES:
+                self.f.max_calls = self.f.calls
+                self._defer({**entry, "error": err.code})
+                return None
+            if err.code == "not_found" and entry["kind"] == "run":
+                self.skip_one(entry["id"], entry["group"], f"not found on Garmin: {err.message}")
+                return None
+            if err.code == "internal" and entry["kind"] == "fit":
+                fitmod.mark_no_rr(entry["id"], "fit_unreadable")
+                self.fit_errors.append({"id": entry["id"], "reason": "fit_unreadable", "detail": err.message})
+                return None
+            raise
 
-    def skip(self, rows: list[dict]) -> None:
+    def skip_one(self, rid: int, group: str, reason: str) -> None:
+        if not any(s["id"] == rid and s["group"] == group for s in self.skipped):
+            self.skipped.append({"id": rid, "group": group, "reason": reason})
+
+    def skip(self, rows: list[dict], group: str) -> None:
         for s in rows:
-            self.skipped.setdefault(s["id"], s["reason"])
+            self.skip_one(s["id"], group, s["reason"])
 
     async def pick(self, rid: int, group: str, *, always: bool = False) -> str:
         """Fetch one picked run: get_activity, then get_activity_details unless it is a wrist run that this
@@ -241,7 +268,8 @@ class _Reads:
             if self.sources[rid] == "wrist":
                 self.wrist.add(rid)
         if self.sources[rid] == "wrist" and not usable_wrist:
-            self.skipped[rid] = f"{thresholds.WRIST_REASON}: not fetched in detail for the {group} picks"
+            self.skip_one(rid, group, f"{thresholds.WRIST_REASON}: not fetched in detail for the {group} picks")
+            self.dropped.setdefault(group, set()).add(rid)
             return "wrist"
         row = self.by_id[rid]
         det = await self.read({"kind": "run", "id": rid, "group": group},
@@ -252,11 +280,11 @@ class _Reads:
                           "hr_source": self.sources[rid], "table": thresholds.samples(det), "groups": [group]}
         return "ok"
 
-    async def history(self, rows: list[dict], *, exclude: set[int]) -> None:
+    async def history(self, rows: list[dict], *, exclude: set[int], group: str) -> None:
         """Phase 1: effort picks (always fetched), then steady picks; a wrist steady pick is replaced by the
-        untaken candidate nearest its speed target."""
+        untaken candidate nearest its speed target. `group` names the list-row skips ("history" | "extension")."""
         sel = thresholds.select_history(rows, exclude=exclude)
-        self.skip(sel["skipped"])
+        self.skip(sel["skipped"], group)
         for rid in sel["effort"]:
             await self.pick(rid, "effort", always=True)
         skipped = {s["id"] for s in sel["skipped"]}
@@ -276,8 +304,11 @@ class _Reads:
         """Phase 2: H5 drift picks; a wrist pick is replaced by the next candidate of the same ranking (same side
         of the ref, else the other side; without a ref, nearest its averageHR target)."""
         exclude = set() if self.include_wrist else set(self.wrist)
+        if exclude:   # known wrist runs this group would have picked count as dropped wrist picks
+            own = set(thresholds.select_drift(rows, ref_hr=ref)["picks"]) & exclude
+            self.dropped.setdefault("drift", set()).update(own)
         sel = thresholds.select_drift(rows, ref_hr=ref, exclude=exclude)
-        self.skip(sel["skipped"])
+        self.skip(sel["skipped"], "drift")
         skipped = {s["id"] for s in sel["skipped"]}
         pool = [r for r in rows if _rid(r) not in exclude | skipped]
         targets = {t["id"]: t["target"] for t in sel["targets"]}
@@ -311,9 +342,10 @@ def _history_methods(reads: _Reads, prs: list[dict] | None, since: date) -> tupl
     return cs, h2
 
 
-def _no_strap(reads: _Reads, res: dict, ids: list[int]) -> None:
-    """Review Focus 4: an HR method without a strap run says so when wrist runs were dropped."""
-    if res.get("status") != "ok" and not reads.include_wrist and reads.wrist \
+def _no_strap(reads: _Reads, res: dict, ids: list[int], dropped: set[int]) -> None:
+    """Review Focus 4: an HR method says so when its own picks had wrist runs that were dropped and none of its
+    runs is a strap run."""
+    if res.get("status") != "ok" and not reads.include_wrist and dropped \
             and not any(reads.sources.get(i) == "strap" for i in ids):
         res["reasons"].append(ALL_WRIST)
 
@@ -327,9 +359,10 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
                  "notes": [], "rejected": [],
                  "reasons": [f"alpha1 marked unreliable for this athlete since {since} (two not-monotonic runs "
                              "in a row): no FIT downloads; retry with --retry-h4"]}, {})
-    window_from = today - timedelta(weeks=DRIFT_WEEKS)
-    pool = [r for r in reads.runs.values() if r["date"] is not None and r["date"] >= max(window_from, RR_SINCE)
-            and (r["hr_source"] == "strap" or reads.include_wrist)]
+    window_from = max(today - timedelta(weeks=DRIFT_WEEKS), RR_SINCE)
+    eligible = [r for r in reads.runs.values() if r["date"] is not None and r["date"] >= window_from]
+    pool = [r for r in eligible if r["hr_source"] == "strap" or reads.include_wrist]
+    dropped = {r["id"] for r in eligible if r["hr_source"] != "strap"}
     ids = [r["id"] for r in pool]
     no_rr = {i for i in ids if fitmod.no_rr(i) is not None}
     cached = {i for i in ids if reads.f.fit_cached(i)}
@@ -341,7 +374,7 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
         if fd is not None:
             fits[rid] = fd
     run_windows: list[dict] = []
-    rejected = [{"id": i, "reason": fitmod.no_rr(i)} for i in sorted(no_rr)]
+    rejected = [{"id": i, "reason": fitmod.no_rr(i)} for i in sorted(no_rr)] + reads.fit_errors
     for run in sorted((reads.runs[i] for i in fits), key=lambda r: r["start"]):
         rid = run["id"]
         try:
@@ -358,13 +391,13 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
     h4 = thresholds.alpha1_lt1(run_windows)
     h4["rejected"] = rejected
     h4["downloads"] = downloads
-    for rep in h4["runs"]:
+    for rep in h4["runs"]:  # start-time order within this estimate (earlier estimates counted theirs already)
         zones.record_alpha1_outcome(data, rep["outcome"], day=reads.runs[rep["id"]]["date"], activity=rep["id"])
     wrist_used = [r["id"] for r in h4["runs"] if r["lt1_hr"] is not None and reads.sources.get(r["id"]) != "strap"]
     if h4["status"] == "ok" and wrist_used:
         h4["confidence"] = "low"
         h4["notes"].append("wrist HR runs included: confidence low")
-    _no_strap(reads, h4, ids)
+    _no_strap(reads, h4, ids, dropped)
     return h4, fits
 
 
@@ -381,7 +414,7 @@ async def _h5(reads: _Reads, fits: dict[int, dict], h2: dict) -> dict:
         (rejected if "rejected" in seg else evidence).append(seg)
     h5 = thresholds.drift_bounds(evidence, h2 if h2.get("status") == "ok" else None)
     h5["rejected"] = rejected
-    _no_strap(reads, h5, reads.drift_ids)
+    _no_strap(reads, h5, reads.drift_ids, reads.dropped.get("drift", set()))
     return h5
 
 
@@ -416,7 +449,16 @@ def _record(today: date, lt1: dict, lt2: dict, methods: dict, *, data: dict, res
 async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int = 8, max_calls: int = 40,
                        include_wrist: bool = False, retry_h4: bool = False) -> dict:
     """One history estimate (methods doc 14.7). Updates `data` in place: hr_max, the H4 memory, the estimates log
-    (always, partial when the cap deferred reads). Owns mark_no_rr(id, "rr_rejected") when aligned_rr raises."""
+    (always, partial when reads were deferred). Owns mark_no_rr(id, "rr_rejected") when aligned_rr raises and
+    mark_no_rr(id, "fit_unreadable") when a FIT download cannot be parsed.
+
+    A rate_limited or network error stops further Garmin calls: that read and every later miss are deferred
+    (entries carry "error" for the failing read) and the estimate is partial; a picked run not found is skipped.
+    H4 outcomes are recorded in start-time order within this estimate; runs counted by earlier estimates are
+    never counted again. `record` is the record `--save` stores, or None; its `method` reads
+    "lt1 <H3|H4|H5|H4+H5|->, lt2 <H1|H1+H2|->". Methods that still fail after the 2N-week extension carry
+    `suggest` {"test": "F2"} (H1, LT2) or {"test": "F1"} (H2, H5).
+    """
     if retry_h4:
         zones.reset_h4(data)
     start_calls = fetcher.calls
@@ -430,17 +472,23 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
     rows = [r for r in rows if r.get("activityId") is not None and _row_day(r) is not None]
     reads.by_id = {_rid(r): r for r in rows}
     prs = await reads.read({"kind": "prs"}, fetcher.prs)
-    sleep = await reads.read({"kind": "sleep"},
-                             lambda: fetcher.sleep(today - timedelta(days=REST_HR_DAYS - 1), today))
+    sleep: list[dict] = []
+    sleep_from = today - timedelta(days=REST_HR_DAYS - 1)
+    for a, b in sleep_chunks(sleep_from, today):   # one read per fixed chunk: a served chunk is kept
+        got = await reads.read({"kind": "sleep", "id": a.isoformat()},
+                               lambda a=a, b=b: fetcher.sleep(max(a, sleep_from), b))
+        sleep += got or []
 
-    await reads.history([r for r in rows if history_from <= _row_day(r) <= today], exclude=set())
+    await reads.history([r for r in rows if history_from <= _row_day(r) <= today], exclude=set(), group="history")
     cs, h2 = _history_methods(reads, prs, history_from)
     extended = len(cs.get("windows") or []) < len(thresholds.H1_WINDOWS) or h2.get("status") != "ok"
     if extended:
-        await reads.history([r for r in rows if ext_from <= _row_day(r) < history_from], exclude=set(reads.runs))
+        await reads.history([r for r in rows if ext_from <= _row_day(r) < history_from], exclude=set(reads.runs),
+                            group="extension")
         cs, h2 = _history_methods(reads, prs, ext_from)
     history_ids = [i for i, r in reads.runs.items() if {"effort", "steady"} & set(r["groups"])]
-    _no_strap(reads, h2, history_ids)
+    _no_strap(reads, h2, history_ids,
+              {i for i in history_ids if reads.sources.get(i) != "strap"} | reads.dropped.get("steady", set()))
     h3 = thresholds.lt1_from_cs(cs, h2)
 
     cur_lt1 = zones.current(data)["lt1"]
@@ -464,6 +512,14 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
         lt2["confidence"] = "low"
         lt2["reasons"].append("wrist HR runs in H2: confidence low")
     lt1 = thresholds.combine_lt1(h3, h4, h5, h2)
+    if extended:   # 14.7: the extension still failed -> the matching field test is suggested
+        for res, test in ((cs, "F2"), (h2, "F1")):
+            if res.get("status") != "ok":
+                res["suggest"] = {"test": test}
+        if lt2.get("status") != "ok" or lt2.get("hr") is None:
+            lt2["suggest"] = {"test": "F2"}
+        if h5.get("status") != "ok":
+            h5["suggest"] = {"test": "F1"}
     methods = {"H1": cs, "H2": h2, "H3": h3, "H4": h4, "H5": h5}
     lt2_method = ("H1+H2" if lt2.get("hr") is not None else "H1") if lt2.get("status") == "ok" else None
     partial = bool(reads.deferred)
@@ -478,7 +534,7 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
              "groups": r["groups"]} for r in sorted(reads.runs.values(), key=lambda r: r["start"])]
     return {
         "lt1": lt1, "lt2": lt2, "methods": methods, "runs_used": used,
-        "runs_skipped": [{"id": i, "reason": why} for i, why in reads.skipped.items()],
+        "runs_skipped": [s for s in reads.skipped if s["id"] not in reads.runs],
         "deferred": reads.deferred, "calls": calls,
         "estimated_seconds": estimated_seconds(calls, min_interval=limiter.min_interval,
                                                per_minute=limiter.per_minute, per_hour=limiter.per_hour),

@@ -403,7 +403,11 @@ def _field_test_reasons(data: dict[str, Any], t: str, today: date) -> list[str]:
 
 
 def due(data: dict[str, Any], *, today: date, runs_since: list[dict[str, Any]]) -> dict[str, Any]:
-    """Which re-estimate or retest is due. `runs_since`: list rows of runs after the last estimate."""
+    """Which re-estimate or retest is due.
+
+    `runs_since`: list rows of the runs after the last estimate plus the last run before it, so the detraining rule
+    sees a break that started before the estimate.
+    """
     est = _estimate_reasons(data, today, runs_since)
     fields = {t: _field_test_reasons(data, t, today) for t in THRESHOLDS}
     return {"estimate": bool(est), "field_test": {t: bool(fields[t]) for t in THRESHOLDS},

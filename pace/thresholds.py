@@ -1298,7 +1298,7 @@ def _row_id(row: dict) -> int:
     return row.get("activityId")
 
 
-def _tie(row: dict) -> tuple[float, int]:
+def tie_key(row: dict) -> tuple[float, int]:
     """Tie-break key: newest first, then lowest activity id."""
     start = _start_time(row)
     ts = (start.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds() if start else -math.inf
@@ -1339,7 +1339,7 @@ def _percentile_picks(pool: list[dict], key: str) -> tuple[list[int], list[dict]
             break
         target = vals[(p * n + 99) // 100 - 1]
         rest = [r for r in pool if _row_id(r) not in picks]
-        best = min(rest, key=lambda r: (round(abs(r[key] - target), 9), *_tie(r)))
+        best = min(rest, key=lambda r: (round(abs(r[key] - target), 9), *tie_key(r)))
         picks.append(_row_id(best))
         targets.append({"p": p, "target": target, "id": _row_id(best)})
     return picks, targets
@@ -1360,7 +1360,7 @@ def select_history(rows_8w: list[dict], *, exclude: set[int] = frozenset()) -> d
 
     def effort_key(r: dict) -> tuple:
         race = (r.get("eventType") or {}).get("typeKey") == "race"
-        return not race, -(_num(r.get("maxHR")) or 0), -(_num(r.get("averageSpeed")) or 0), *_tie(r)
+        return not race, -(_num(r.get("maxHR")) or 0), -(_num(r.get("averageSpeed")) or 0), *tie_key(r)
 
     effort = [_row_id(r) for r in sorted(cands, key=effort_key)[:SEL_SLOTS]]
     pool = [r for r in cands if _row_id(r) not in effort and _num(r.get("averageSpeed")) is not None
@@ -1390,9 +1390,9 @@ def select_drift(rows_12w: list[dict], *, ref_hr: int | None, exclude: set[int] 
         picks, targets = _percentile_picks(cands, "averageHR")
         return {"picks": picks, "mode": "percentile", "ref_hr": None, "targets": targets, "skipped": skipped}
     below = sorted((r for r in cands if r["averageHR"] < ref_hr),
-                   key=lambda r: (round(ref_hr - r["averageHR"], 9), *_tie(r)))
+                   key=lambda r: (round(ref_hr - r["averageHR"], 9), *tie_key(r)))
     above = sorted((r for r in cands if r["averageHR"] >= ref_hr),
-                   key=lambda r: (round(r["averageHR"] - ref_hr, 9), *_tie(r)))
+                   key=lambda r: (round(r["averageHR"] - ref_hr, 9), *tie_key(r)))
     picks = []
     while len(picks) < SEL_SLOTS and (below or above):
         first, second = (below, above) if len(picks) % 2 == 0 else (above, below)
