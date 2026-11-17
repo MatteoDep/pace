@@ -6,6 +6,7 @@ import typer
 
 from pace import __version__
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
+from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
@@ -55,7 +56,8 @@ WRITES: dict[str, Any] = {
                    "workout/weigh-in/hydration. Verify with the matching read (workout list, "
                    "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
                    "state, so repeating them is harmless.",
-    "confirm": "agents must show the planned write and get an explicit yes before calling",
+    "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
+               "local diary and plan writes (local_write) need no confirmation",
 }
 
 GLOBAL_FLAGS = {
@@ -142,6 +144,20 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "ttl_s": 0, "write": True},
     {"name": "log bp list", "help": "Blood pressure readings in a date range (one Garmin call).", "keyed": "date",
      "args": [], "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["measurementSummaries"], "series": [], "ttl_s": 600},
+    {"name": "diary show", "help": 'Profile, active constraints/injuries, due entries and recent entries (newest first); truncated when --limit cuts entries.', "keyed": "none", "args": [], "flags": ["--since", "--kind", "--ref", "--limit"],
+     "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "diary set", "help": 'Set a profile field (see the diary block for keys).', "keyed": "none", "args": ["KEY", "VALUE"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary unset", "help": 'Remove a profile field.', "keyed": "none", "args": ["KEY"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary add", "help": 'Append an entry. TEXT goes after `--` when it may start with `-`.', "keyed": "none", "args": ["TEXT..."], "flags": ["--kind", "--date", "--tag", "--ref", "--due"], "required_flags": ["--kind"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary remove", "help": 'Delete an entry; ids are never reused.', "keyed": "none", "args": ["ID"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary set-due", "help": "Set or clear an entry's due date. Give exactly one of --date or --clear.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--clear"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
 ]
 
 
@@ -183,16 +199,19 @@ def build_schema(group: str | None) -> dict[str, Any]:
         "groups": {**GROUPS, "activity": "Workouts and activity history; set effort (RPE/feel) on one activity.", "auth": "Authentication.",
                    "cache": "Local cache.", "config": "User configuration.",
                    "workout": "Structured workouts: list, show, push, schedule, delete.",
-                   "log": "Health logs written to Garmin Connect."},
+                   "log": "Health logs written to Garmin Connect.",
+                   "diary": "Athlete diary: the coach's durable memory (local file)."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
+        "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
+                  "ref_pattern": REF_PATTERN, "checkin_weight_days_default": WEIGHT_DAYS_DEFAULT},
     }
 
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

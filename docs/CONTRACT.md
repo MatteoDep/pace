@@ -167,7 +167,8 @@ To change shoes, link the new item first, then unlink the old one: Garmin keeps 
 `activity gear ID` reads an activity's gear (cached 5 minutes, since gear changed in the Garmin app cannot be invalidated by `pace`).
 To review gear across many activities, do not call `activity gear` once per activity (10 calls a minute): `gear list`, then `gear activities UUID` once per item, then `activity list` for the range; an activity in no item's list has no gear.
 There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
-Confirmation before a real write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
+Confirmation before a real Garmin write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
+The confirmation rule covers Garmin writes only: `diary` commands write a local file (`"local_write": true` in `pace schema`, never `"write"`) and need no confirmation.
 
 A successful write drops the cache keys it affects (`data.writes.invalidation` in `pace schema`), so a following read is never served stale data.
 Write commands themselves never read the cache: every write always calls Garmin directly.
@@ -189,6 +190,55 @@ Live-verified 2026-11-06 on one run: `activity effort` with both flags, `--rpe` 
 Garmin marks an edited activity with a new `metadataDTO.lastUpdateDate` and `isOriginal: false`, as it does for edits made in the app.
 `gear link` added a second shoe without removing the first; `gear unlink` removed only the one named; both return a JSON body.
 Only a day-view entry matching the weight just written (within 100 g) and attributed to a manual source is accepted, so a scale sync on the same day cannot lend its id; when nothing matches, `id` is `null` and `log weight list` still has the answer.
+
+## Diary
+
+`pace diary` is the coach's durable memory.
+It reads and writes one local file, `$PACE_HOME/diary.json`, and never calls Garmin.
+Commands: `diary show`, `set`, `unset`, `add`, `remove`, `set-due`, `resolve`.
+`pace schema` marks the six mutating ones `"local_write": true` and describes the store under the top-level `diary` key.
+
+File shape: `{"profile": {...}, "entries": [...], "next_id": N}`.
+Ids increment and are never reused, even after `remove`.
+
+An entry is `{"id", "date", "kind", "text", "tags", "refs", "due", "resolved"}`:
+- `date`: ISO date, `--date` (default today); accepts the usual date words and `-Nd`/`+Nd`.
+- `kind`: one of `note`, `plan`, `recommendation`, `feedback`, `constraint`, `injury`, `decision`.
+- `refs`: list of `session:<id>`, `activity:<id>` or `entry:<id>` (positive integer id; pattern in `diary.ref_pattern`).
+  Repeat `--ref`; one feedback entry can name an activity and a session.
+- `due`: ISO date or null; the date to look at the entry again.
+- `resolved`: ISO date or null; only `constraint` and `injury` entries can be resolved.
+
+Profile keys: `goal`, `event.name`, `event.date`, `availability`, `background`, `other_sports`, `strength`, `preferences`, `checkin.weight_days`, `checkin.last`, `dashboard.url`.
+Any other key is `bad_args`.
+Values are non-empty text, with these rules:
+- `event.date`: a date, stored as ISO.
+- `checkin.weight_days`: integer 1 to 90; the default is 7 when unset (`diary.checkin_weight_days_default`).
+- `checkin.last`: `now` or an ISO datetime, stored as a local-offset ISO datetime to the second.
+- `dashboard.url`: must start with `https://claude.ai/`.
+Dotted keys are stored nested (`event.name` under `event`).
+Setting or unsetting any key except `checkin.*` and `dashboard.*` stamps `profile.updated` with today's date.
+`diary unset KEY` removes the key and is a no-op when it is not set.
+
+`diary show [--since D] [--kind K] [--ref R] [--limit N]` returns `data = {"profile", "active", "due", "entries"}`.
+`entries` are newest first, filtered, and cut to `--limit` (default 20); `truncated` is true when the cut dropped some.
+`active` is every unresolved `constraint` and `injury`, oldest first, regardless of the filters.
+`due` is every entry whose `due` is today or earlier, oldest due first, regardless of the filters.
+Clear a due entry with `diary set-due ID --clear`, or move it with `--date D`; give exactly one of the two.
+`diary resolve ID` sets `resolved` to `--date` (default today, not before the entry date); `--reopen` clears it.
+Neither `--date` nor `--reopen` means today; both is `bad_args`.
+
+TEXT for `diary add` is one or more words, joined with spaces.
+Put it after `--` when it may start with `-`: `pace diary add --kind feedback -- -5 kg on the scale`.
+No positional argument takes a date, so `-1d` is never misread as a flag; dates go in `--date`, `--due` and `--since`.
+
+Locking: every mutating command takes an exclusive lock on `diary.json.lock` for its read-modify-write.
+A second writer waits up to 10 s, then fails with `internal` ("busy").
+The `.lock` file stays in `$PACE_HOME`; that is normal.
+`diary show` takes no lock and reads a complete file, since saves are atomic.
+
+Corrupt file: unreadable JSON or an unexpected shape is `internal` with a hint naming the path.
+pace never overwrites or repairs it; the user inspects or moves it.
 
 ## Keeping this file honest
 

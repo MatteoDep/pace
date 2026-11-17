@@ -43,13 +43,16 @@ pace activity effort <activity-id> --rpe 6 --feel strong
 pace activity gear <activity-id>
 pace gear link <activity-id> <gear-uuid>
 pace gear unlink <activity-id> <gear-uuid>
+pace diary show
+pace diary add --kind feedback --ref activity:<id> "felt heavy, legs tired"
 ```
 
 To review which shoes are on many activities, avoid one `activity gear` call per activity (the rate limit is 10 calls a minute).
 Run `pace gear list`, then `pace gear activities <uuid>` once per shoe, then `pace activity list` for the range: an activity in no shoe's list has no gear.
 To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 
-Writes require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
+Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
+The diary and the training plan are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data, and need no confirmation.
 
 Output contract: `docs/CONTRACT.md`.
 Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.

@@ -103,3 +103,21 @@ def test_retry_hints_warn_about_non_idempotent_writes() -> None:
     from pace.envelope import HINTS
     for code in ("network", "rate_limited"):
         assert "verify with the matching read" in HINTS[code], code
+
+
+def test_diary_in_schema() -> None:
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"diary show", "diary set", "diary unset", "diary add", "diary remove", "diary set-due", "diary resolve"}
+    assert names <= set(entries)
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name != "diary show"), name
+    assert entries["diary add"]["required_flags"] == ["--kind"]
+    assert "Garmin" in data["writes"]["confirm"]
+    assert data["diary"]["kinds"][-1] == "decision"
+    assert "dashboard.url" in data["diary"]["profile_keys"]
+    assert "diary" in data["groups"]
+    res = runner.invoke(app, ["schema", "diary"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"diary"}

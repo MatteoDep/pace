@@ -112,6 +112,11 @@ Changes:
 - Entries may carry an optional `ref` naming what they are about: `session:<id>` or `activity:<id>`.
   `diary show` gains `--ref R` to filter entries by it.
   Purpose: workout feedback is attached to the session and activity it concerns, so the coach can read it back next to the data.
+- Post-hoc changes made while building (2026-11-17):
+  `refs` is a list (feedback concerns an activity and a session), and it also accepts `entry:<id>`;
+  `diary set-due ID --date D | --clear` and `diary unset KEY` exist;
+  `diary resolve` is implemented as above;
+  schema marks diary writes `local_write` (not `write`), so the Garmin confirmation rule and `--dry-run` loop stay untouched.
 - Entries may carry an optional `due` date (designer's call).
   `decision` entries set it to when the outcome should be checked.
   `diary show` returns a `due` list: entries whose `due` is today or earlier and that have no later entry closing them (the skill closes one by `diary set-due ID none` or by removing the date; builder picks the mechanism).
