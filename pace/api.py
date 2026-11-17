@@ -128,8 +128,9 @@ async def safe_call(
         except GarminConnectConnectionError as err:
             cause = err.__cause__
             if method_name == "connectapi" and isinstance(cause, GarthHTTPError):
-                # pace calls `connectapi` itself only for writes (workout schedule/delete, activity
-                # effort); the library wraps garth's error, which still carries Garmin's reason.
+                # pace calls `connectapi` itself for writes (workout schedule/delete, activity
+                # effort) and for one read (`workout calendar`); a 400 there surfaces as `rejected`.
+                # The library wraps garth's error, which still carries Garmin's reason.
                 rejected = _rejection(_garth_status(cause), cause)
                 if rejected:
                     return False, None, rejected

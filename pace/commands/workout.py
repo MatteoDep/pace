@@ -1,10 +1,13 @@
-"""Workout commands: list, show, push (DSL), schedule, delete."""
+"""Workout commands: list, show, calendar, push (DSL), schedule, delete."""
 
+from datetime import date
+from typing import Any
 
 import typer
 
 from pace.cache import Cache, CacheTracker
 from pace.commands._helpers import cached_call, read_json
+from pace.commands.plan import plan_range
 from pace.dates import parse_date
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, NO_CACHE_OPT, RAW_OPT, shape_args
@@ -16,6 +19,8 @@ app = typer.Typer(no_args_is_help=True, help="Structured workouts: list, show, p
 
 _LIST_TTL = 600
 _SHOW_TTL = 86400
+_CALENDAR_TTL = 300
+_MAX_CALENDAR_MONTHS = 12
 WORKOUT_LIST_FIELDS: tuple[str, ...] = (
     "workoutId", "workoutName", "sportType.sportTypeKey", "estimatedDurationInSecs",
     "estimatedDistanceInMeters", "updatedDate",
@@ -67,6 +72,50 @@ def show(workout_id: int = typer.Argument(..., metavar="WORKOUT_ID"),
         return Result(shaped, tracker.report(), report)
 
     run(cmd, {"workout_id": workout_id, **echo}, work)
+
+
+def _months(start: date, end: date) -> list[tuple[int, int]]:
+    out, (y, m) = [], (start.year, start.month)
+    while (y, m) <= (end.year, end.month):
+        out.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+@app.command("calendar")
+def calendar(from_: str | None = typer.Option(None, "--from", help="Range start; default today - --past."),
+             to: str | None = typer.Option(None, "--to", help="Range end; default today + --ahead."),
+             past: int = typer.Option(0, "--past", help="Days before today when --from is not given."),
+             ahead: int = typer.Option(14, "--ahead", help="Days after today when --to is not given."),
+             no_cache: bool = NO_CACHE_OPT) -> None:
+    """Workouts scheduled on the Garmin calendar in a range (one call per month, at most 12)."""
+    cmd = "workout calendar"
+
+    async def work() -> Result:
+        start, end = plan_range(from_, to, past, ahead, date.today())
+        months = _months(start, end)
+        if len(months) > _MAX_CALENDAR_MONTHS:
+            raise PaceError("bad_args", f"range spans {len(months)} months; at most {_MAX_CALENDAR_MONTHS}")
+        lo, hi = start.isoformat(), end.isoformat()
+        items: dict[Any, dict] = {}
+        cache = Cache()
+        tracker = CacheTracker()
+        try:
+            for y, m in months:
+                # Garmin numbers months from 0, and the month view also lists days of the neighbouring months.
+                view = await cached_call("connectapi", f"/calendar-service/year/{y}/month/{m - 1}", cache=cache,
+                                         ttl=_CALENDAR_TTL, tracker=tracker, refresh=no_cache)
+                for it in (view or {}).get("calendarItems") or []:
+                    if it.get("itemType") == "workout" and lo <= str(it.get("date")) <= hi:
+                        items[it.get("id")] = it
+        finally:
+            cache.close()
+        rows = sorted(({"date": it["date"], "schedule_id": it["id"], "workout_id": it.get("workoutId"),
+                        "title": it.get("title")} for it in items.values()),
+                      key=lambda r: (r["date"], r["schedule_id"]))
+        return Result(rows, tracker.report())
+
+    run(cmd, {"from": from_, "to": to, "past": past, "ahead": ahead}, work)
 
 
 @app.command("push")

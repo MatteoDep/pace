@@ -253,7 +253,7 @@ pace never overwrites or repairs it; the user inspects or moves it.
 
 `pace plan` holds the training plan: blocks and dated sessions.
 It reads and writes one local file, `$PACE_HOME/plan.json`.
-Commands: `plan new`, `show`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`, `push`, `unpush`.
+Commands: `plan new`, `show`, `status`, `meta`, `block add`, `block set`, `block remove`, `add`, `set`, `remove`, `push`, `unpush`.
 Only `plan push` and `plan unpush` call Garmin; `pace schema` marks them `"write": true` and the other mutating ones `"local_write": true`, and describes the store under the top-level `plan` key.
 
 A session has `id` (integer, never reused), `date`, `sport`, `title`, `intensity`, and optionally `purpose`, `block`, `target`, `workout`, `notes`, `status`, `activity_id`.
@@ -292,6 +292,35 @@ Session and block ids keep counting across plans.
 
 Locking, atomic saves and the corrupt-file rule are those of the diary: pace never overwrites an unreadable `plan.json`.
 
+### Plan status
+
+`plan status [--from D] [--to D] [--past N] [--ahead N] [--no-effort] [--no-cache]` is a read command; it changes no file.
+The range rule is the one of `plan show`, with `--past` 7 and `--ahead` 7 by default.
+Activities are read with `get_activities_by_date` for `from` to `min(to, today)` (cache 10 min), and not at all when `from` is after today.
+
+`data = {"days", "totals", "intensity_planned_s", "intensity_missing"}`.
+Each day `{"date", "sessions", "unplanned"}`; days with neither are omitted.
+A session entry is `{"id", "title", "sport", "intensity", "status", "target", "stale", "actual"}`.
+`actual` is null or `{"activity_id", "type", "duration_s", "distance_m", "elevation_m", "avg_pace_s_per_km", "avg_hr", "hr_zones_s", "rpe", "feel"}`.
+`avg_pace_s_per_km` is `1000 / averageSpeed`, null when the speed is 0.
+`hr_zones_s` holds the seconds in Garmin's five watch zones (null entries kept); `duration_s` is the moving time when above 0, else the elapsed time.
+An `unplanned` entry is an activity no session took: `{"activity_id", "type", "sport", "duration_s", "distance_m", "avg_hr", "hr_zones_s", "rpe", "feel"}`.
+
+Each activity is used at most once, matched in this order:
+1. A session's manual `activity_id` wins and never falls back; if the activity is not in the fetched rows the session is `done` with only `activity_id` set in `actual`.
+2. A session with a pushed workout takes the activity whose `workoutId` equals its `garmin.workout_id`, on any date in the range.
+3. Remaining pairs on the same local date and the same sport family (`pace/sports.py`: treadmill and trail runs count as running, e-bikes as cycling) are taken closest first, by duration difference to the target, else distance difference, else 0, ties broken by session id, start time and activity id.
+
+A matched session is `modified` when a duration or distance target differs from the actual by more than 20 % (`MODIFIED_TOLERANCE`; a missing actual value does not count), else `done`.
+An unmatched session keeps a stored `done` or `skipped`; otherwise `rest` for intensity `rest`, `unconfirmed` (strength, mobility, other) or `missed` (the rest) when its date is before today, else the stored `planned` or `pushed`.
+
+`totals` maps each sport to `{"planned": {"duration_s", "distance_m"}, "actual": {...}}`.
+Planned sums every session in the range except `skipped` and intensity `rest`; actual sums every activity in the range, matched or not, by sport family.
+`intensity_planned_s` is the planned seconds per intensity over the same sessions, and `intensity_missing` counts those without a duration target.
+
+RPE and feel are read with `get_activity` for every activity in the range: one Garmin call per activity, cached one day under the same key as `activity show`, so a long range is slow and counts against the rate limit.
+`--no-effort` skips them and leaves `rpe` and `feel` null.
+
 ### Push and unpush
 
 `plan push ID... [--force] [--dry-run]` uploads each session's workout and schedules it on the session date.
@@ -326,6 +355,14 @@ A `network` or `internal` error on the upload is ambiguous, so its hint says to 
 `--dry-run` takes no lock, makes no network call and changes no file; `data.dry_run` is true and each result lists the steps it would run with their exact payloads (the schedule path shows `{workout_id}` for the id the upload would return).
 
 Upload drops the cached workout list; schedule and delete also drop every cached calendar read (`connectapi:/calendar-service/`), as do `workout schedule` and `workout delete`.
+
+### Workout calendar
+
+`workout calendar [--from D] [--to D] [--past N] [--ahead N] [--no-cache]` is a read command listing the workouts scheduled on the Garmin calendar; the default range is today to 14 days ahead.
+`data` is `[{"date", "schedule_id", "workout_id", "title"}]` sorted by date and schedule id.
+It makes one cached call (5 min) to `GET /calendar-service/year/{Y}/month/{M}` per calendar month touching the range, with `M` counted from 0; more than 12 months is `bad_args`.
+The month view also returns days of the neighbouring months, so items are kept only when `itemType` is `workout` and the date is in the range, and are deduplicated by `id`.
+A 400 from Garmin surfaces as `rejected`.
 
 ## Keeping this file honest
 

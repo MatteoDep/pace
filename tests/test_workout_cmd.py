@@ -160,3 +160,28 @@ def test_schedule_and_delete_drop_the_calendar_cache(fake_api, args) -> None:
     cache = Cache()
     assert cache.stats()["entries"] == 0
     cache.close()
+
+
+def _item(id_, day, type_="workout", wid=1):
+    return {"id": id_, "itemType": type_, "date": day, "title": f"t{id_}", "workoutId": wid}
+
+
+def test_calendar_months_filter_and_dedupe(fake_api) -> None:
+    fake_api["resp"] = {"calendarItems": [
+        _item(5, "2026-12-21"), _item(3, "2026-12-20"), _item(3, "2026-12-20"),
+        _item(4, "2026-12-22", type_="activity"), _item(6, "2026-11-30"), _item(7, "2027-01-10"),
+        _item(8, "2027-01-11"),
+    ]}
+    res = runner.invoke(app, ["calendar", "--from", "2026-12-20", "--to", "2027-01-10"])
+    doc = _doc(res)
+    assert res.exit_code == 0 and doc["ok"], doc
+    assert [c[1] for c in fake_api["calls"]] == [("/calendar-service/year/2026/month/11",),
+                                                 ("/calendar-service/year/2027/month/0",)]
+    assert [(c["date"], c["schedule_id"]) for c in doc["data"]] == [("2026-12-20", 3), ("2026-12-21", 5),
+                                                                    ("2027-01-10", 7)]
+    assert set(doc["data"][0]) == {"date", "schedule_id", "workout_id", "title"}
+
+
+def test_calendar_too_many_months(fake_api) -> None:
+    doc = _doc(runner.invoke(app, ["calendar", "--from", "2025-01-01", "--to", "2026-06-01"]))
+    assert not doc["ok"] and doc["error"]["code"] == "bad_args" and fake_api["calls"] == []

@@ -5,10 +5,13 @@ from typing import Any
 
 import typer
 
-from pace import plan, planpush
-from pace.commands._helpers import read_json
+from pace import matching, plan, planpush
+from pace.cache import Cache, CacheTracker
+from pace.commands._helpers import cached_call, read_json
 from pace.dates import parse_date
+from pace.effort import with_effort
 from pace.envelope import PaceError, Result, run
+from pace.factory import NO_CACHE_OPT
 from pace.workout import parse_distance, parse_duration
 from pace.writes import DRY_RUN_OPT
 
@@ -19,6 +22,8 @@ block_app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, pretty_exce
 app.add_typer(block_app, name="block")
 
 _NONE_HELP = " `none` clears it."
+_ACTIVITIES_TTL = 600
+_ACTIVITY_TTL = 86400  # same key and ttl as `activity show`
 
 
 def plan_range(from_: str | date | None, to: str | date | None, past: int, ahead: int, today: date) -> tuple[date, date]:
@@ -80,6 +85,40 @@ def show(from_: str | None = typer.Option(None, "--from", help="Range start; def
         return Result({"plan": data["plan"], "blocks": data["blocks"], "sessions": plan.sessions_in(data, start, end)})
 
     run("plan show", {"from": from_, "to": to, "past": past, "ahead": ahead}, work)
+
+
+@app.command("status")
+def status(from_: str | None = typer.Option(None, "--from", help="Range start; default today - --past."),
+           to: str | None = typer.Option(None, "--to", help="Range end; default today + --ahead."),
+           past: int = typer.Option(7, "--past", help="Days before today when --from is not given."),
+           ahead: int = typer.Option(7, "--ahead", help="Days after today when --to is not given."),
+           no_effort: bool = typer.Option(False, "--no-effort",
+                                          help="Skip RPE and feel: they cost one Garmin call per activity (cached one day)."),
+           no_cache: bool = NO_CACHE_OPT) -> None:
+    """Planned vs done for a range: sessions matched to Garmin activities, unplanned activities, totals."""
+    async def work() -> Result:
+        today = date.today()
+        start, end = plan_range(from_, to, past, ahead, today)
+        sessions = plan.sessions_in(plan.load(), start, end)
+        cache = Cache()
+        tracker = CacheTracker()
+        try:
+            rows: list[dict] = []
+            if start <= today:
+                rows = await cached_call("get_activities_by_date", start.isoformat(), min(end, today).isoformat(),
+                                         None, cache=cache, ttl=_ACTIVITIES_TTL, tracker=tracker, refresh=no_cache)
+                rows = [a for a in rows or [] if a.get("activityId") is not None]
+            effort: dict[int, dict] = {}
+            if not no_effort:
+                for a in rows:
+                    full = with_effort(await cached_call("get_activity", a["activityId"], cache=cache,
+                                                         ttl=_ACTIVITY_TTL, tracker=tracker, refresh=no_cache))
+                    effort[a["activityId"]] = {"rpe": full.get("rpe"), "feel": full.get("feel")}
+        finally:
+            cache.close()
+        return Result(matching.match(sessions, rows, today=today, effort=effort), tracker.report())
+
+    run("plan status", {"from": from_, "to": to, "past": past, "ahead": ahead, "no_effort": no_effort}, work)
 
 
 @app.command("meta")

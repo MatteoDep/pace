@@ -133,3 +133,51 @@ def test_bad_session_is_bad_args_exit_2() -> None:
     assert code == 2 and doc["error"]["code"] == "bad_args"
     code, doc = _invoke("add", "-", input="not json")
     assert code == 2 and doc["error"]["code"] == "bad_args"
+
+
+@pytest.fixture
+def status_api(monkeypatch):
+    state = {"calls": [], "rows": []}
+
+    async def safe_call(method, *args, **kwargs):
+        state["calls"].append((method, args, kwargs))
+        if method == "get_activities_by_date":
+            return True, state["rows"], None
+        if method == "get_activity":
+            return True, {"activityId": args[0], "summaryDTO": {"directWorkoutRpe": 60, "directWorkoutFeel": 75}}, None
+        raise AssertionError(method)
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    return state
+
+
+def _row(i, day):
+    return {"activityId": i, "activityType": {"typeKey": "running"}, "startTimeLocal": f"{day} 07:00:00",
+            "duration": 3000.0, "movingDuration": 3000.0, "distance": 10000.0}
+
+
+def _methods(state):
+    return [c[0] for c in state["calls"]]
+
+
+def test_status_clips_to_today_and_fetches_effort(status_api) -> None:
+    today = date.today()
+    status_api["rows"] = [_row(10, today.isoformat()), _row(11, today.isoformat())]
+    doc = _run("status", "--past", "3", "--ahead", "5")
+    first = status_api["calls"][0]
+    assert first == ("get_activities_by_date", ((today - timedelta(days=3)).isoformat(), today.isoformat(), None), {})
+    assert _methods(status_api).count("get_activity") == 2
+    un = doc["data"]["days"][0]["unplanned"]
+    assert [u["activity_id"] for u in un] == [10, 11] and un[0]["rpe"] is not None
+    assert doc["cache"] is not None
+
+
+def test_status_no_effort_and_future_range(status_api) -> None:
+    today = date.today()
+    status_api["rows"] = [_row(10, today.isoformat())]
+    doc = _run("status", "--past", "0", "--ahead", "0", "--no-effort")
+    assert _methods(status_api) == ["get_activities_by_date"]
+    assert doc["data"]["days"][0]["unplanned"][0]["rpe"] is None
+    status_api["calls"].clear()
+    doc = _run("status", "--from", (today + timedelta(days=2)).isoformat(), "--to", (today + timedelta(days=5)).isoformat())
+    assert status_api["calls"] == [] and doc["data"]["days"] == []

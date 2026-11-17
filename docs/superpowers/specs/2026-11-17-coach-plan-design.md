@@ -420,6 +420,18 @@ Run reviews (section 5B) and workout DSL HR targets use pace's zones once a curr
 Storage: `$PACE_HOME/zones.json`, same store rules as the diary and plan.
 This section is built as coach plan 5, after plan 2.
 
+## Implementation notes (post-hoc)
+
+Where the shipped plan (section 2) departs from, or pins down, the design above:
+
+- Stored `status` also has `done`, set by hand for sessions Garmin does not record; `unconfirmed` and `rest` are derived by `plan status`, next to `done`, `modified` and `missed`.
+- A push records a `pushed_as` snapshot (date and workout as pushed); `stale` is derived from it.
+- `plan show` and `plan status` take `--past` and `--ahead` (days) instead of `--days`; `--from` and `--to` win when given.
+- Pushing an already pushed, unchanged session is skipped unless `--force`; sessions dated before today are never pushed, re-pushed or unpushed.
+- `plan show --archived` is not built: archives are plain JSON files under `$PACE_HOME/plans/`.
+- E-bike activity types count as cycling.
+- `plan status` matches in three steps (manual link, workout id, closest pairing) and reads RPE and feel per activity; `--no-effort` skips that.
+
 ## Left to the builder
 
 - Flag spelling, sub-command grouping details, exact JSON field names beyond those fixed above.

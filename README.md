@@ -48,6 +48,8 @@ pace diary add --kind feedback --ref activity:<id> "felt heavy, legs tired"
 pace plan add sessions.json
 pace plan show --from 2026-11-20 --to 2026-11-30
 pace plan set 3 --duration 50m --distance 10km
+pace plan status --past 7 --ahead 0
+pace workout calendar --ahead 14
 ```
 
 To review which shoes are on many activities, avoid one `activity gear` call per activity (the rate limit is 10 calls a minute).
