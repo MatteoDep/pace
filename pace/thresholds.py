@@ -912,6 +912,7 @@ A1_RHO_MAX = -0.6          # usable only if Spearman rho of HR and alpha1 <= thi
 A1_MIN_SIDE = 3            # windows or steps needed on each side of 0.75
 A1_JUDGE_N = 6             # "not monotonic" counts only with >= 6 points ...
 A1_JUDGE_HR_SPAN = 10      # ... spanning >= 10 bpm (controller ruling); else outcome "insufficient_data"
+A1_JUDGE_SIDE = 2          # ... and >= 2 points on each side of 0.75; else outcome "one_sided" (controller ruling)
 A1_LINEAR = (0.5, 1.0)     # near-linear part of the alpha1 decline (Rogers et al. 2020)
 A1_LT2_NOTE = 0.5          # alpha1 0.5: a note only, never LT2
 H4_MIN_POINTS = 60         # 5 min of window centres per side
@@ -965,20 +966,24 @@ def alpha1_gate(points: list[dict]) -> dict:
 
     Usable only if rho <= -0.6 and >= 3 points on each side of 0.75; "not monotonic" takes precedence over
     "one-sided" as the outcome. rho is None with fewer than 2 points (then only "one-sided" applies).
-    A failed rho counts as "not_monotonic" (toward the H4 streak) only with >= 6 points spanning >= 10 bpm;
-    otherwise the outcome is "insufficient_data", which leaves the streak alone (controller ruling).
+    A failed rho counts as "not_monotonic" (toward the H4 streak) only with >= 6 points spanning >= 10 bpm and
+    >= 2 points on each side of 0.75 (controller rulings); with fewer points or a narrower span the outcome is
+    "insufficient_data", with points (almost) only on one side "one_sided"; neither touches the streak.
     """
     above = sum(p["alpha1"] > A1_THRESHOLD for p in points)
     below = sum(p["alpha1"] < A1_THRESHOLD for p in points)
     rho = spearman([p["hr"] for p in points], [p["alpha1"] for p in points]) if len(points) >= 2 else None
     reasons = []
-    judged = False
+    judged = enough = False
     if rho is not None and rho > A1_RHO_MAX:
         hrs = [p["hr"] for p in points]
-        judged = len(points) >= A1_JUDGE_N and max(hrs) - min(hrs) >= A1_JUDGE_HR_SPAN
-        reasons.append(f"not monotonic, rho = {rho:.2f}" if judged else
-                       f"too few points to judge monotonicity ({len(points)}, HR span {max(hrs) - min(hrs):.0f} bpm; "
-                       f"need {A1_JUDGE_N} spanning {A1_JUDGE_HR_SPAN} bpm)")
+        enough = len(points) >= A1_JUDGE_N and max(hrs) - min(hrs) >= A1_JUDGE_HR_SPAN
+        judged = enough and above >= A1_JUDGE_SIDE and below >= A1_JUDGE_SIDE
+        if judged:
+            reasons.append(f"not monotonic, rho = {rho:.2f}")
+        elif not enough:
+            reasons.append(f"too few points to judge monotonicity ({len(points)}, HR span "
+                           f"{max(hrs) - min(hrs):.0f} bpm; need {A1_JUDGE_N} spanning {A1_JUDGE_HR_SPAN} bpm)")
     if above < A1_MIN_SIDE or below < A1_MIN_SIDE:
         reasons.append("one-sided")
     if not reasons:
@@ -986,7 +991,7 @@ def alpha1_gate(points: list[dict]) -> dict:
     elif judged:
         outcome = "not_monotonic"
     else:
-        outcome = "insufficient_data" if rho is not None and rho > A1_RHO_MAX else "one_sided"
+        outcome = "insufficient_data" if rho is not None and rho > A1_RHO_MAX and not enough else "one_sided"
     return {"usable": not reasons, "outcome": outcome, "rho": rho, "reasons": reasons, "above": above,
             "below": below, "n": len(points)}
 

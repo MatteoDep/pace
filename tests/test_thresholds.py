@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import random
 import statistics
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -738,14 +739,33 @@ def test_alpha1_gate_outcomes():
     one = th.alpha1_gate(falling[:3])
     assert one["outcome"] == "one_sided" and one["reasons"] == ["one-sided"] and not one["usable"]
     rising = [{"hr": p["hr"], "alpha1": 1.5 - p["alpha1"]} for p in falling]
-    both = th.alpha1_gate(rising[:3] + falling[3:])          # 6 points over 30 bpm, rho 0, all below 0.75
+    mixed = [{"hr": 130 + 6 * k, "alpha1": a} for k, a in enumerate((0.5, 0.6, 0.7, 0.8, 0.9, 0.6))]
+    both = th.alpha1_gate(mixed)                             # 6 points over 30 bpm, 2 above 0.75, rising
     assert both["outcome"] == "not_monotonic" and both["reasons"][1] == "one-sided"
     assert both["reasons"][0].startswith("not monotonic, rho = ")
+    below_only = th.alpha1_gate(rising[:3] + falling[3:])    # rho 0 but all below 0.75: never counts
+    assert below_only["outcome"] == "one_sided" and below_only["reasons"] == ["one-sided"]
+    one_above = th.alpha1_gate([dict(p, alpha1=0.8) if p["alpha1"] == 0.9 else p for p in mixed])
+    assert one_above["outcome"] == "not_monotonic"           # 0.8 twice: still 2 above
+    assert th.alpha1_gate([dict(p, alpha1=0.6) if p["alpha1"] == 0.9 else p for p in mixed])["outcome"] == "one_sided"
     assert th.alpha1_gate([])["outcome"] == "one_sided" and th.alpha1_gate([])["rho"] is None
     few = th.alpha1_gate(rising[:2] + falling[3:])           # 5 points: too few to judge monotonicity
     assert few["outcome"] == "insufficient_data" and few["reasons"][0].startswith("too few points")
     narrow = th.alpha1_gate([{"hr": 140 + k, "alpha1": 0.5 + 0.08 * k} for k in range(7)])   # 6 bpm span
     assert narrow["outcome"] == "insufficient_data"
+
+
+def test_h4_noisy_steady_easy_run_is_one_sided():
+    rng = random.Random(11)
+    ws = [{"alpha1": 0.80 + 0.4 * rng.random(), "hr": 130 + 12 * k / 399 + rng.gauss(0, 1), "speed": 2.8,
+           "cadence": 172, "artifact_share": 0.01, "beats": 300} for k in range(400)]
+    r = th.alpha1_lt1([{"id": 8, "windows": ws, "dropped_coupling": 0}])["runs"][0]
+    assert r["windows"] == 400 and r["outcome"] == "one_sided" and r["reasons"] == ["one-sided"]
+    assert r["notes"][0].startswith("alpha1 above 0.75 up to ")
+    data = copy.deepcopy(zones.EMPTY)
+    zones.record_alpha1_outcome(data, "not_monotonic", day=date(2026, 11, 16), activity=7)
+    zones.record_alpha1_outcome(data, r["outcome"], day=date(2026, 11, 17), activity=8)
+    assert data["h4"]["streak"] == 1 and data["h4"]["unreliable"] is False
 
 
 def test_h4_three_window_rising_run_does_not_touch_the_streak():
