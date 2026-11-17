@@ -744,7 +744,8 @@ def test_alpha1_gate_outcomes():
     assert both["outcome"] == "not_monotonic" and both["reasons"][1] == "one-sided"
     assert both["reasons"][0].startswith("not monotonic, rho = ")
     below_only = th.alpha1_gate(rising[:3] + falling[3:])    # rho 0 but all below 0.75: never counts
-    assert below_only["outcome"] == "one_sided" and below_only["reasons"] == ["one-sided"]
+    assert below_only["outcome"] == "one_sided" and below_only["reasons"][1] == "one-sided"
+    assert below_only["reasons"][0].startswith("mostly one-sided: rho = 0.00 not judged (0 points above")
     one_above = th.alpha1_gate([dict(p, alpha1=0.8) if p["alpha1"] == 0.9 else p for p in mixed])
     assert one_above["outcome"] == "not_monotonic"           # 0.8 twice: still 2 above
     assert th.alpha1_gate([dict(p, alpha1=0.6) if p["alpha1"] == 0.9 else p for p in mixed])["outcome"] == "one_sided"
@@ -760,12 +761,23 @@ def test_h4_noisy_steady_easy_run_is_one_sided():
     ws = [{"alpha1": 0.80 + 0.4 * rng.random(), "hr": 130 + 12 * k / 399 + rng.gauss(0, 1), "speed": 2.8,
            "cadence": 172, "artifact_share": 0.01, "beats": 300} for k in range(400)]
     r = th.alpha1_lt1([{"id": 8, "windows": ws, "dropped_coupling": 0}])["runs"][0]
-    assert r["windows"] == 400 and r["outcome"] == "one_sided" and r["reasons"] == ["one-sided"]
+    assert r["windows"] == 400 and r["outcome"] == "one_sided" and r["reasons"][-1] == "one-sided"
     assert r["notes"][0].startswith("alpha1 above 0.75 up to ")
     data = copy.deepcopy(zones.EMPTY)
     zones.record_alpha1_outcome(data, "not_monotonic", day=date(2026, 11, 16), activity=7)
     zones.record_alpha1_outcome(data, r["outcome"], day=date(2026, 11, 17), activity=8)
     assert data["h4"]["streak"] == 1 and data["h4"]["unreliable"] is False
+
+
+@pytest.mark.parametrize(("n_below", "outcome"), [(2, "one_sided"), (30, "one_sided"), (40, "not_monotonic")])
+def test_alpha1_gate_side_minimum_scales_with_points(n_below, outcome):
+    rng = random.Random(5)
+    below = set(rng.sample(range(400), n_below))
+    pts = [{"hr": 130 + 12 * k / 399, "alpha1": 0.6 if k in below else 0.8 + 0.4 * rng.random()} for k in range(400)]
+    g = th.alpha1_gate(pts)
+    assert g["rho"] > -0.6 and g["below"] == n_below and g["outcome"] == outcome and not g["usable"]
+    if outcome == "one_sided":
+        assert g["reasons"][0].endswith("need 40 each)")
 
 
 def test_h4_three_window_rising_run_does_not_touch_the_streak():
