@@ -7,7 +7,7 @@ import statistics
 
 import pytest
 
-from pace import hrv
+from pace import hrv, rules
 
 SERIES = 50  # seeded series per statistical case (methods doc 14.2 test strategy)
 N = 300
@@ -255,7 +255,7 @@ def test_windows_skip_gap_stop_walking_and_warmup() -> None:
     beats = _beats(lambda t: 0.4)
     beats[1600]["rr_s"] = 2.5  # raw RR > 2 s is a gap
     assert hrv.windows(beats)["windows"] == []
-    assert hrv.windows(_beats(lambda t: 0.4, cadence=130))["windows"] == []
+    assert hrv.windows(_beats(lambda t: 0.4, cadence=rules.MIN_CADENCE - 10))["windows"] == []  # section 1 walking
     assert hrv.windows(_beats(lambda t: 0.4, until=700))["windows"] == []  # no window fits in 600..4500 s
 
 
@@ -280,7 +280,29 @@ def test_windows_speed_rules() -> None:
 
 
 def test_windows_hill_is_not_flat() -> None:
+    # methods doc section 1 (grade): net grade above MAX_GRADE
     beats = _beats(lambda t: 0.4)
     for b in beats:
-        b["alt"] = 10.0 + 0.03 * b["dist"]  # 3% grade
+        b["alt"] = 10.0 + 1.5 * rules.MAX_GRADE * b["dist"]
+    assert hrv.windows(beats)["windows"] == []
+
+
+@pytest.mark.parametrize("noise", ["uniform", "gauss"])
+def test_windows_flat_run_with_altitude_noise_is_flat(noise: str) -> None:
+    # methods doc section 1 (grade): GPS altitude noise on a flat road is not ascent (hysteresis)
+    rng = random.Random(11)
+    beats = _beats(lambda t: 0.4)
+    for b in beats:
+        b["alt"] = 10.0 + (rng.uniform(-0.2, 0.2) if noise == "uniform" else rng.gauss(0, 0.3))
+    assert len(hrv.windows(beats)["windows"]) == 1
+
+
+def test_windows_gentle_climb_with_noise_is_not_flat() -> None:
+    # methods doc section 1: grade under MAX_GRADE but ascent 1.5 x MAX_ASCENT_M_PER_KM is still a climb
+    rng = random.Random(12)
+    beats = _beats(lambda t: 0.4)
+    slope = 1.5 * rules.MAX_ASCENT_M_PER_KM / 1000
+    assert slope < rules.MAX_GRADE
+    for b in beats:
+        b["alt"] = 10.0 + slope * b["dist"] + rng.gauss(0, 0.3)
     assert hrv.windows(beats)["windows"] == []

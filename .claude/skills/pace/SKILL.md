@@ -148,7 +148,7 @@ Read the thresholds section of `coaching.md` first.
 When an estimate is due: `pace zones estimate --save` (10-minute timeout), then show the candidate next to the current values and ask whether to accept it.
 If the result has `save_refused` or a non-empty `deferred` (a partial estimate), say so and what it means, and do not offer to accept it.
 A field test is due per threshold: plan it with the user; `pace zones test-workout drift|time_trial|ramp` returns the workout DSL; put `data.workout` in a session (`pace plan add -`, or `pace plan set ID --workout -` with the DSL on stdin) and push it on yes.
-After the test run: `pace zones analyze <activity id> --test drift|time_trial|ramp --save`; a refusal carries the verdict and the next test to plan.
+After the test run: `pace zones analyze <activity id> --test drift|time_trial|ramp --save`; a refused save comes back as `save_refused` (with `saved: null`), carrying the verdict and the next test to plan.
 For LT1 on this athlete, prefer the drift test (F1): DFA alpha1 did not fall with intensity on their ramp, so a ramp (F3) only when `pace zones show` does not mark alpha1 unreliable and the user wants it.
 Lab values: record them as reported with `pace zones add --source lab --date <date> --lt1-hr ... --lt2-hr ... --method <criterion>`, then state the new zones.
 A record becomes current only with `pace zones accept ID [--only lt1|lt2]` on the user's yes (a lab record is current on entry unless older).

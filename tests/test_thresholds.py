@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from pace import hrv, zones
+from pace import hrv, rules, zones
 from pace import thresholds as th
 from pace.workout import build_workout
 
@@ -78,13 +78,15 @@ def _slow(n_slow):
 
 
 def test_moving_samples_stop_of_12_s_is_removed():
-    kept, excluded = th.moving_samples(_slow(12))
-    assert excluded == 12 and len(kept) == 28
-    assert all(not (10 <= r["t"] < 22) for r in kept)
+    # methods doc section 1: a slow stretch longer than STOP_SLOW_S is a stop
+    n = rules.STOP_SLOW_S + 2
+    kept, excluded = th.moving_samples(_slow(n))
+    assert excluded == n and len(kept) == 40 - n
+    assert all(not (10 <= r["t"] < 10 + n) for r in kept)
 
 
 def test_moving_samples_9_s_is_not_a_stop():
-    kept, excluded = th.moving_samples(_slow(9))
+    kept, excluded = th.moving_samples(_slow(rules.STOP_SLOW_S - 1))    # methods doc section 1
     assert excluded == 0 and len(kept) == 40
 
 
@@ -170,8 +172,8 @@ def test_h1_warmup_hills_walking_and_stops_excluded():
     hot = table(900, effort(100, 280, 6.0))
     hill = table(1400, effort(600, 780, 5.0))
     for r in hill:
-        r["alt"] = r["t"] * 0.5                       # 0.5 m/s climb on 2-5 m/s: grade > 2%
-    walk = table(1400, effort(600, 780, 5.0), cadence=120)
+        r["alt"] = r["dist"] * 1.5 * rules.MAX_GRADE  # methods doc section 1: grade above the flat limit
+    walk = table(1400, effort(600, 780, 5.0), cadence=rules.MIN_CADENCE - 20)   # section 1: walking
     out = th.critical_speed([run(1, hot), run(2, hill), run(3, walk)], prs=None)
     assert out["status"] == "insufficient_data"
     used = {x["id"]: x["used"] for x in out["runs"]}
@@ -339,8 +341,9 @@ def test_h5_segment_drift_and_label():
 
 
 def test_h5_segment_40_min_rejected():
-    out = th.drift_segment(run(2, steady_table(2400)), fit_records=None)
-    assert out["id"] == 2 and out["rejected"] == "segment shorter than 2700 s"
+    # methods doc section 7: a segment shorter than H5_MIN_S is rejected
+    out = th.drift_segment(run(2, steady_table(rules.H5_MIN_S - 300)), fit_records=None)
+    assert out["id"] == 2 and out["rejected"] == f"segment shorter than {rules.H5_MIN_S} s"
 
 
 def test_h5_segment_hot_fit_temperature_matched_on_elapsed_t():
@@ -366,12 +369,43 @@ def test_h5_segment_stop_excluded_and_reported():
     assert "rejected" in rej and rej["excluded_s"] == 20
 
 
+def noisy(tbl, sigma=0.3, seed=7, slope=0.0):
+    """GPS-like altitude: `slope` m per m of distance plus Gaussian noise of `sigma` m on every sample."""
+    rng = random.Random(seed)
+    for r in tbl:
+        r["alt"] = 100.0 + slope * r["dist"] + rng.gauss(0, sigma)
+    return tbl
+
+
 def test_h5_segment_hilly_rejected():
-    tbl = table(3900, lambda t: 2.0 if t <= 900 else 3.0)
-    for r in tbl:   # grade 1.5% (flat enough per window) but 15 m of ascent per km (> 10)
-        r["alt"] = r["dist"] * 0.015
+    # methods doc section 1/7: grade under MAX_GRADE per window but 1.5 x MAX_ASCENT_M_PER_KM of ascent
+    tbl = noisy(table(3900, lambda t: 2.0 if t <= 900 else 3.0), slope=1.5 * rules.MAX_ASCENT_M_PER_KM / 1000)
     out = th.drift_segment(run(6, tbl), fit_records=None)
     assert "rejected" in out
+
+
+def test_noisy_flat_altitude_is_flat_everywhere():
+    # methods doc section 1 (grade): altitude noise (sigma 0.3 m, +/-0.2 m) on a flat road is not ascent
+    ev = th.drift_segment(run(7, noisy(steady_table(3000))), fit_records=None)
+    assert "rejected" not in ev and ev["length_s"] == 3000
+    rng = random.Random(3)
+    tbl = steady_table(3000)
+    for r in tbl:
+        r["alt"] = 50.0 + rng.uniform(-0.2, 0.2)
+    assert "rejected" not in th.drift_segment(run(8, tbl), fit_records=None)
+    cs = th.critical_speed([run(r["id"], noisy(r["table"], seed=r["id"])) for r in h1_runs()], prs=None)
+    assert cs["status"] == "ok" and cs["cs_mps"] == pytest.approx(4.0, abs=1e-6)
+    f1 = th.drift(noisy(f1_table(3.20, 140, 3.18, 146)), laps=F1_LAPS, treadmill=False)
+    assert f1["status"] == "ok" and f1["verdict"] == "at LT1"
+
+
+def test_noisy_climb_rejects_f1_and_f2():
+    # methods doc sections 8 and 9: total ascent above MAX_ASCENT_M_PER_KM rejects the test
+    slope = 1.5 * rules.MAX_ASCENT_M_PER_KM / 1000
+    f1 = th.drift(noisy(f1_table(3.20, 140, 3.18, 146), slope=slope), laps=F1_LAPS, treadmill=False)
+    assert f1["status"] == "rejected" and th.ASCENT_REASON in f1["reasons"]
+    f2 = th.time_trial(noisy(tt_table(), slope=slope), laps=TT_LAPS)
+    assert f2["status"] == "rejected" and th.ASCENT_REASON in f2["reasons"]
 
 
 def test_h5_segment_wrist():
@@ -469,7 +503,7 @@ def test_f1_below_and_above_retest():
 
 def test_f1_35_min_rejected():
     out = th.drift(f1_table(3.2, 140, 3.18, 146, steady=2100), laps=f1_laps(2100), treadmill=False)
-    assert out["status"] == "rejected" and any("shorter than 2400 s" in r for r in out["reasons"])
+    assert out["status"] == "rejected" and any(f"shorter than {th.F1_MIN_S} s" in r for r in out["reasons"])
 
 
 def test_f1_uneven_pace_not_saveable():
@@ -553,7 +587,9 @@ def test_f2_without_laps_uses_fastest_window():
 def test_f2_stop_rejected_and_reported_and_short_rejected():
     out = th.time_trial(tt_table(spd=lambda t: 2.0 if t <= 900 or t > 2700 else (0.0 if 1700 <= t < 1720 else 4.0)),
                         laps=TT_LAPS)
-    assert out["status"] == "rejected" and out["excluded_s"] == 20 and any("10 s" in r for r in out["reasons"])
+    # methods doc section 9: any stop longer than the section 1 stop duration rejects the trial
+    assert out["status"] == "rejected" and out["excluded_s"] == 20
+    assert any(f"{rules.STOP_SLOW_S} s" in r for r in out["reasons"])
     short = th.time_trial(table(1500, lambda t: 4.0), laps=[lap(0, 1500)])
     assert short["status"] == "rejected"
 
@@ -663,6 +699,18 @@ def test_f2_short_gap_is_low_not_rejected():
     out = th.time_trial(tbl, laps=TT_LAPS)
     assert out["status"] == "ok" and out["confidence"] == "low" and out["excluded_s"] == 8
     assert any("stops" in r for r in out["reasons"]) and out["lt2"]["hr"] == 168
+
+
+def test_f2_without_laps_allows_a_short_stop_and_reports_it():
+    # methods doc sections 1 and 9: a stop up to STOP_SLOW_S is allowed in the trial (reported, confidence low)
+    tbl = [r for r in tt_table() if not 1700 <= r["t"] < 1708]      # an 8 s timestamp gap
+    out = th.time_trial(tbl, laps=[])
+    assert out["status"] == "ok" and out["bounds"] == [900, 2700] and out["excluded_s"] == 8
+    assert out["confidence"] == "low" and any("stops" in r for r in out["reasons"])
+    # a longer stop is never spanned: no 1800 s window remains on either side
+    long_stop = tt_table(spd=lambda t: 2.0 if t <= 900 or t > 2700 else (0.0 if 1700 <= t < 1720 else 4.0))
+    out = th.time_trial(long_stop, laps=[])
+    assert out["status"] == "rejected" or not out["bounds"][0] < 1710 < out["bounds"][1]
 
 
 def test_f2_hr_window_is_relative_to_trial_start():
@@ -949,6 +997,17 @@ def test_f3_observed_ramp_is_unusable(inject_alpha1):
     assert data["h4"]["streak"] == 1
 
 
+def test_f3_refuses_automatic_laps_and_too_few_steps(inject_alpha1):
+    # methods doc 9a: steps come from lap presses; automatic laps (as F1's heuristic) are not steps
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS])
+    auto = [dict(lap(300 * k, 300), distance=1000.0) for k in range(10)]
+    out = th.ramp(beats, laps=auto, treadmill=False)
+    assert out["status"] == "rejected" and out["outcome"] is None and "automatic" in out["reasons"][0]
+    two = th.ramp(beats, laps=laps[:3] + laps[-1:], treadmill=False)   # warm-up, 2 steps, cool-down
+    assert two["status"] == "rejected" and "3 steps" in two["reasons"][0] and two["steps"] == []
+
+
 def test_f3_needs_laps_and_skips_gaps(inject_alpha1):
     inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
     beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS])
@@ -1039,6 +1098,20 @@ def test_select_history_effort_ranking_and_skips():
     assert {s["id"] for s in out["skipped"]} == {20, 21, 22, 23, 24}
     assert all(s["reason"] for s in out["skipped"])
     assert th.select_history(rows, exclude={1, 2})["effort"] == [4, 3, 6, 5, 7, 8]
+
+
+def test_selection_gain_and_duration_limits_follow_the_rules():
+    # methods doc 14.7: list-row elevation gain per km (history and drift picks) and the drift duration window
+    km = 3.0 * 3000 / 1000
+    rows = [srow(1, 3, gain=km * rules.SEL_MAX_GAIN), srow(2, 3, gain=km * rules.SEL_MAX_GAIN + 1)]
+    assert {s["id"] for s in th.select_history(rows)["skipped"]} == {2}
+    lo, hi = rules.H5_RUN_S
+    drift = [srow(11, 3, dur=lo, gain=3.0 * lo / 1000 * rules.DRIFT_MAX_GAIN),
+             srow(12, 3, dur=lo, gain=3.0 * lo / 1000 * rules.DRIFT_MAX_GAIN + 1),
+             srow(13, 3, dur=lo - 1), srow(14, 3, dur=hi), srow(15, 3, dur=hi + 1)]
+    assert th.select_drift(drift, ref_hr=None)["picks"] == [11, 14]
+    skipped = {s["id"]: s["reason"] for s in th.select_drift(drift, ref_hr=None)["skipped"]}
+    assert set(skipped) == {12, 13, 15} and f"{rules.DRIFT_MAX_GAIN:g} m per km" in skipped[12]
 
 
 def test_select_history_steady_nearest_rank_percentiles():

@@ -8,22 +8,20 @@ import bisect
 import math
 from typing import Any
 
+from pace.rules import GAP_RR_S, MAX_ASCENT_M_PER_KM, MAX_GRADE, MIN_CADENCE, WARMUP_S, ascent_m
+
 MEDIAN_HALF = 10           # 21-beat local median
 BAND = 0.20                # valid if within 20% of the local median
-GAP_RR_S = 2.0             # a raw RR above this is a signal dropout: a gap, never corrected
 LAMBDA = 500.0             # smoothness priors (Tarvainen et al. 2002)
 MAX_ARTIFACT_SHARE = 0.05
 MIN_BEATS = 200
-WINDOW_FROM_S = 600        # warm-up excluded
+WINDOW_FROM_S = WARMUP_S   # warm-up excluded
 WINDOW_TO_S = 4500         # late-session fatigue excluded
-MIN_CADENCE = 140          # steps/min; below is walking (section 1)
 COUPLING_BAND = 0.05
 SPEED_BAND = 0.10
 SUB_WINDOW_S = 30
 PRIOR_MEAN_S = 120
 PRIOR_SURGE_S = 180
-FLAT_GRADE = 0.02
-MAX_ASCENT_M_PER_KM = 10.0
 
 
 def _medians(rr: list[float]) -> list[float | None]:
@@ -175,10 +173,10 @@ def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5
     """Qualifying alpha1 windows of a training run (methods doc 6).
 
     `aligned` is `pace.fit.aligned_rr` output. Windows of `size_s` beat seconds every `step_s`, lying inside
-    600..4500 s. Checks in order: gap or stop, walking cadence (< 140), not flat, unsteady speed in or before
-    the window; then coupling risk (counted in `dropped_coupling` only for windows that passed the checks
-    before it); then more than 5% artifacts or fewer than 200 corrected beats. "Outdoor" is a run-level check
-    left to the caller.
+    WINDOW_FROM_S..WINDOW_TO_S. Checks in order: gap or stop, walking cadence (< MIN_CADENCE), not flat,
+    unsteady speed in or before the window; then coupling risk (counted in `dropped_coupling` only for windows
+    that passed the checks before it); then more than 5% artifacts or fewer than 200 corrected beats. "Outdoor"
+    is a run-level check left to the caller.
     """
     result: dict[str, Any] = {"windows": [], "dropped_coupling": 0}
     if not aligned:
@@ -253,9 +251,9 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
 
 
 def _flat(beats: list[dict[str, Any]], dist_m: float) -> bool:
-    """Section 1: abs(elevation change) / distance <= 0.02 and total ascent <= 10 m per km."""
+    """Section 1: abs(elevation change) / distance <= MAX_GRADE and total ascent (with hysteresis,
+    `rules.ascent_m`) <= MAX_ASCENT_M_PER_KM."""
     alts = [b["alt"] for b in beats]
     if any(a is None for a in alts):
         return False
-    ascent = sum(max(0.0, b - a) for a, b in zip(alts, alts[1:], strict=False))
-    return abs(alts[-1] - alts[0]) / dist_m <= FLAT_GRADE and ascent <= MAX_ASCENT_M_PER_KM * dist_m / 1000
+    return abs(alts[-1] - alts[0]) / dist_m <= MAX_GRADE and ascent_m(alts) <= MAX_ASCENT_M_PER_KM * dist_m / 1000

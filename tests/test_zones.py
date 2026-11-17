@@ -250,6 +250,21 @@ def test_derive_worked_example() -> None:
     assert [(x["zone"], x["hr_min"], x["hr_max"]) for x in z["three_hr"]] == [
         (1, None, 141), (2, 142, 159), (3, 160, None)]
     assert len(z["three_pace"]) == 3
+    assert z["floor_errors"] == []
+
+
+def test_derive_floor_errors() -> None:
+    # methods doc 14.5 validation: floors strictly increasing and zone5Floor < HRmax when known
+    lt1 = {"lt1": {"hr": 142, "pace_s_per_km": None}}
+    lt2 = {"lt2": {"hr": 160, "pace_s_per_km": None}}
+    flat = zones.derive(lt1, lt2, h2=None, hr_max=160)          # top = 0: zone5Floor == zone4Floor == HRmax
+    assert flat["floors"]["zone5Floor"] == 160 and len(flat["floor_errors"]) == 2
+    assert any("increasing" in e and "zone5Floor" in e for e in flat["floor_errors"])
+    assert any("max HR 160" in e for e in flat["floor_errors"])
+    touch = zones.derive(lt1, lt2, h2=None, hr_max=161)         # zone5Floor 161 is not below HRmax 161
+    assert touch["floor_errors"] == ["zone5Floor 161 is not below max HR 161"]
+    assert zones.derive(lt1, lt2, h2=None, hr_max=None)["floor_errors"] == []
+    assert zones.derive(lt1, None, h2=None, hr_max=186)["floor_errors"] == []
 
 
 def test_derive_hrmax_unknown() -> None:
@@ -326,6 +341,15 @@ def test_h4_streak() -> None:
     assert d["h4"]["counted"] == [1, 2, 3, 4, 5]
 
 
+def test_h4_insufficient_data_is_not_counted() -> None:
+    # methods doc 6: an outcome that judged nothing leaves the run free to be judged later
+    d = zones.load()
+    zones.record_alpha1_outcome(d, "insufficient_data", day=TODAY, activity=7)
+    assert d["h4"]["counted"] == [] and d["h4"]["streak"] == 0
+    zones.record_alpha1_outcome(d, "not_monotonic", day=TODAY, activity=7)
+    assert d["h4"]["counted"] == [7] and d["h4"]["streak"] == 1
+
+
 def test_h4_counted_activity_never_counts_twice() -> None:
     d = zones.load()
     day = date(2026, 11, 1)
@@ -343,7 +367,9 @@ def test_h4_bad_outcome_and_retry() -> None:
     zones.record_alpha1_outcome(d, "not_monotonic", day=TODAY, activity=2)
     zones.reset_h4(d)
     assert d["h4"]["streak"] == 0 and not d["h4"]["unreliable"] and d["h4"]["since"] is None
-    assert d["h4"]["counted"] == [1, 2]
+    assert d["h4"]["counted"] == []      # --retry-h4 judges the runs again
+    zones.record_alpha1_outcome(d, "not_monotonic", day=TODAY, activity=1)
+    assert d["h4"]["streak"] == 1 and d["h4"]["counted"] == [1]
 
 
 # --- due ---

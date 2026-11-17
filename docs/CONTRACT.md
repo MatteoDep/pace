@@ -481,7 +481,7 @@ Writing the zones to the watch (`zones push`) is not available yet and is not de
 
 File shape: `{"records": [...], "current": {"lt1": id|null, "lt2": id|null}, "next_id": N, "estimates": [...], "hr_max": {"bpm", "activity", "date"}|null, "h4": {"streak", "unreliable", "since", "counted"}}`.
 A record is `{"id", "date", "source": "estimate"|"field_test"|"lab", "method", "lt1": {"hr", "pace_s_per_km"}|null, "lt2": {...}|null, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities", "confidence": "low"|"medium"|"high"|null, "notes", "details"}`.
-Paces on the command line are `m:ss` per km and are stored as seconds per km.
+Paces on the command line are `m:ss` per km and are stored as whole seconds per km.
 
 ### Current, accept, remove
 
@@ -495,7 +495,7 @@ A missing id is `not_found` with a hint that names `pace zones show` and never G
 
 ### `zones show`
 
-`data` has `current` (per threshold: `id`, `source`, `date`, `method`, `confidence`), `expired`, `zones` (rule `lt-5z-v1`: `three_hr`, `three_pace`, `floors`, `pace_floors`; pieces are null while their inputs are missing), `records` (newest first, each with `current_for`), `candidates` (records newer than the current one for a threshold they have), `due`, `hr_max`, `h4` (alpha1 memory), `garmin` (the watch's HR zones entry, null when Garmin cannot be read) and `in_sync` (the five derived floors equal the watch's `zone1Floor` to `zone5Floor`; null when either side is missing).
+`data` has `current` (per threshold: `id`, `source`, `date`, `method`, `confidence`), `expired`, `zones` (rule `lt-5z-v1`: `three_hr`, `three_pace`, `floors`, `pace_floors`, pieces null while their inputs are missing; `floor_errors`, empty when the five floors are strictly increasing and `zone5Floor` is below `hr_max` when known), `records` (newest first, each with `current_for`), `candidates` (records newer than the current one for a threshold they have), `due`, `hr_max`, `h4` (alpha1 memory), `garmin` (the watch's HR zones entry, null when Garmin cannot be read) and `in_sync` (the five derived floors equal the watch's `zone1Floor` to `zone5Floor`; null when either side is missing).
 It makes two cached Garmin reads: the activity list and the watch zones (`connectapi /biometric-service/heartRateZones`, 5 minutes).
 `due` is `{"estimate": bool, "field_test": {"lt1": bool, "lt2": bool}, "reasons": [...]}`.
 The list read starts 56 days before the last complete estimate (84 days back when there is none) so that `due` sees the last run before that estimate: a break of 14 days or more that straddles the estimate still counts when 14 days of training follow it.
@@ -516,7 +516,7 @@ The H4 outcomes of the run are merged into the file's alpha1 memory (once per ac
 
 Budget: `--max-calls` is a hard cap on every Garmin call of the run, the 2x extension included.
 Each picked run costs one `get_activity` and one `get_activity_details`, a FIT download one call, and the activity list, personal records and sleep stats a few more; cache hits are free.
-At the cap the remaining reads are not made: they are listed in `deferred` (`{"kind", "id"?, "error"?}`), the methods run on what was read and the estimate is logged with `partial: true`.
+At the cap the remaining reads are not made: they are listed in `deferred` (`{"kind", "id"?, "error"?}`; a FIT read that failed also carries `detail`, its error message, and `hint` when the error has one), the methods run on what was read and the estimate is logged with `partial: true`.
 A `rate_limited` or `network` error stops further calls the same way (the entry carries `error`).
 Other `internal` errors on a FIT download defer that one read; nothing is remembered about the run.
 A FIT file that keeps failing with such a non-parse error therefore keeps every estimate partial until the download succeeds (a known trade-off).
@@ -541,21 +541,26 @@ Only derived JSON is stored, in `$PACE_HOME/fit/<activity id>.json` (RR values, 
 
 Only a parse failure marks `fit_unreadable`; a transient download error does not.
 The reasons appear in the `rejected` list of the alpha1 method.
-`zones estimate --retry-h4` clears the "alpha1 unreliable" mark (two not-monotonic runs or ramps in a row); `no_rr.json` entries are removed by editing the file.
+`zones estimate --retry-h4` clears the "alpha1 unreliable" mark (two not-monotonic runs or ramps in a row) and the list of counted activities, so every run is judged again; `no_rr.json` entries are removed by editing the file.
+An alpha1 outcome of `insufficient_data` changes nothing and does not count the activity.
 
 ### `zones analyze`
 
 `zones analyze ACTIVITY_ID --test drift|time_trial|ramp [--treadmill] [--save] [--no-cache]` analyzes one test run.
 It reads `get_activity`, `get_activity_details` and `get_activity_splits` (cached), plus the FIT file for `ramp` unless it is cached; F1 uses cached FIT data only, for the temperature.
-`data` is the method's analysis (`status`, `reasons`, the result and its inputs) plus `test`, `activity_id`, `date`, `hr_source`, `calls`, `hr_max`, `h4`, `record` and `saved`.
+`data` is the method's analysis (`status`, `reasons`, the result and its inputs) plus `test`, `activity_id`, `date`, `hr_source`, `calls`, `hr_max`, `h4`, `record`, `saved` and `save_refused`.
 A strap run raises `hr_max`; a wrist run never does and is saved with confidence `low`.
 `--test ramp` records the alpha1 gate outcome in the H4 memory on every run, saved or not, once per activity.
 A FIT file that cannot be parsed or whose RR data is rejected is marked in `no_rr.json` and reported as a `rejected` ramp.
-`--save` also stores a `field_test` record (not current until accepted) and refuses with `bad_args`, storing nothing but `hr_max` and the alpha1 memory:
+`--save` also stores a `field_test` record (not current until accepted).
+A refused save is not an error: the result is `ok` with the full analysis, `saved: null` and a `save_refused` message, and nothing but `hr_max` and the alpha1 memory is stored.
+`--save` is refused for:
 - F1 (`drift`): anything but "at LT1" with even pace; the message carries the verdict, the drift and the HR for the next test.
 - F2 (`time_trial`): a rejected test.
 - F3 (`ramp`): `alpha1_unusable` or a ramp not bracketing alpha1 0.75.
 F1 confidence is `medium`, or `low` when the newest F3 record of the last 28 days disagrees by more than 5 bpm; F2 is `low` when the pace faded or stops occurred.
+F2 without laps takes the fastest 1800 s window that spans no stop longer than 10 s; shorter stops are allowed and reported, as with laps.
+F3 takes its steps from lap presses: laps that look automatic (every lap 1100 m or 8 min or shorter, as for F1) or fewer than 3 step laps reject the ramp before the gate.
 
 ### `zones test-workout`, `add`
 

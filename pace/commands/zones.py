@@ -257,7 +257,8 @@ class _Reads:
         except PaceError as err:
             if err.code in STOP_CODES:
                 self.f.max_calls = self.f.calls
-                self._defer({**entry, "error": err.code})
+                self._defer({**entry, "error": err.code,
+                             **({"detail": err.message} if entry["kind"] == "fit" else {})})
                 return None
             if err.code == "not_found" and entry["kind"] == "run":
                 self.skip_one(entry["id"], entry["group"], f"not found on Garmin: {err.message}")
@@ -267,7 +268,8 @@ class _Reads:
                 self.fit_errors.append({"id": entry["id"], "reason": "fit_unreadable", "detail": err.message})
                 return None
             if err.code == "internal" and entry["kind"] == "fit":   # transient download oddity: retry next run
-                self._defer({**entry, "error": err.code})
+                self._defer({**entry, "error": err.code, "detail": err.message,
+                             **({"hint": err.hint} if err.hint else {})})
                 return None
             raise
 
@@ -507,7 +509,7 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
 
     await reads.history([r for r in rows if history_from <= _row_day(r) <= today], exclude=set(), group="history")
     cs, h2 = _history_methods(reads, prs, history_from)
-    extended = len(cs.get("windows") or []) < len(thresholds.H1_WINDOWS) or h2.get("status") != "ok"
+    extended = cs.get("status") != "ok" or h2.get("status") != "ok"   # a rejected H1 fit fails H1 too
     if extended:
         await reads.history([r for r in rows if ext_from <= _row_day(r) < history_from], exclude=set(reads.runs),
                             group="extension")
@@ -829,12 +831,12 @@ def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                 except PaceError as err:
                     refusal = f"not saved: {err.message}"
             hr_max, h4 = data["hr_max"], copy.deepcopy(data["h4"])
+        refused = None
         if save and saved is None:
-            raise _bad(refusal or "not saved",
-                       hint="Nothing was stored except hr_max and the alpha1 memory; run without --save to see the analysis.")
+            refused = f"{refusal or 'not saved'}; nothing was stored except hr_max and the alpha1 memory"
         out = {**analysis, "test": test, "activity_id": activity_id, "date": day.isoformat(),
                "hr_source": "strap" if strap else "wrist", "calls": calls, "hr_max": hr_max, "h4": h4,
-               "record": saved or candidate, "saved": saved}
+               "record": saved or candidate, "saved": saved, "save_refused": refused}
         return Result(out, tracker.report())
 
     run_command("zones analyze", {"activity_id": activity_id, "test": test, "treadmill": treadmill, "save": save}, work)
@@ -855,8 +857,9 @@ def test_workout(kind: str = typer.Argument(..., metavar="KIND", help=f"One of {
     run_command("zones test-workout", {"kind": kind}, work)
 
 
-def _pace_s(text: str | None, flag: str) -> float | None:
-    return None if text is None else float(round(1000.0 / parse_pace(text, flag)))
+def _pace_s(text: str | None, flag: str) -> int | None:
+    """m:ss per km -> whole s/km (R rounding, methods doc 14.5)."""
+    return None if text is None else zones.R(1000.0 / parse_pace(text, flag))
 
 
 def _threshold(hr: int | None, pace: str | None, flag: str) -> dict | None:

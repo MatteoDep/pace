@@ -70,6 +70,8 @@ class FakeFetcher:
         self.calls += 1
         self.log.append(key)
         if key in self.errors:
+            if isinstance(self.errors[key], PaceError):
+                raise self.errors[key]
             if self.errors[key] == "fit_unreadable":
                 raise fit.FitUnreadable(key[1], "injected parse failure")
             raise PaceError(self.errors[key], f"injected {self.errors[key]}")
@@ -234,6 +236,18 @@ def test_weeks_4_reads_12_weeks_and_extends_to_8(stubs):
     assert res["extended"] is True
     assert {k[1] for k in f.log if k[0] == "details"} == {1, 2, 3, 4}
     assert res["methods"]["H1"]["status"] == "insufficient_data"
+
+
+def test_rejected_h1_fit_also_extends(stubs):
+    # methods doc 14.7: three windows but a fit rejected by the H1 gates is still a failed H1
+    rejected = {**CS_SHORT, "windows": [{}, {}, {}], "reasons": ["D' 600 m outside 50..500 m"],
+                "rejected_fit": {"cs_mps": 3.0, "d_prime_m": 600.0}}
+    stubs.setattr(thresholds, "critical_speed", lambda runs, *, prs: copy.deepcopy(rejected))
+    f = FakeFetcher(ext_rows())
+    res, _ = run(f, weeks=4)
+    assert res["extended"] is True
+    assert {k[1] for k in f.log if k[0] == "details"} == {1, 2, 3, 4}
+    assert res["methods"]["H1"]["suggest"] == {"test": "F2"}
 
 
 def test_extension_stays_within_the_cap(stubs):
@@ -487,11 +501,19 @@ def test_internal_download_error_does_not_mark_the_run(stubs):
     res, data = run(f)
     assert fit.no_rr(101) is None
     assert res["summary"]["partial"] is True
-    assert {"kind": "fit", "id": 101, "error": "internal"} in res["deferred"]
+    entry = next(x for x in res["deferred"] if x["kind"] == "fit" and x["id"] == 101)
+    assert entry["error"] == "internal" and entry["detail"] == "injected internal"
     assert not any(x["id"] == 101 for x in res["methods"]["H4"]["rejected"])
     g = worked_fetcher(cache=f.cache)
     run(g, data)
     assert ("fit", 101) in g.log
+
+
+def test_deferred_fit_read_carries_message_and_path_hint(stubs):
+    err = PaceError("internal", "FIT cache 101.json is not valid JSON", hint="Inspect or move /x/fit/101.json")
+    res, _ = run(worked_fetcher(errors={("fit", 101): err}))
+    entry = next(x for x in res["deferred"] if x["kind"] == "fit" and x["id"] == 101)
+    assert entry == {"kind": "fit", "id": 101, "error": "internal", "detail": err.message, "hint": err.hint}
 
 
 def test_not_found_run_is_skipped(stubs):

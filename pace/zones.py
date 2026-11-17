@@ -13,6 +13,7 @@ from typing import Any
 
 from pace import config, store
 from pace.envelope import PaceError
+from pace.rules import HARD_EFFORT_TE, HR_MAX, HR_MIN
 
 SOURCES = ("estimate", "field_test", "lab")
 THRESHOLDS = ("lt1", "lt2")
@@ -25,7 +26,6 @@ BREAK_DAYS = 14
 RETRAIN_DAYS = 14
 HR_DRIFT_BPM = 4
 PACE_DRIFT_FRAC = 0.03
-HARD_TRAINING_EFFECT = 4.0
 H2_RANGE_SLACK = 0.10
 OUTCOMES = ("usable", "not_monotonic", "one_sided", "insufficient_data")  # the last two leave the streak alone
 PUSH_SPORTS = ("RUNNING", "DEFAULT")  # watch entry compared by status(); pinned in plan 5 Task 5c
@@ -116,8 +116,8 @@ def _pace(record: dict[str, Any] | None, t: str) -> float | None:
 def _check_hr(value: Any, what: str) -> int | None:
     if value is None:
         return None
-    if not _is_int(value) or not 30 <= value <= 230:
-        raise _bad(f"{what} must be an integer between 30 and 230, got {value!r}")
+    if not _is_int(value) or not HR_MIN <= value <= HR_MAX:
+        raise _bad(f"{what} must be an integer between {HR_MIN} and {HR_MAX}, got {value!r}")
     return value
 
 
@@ -292,7 +292,18 @@ def derive(record_lt1: dict[str, Any] | None, record_lt2: dict[str, Any] | None,
         "z5": z5,
     }
     return {"rule": ZONE_RULE, "three_hr": three_hr, "three_pace": three_pace, "floors": floors,
-            "pace_floors": pace_floors}
+            "pace_floors": pace_floors, "floor_errors": floor_errors(floors, hr_max)}
+
+
+def floor_errors(floors: dict[str, Any] | None, hr_max: int | None) -> list[str]:
+    """Methods doc 14.5 validation: the five floors strictly increasing, zone5Floor below HRmax when known."""
+    if not floors:
+        return []
+    errors = [f"{a} {floors[a]} is not below {b} {floors[b]} (floors must be strictly increasing)"
+              for a, b in zip(FLOOR_KEYS, FLOOR_KEYS[1:]) if floors[a] >= floors[b]]
+    if hr_max is not None and floors["zone5Floor"] >= hr_max:
+        errors.append(f"zone5Floor {floors['zone5Floor']} is not below max HR {hr_max}")
+    return errors
 
 
 # --- logs and memory ---
@@ -311,9 +322,13 @@ def update_hr_max(data: dict[str, Any], bpm: int, *, activity: int | None, day: 
 
 
 def record_alpha1_outcome(data: dict[str, Any], outcome: str, *, day: date, activity: int | None = None) -> None:
-    """H4 memory (methods doc 6): each activity counts at most once; two not_monotonic in a row -> unreliable."""
+    """H4 memory (methods doc 6): each activity counts at most once; two not_monotonic in a row -> unreliable.
+
+    `insufficient_data` judged nothing: it changes nothing and does not mark the activity as counted."""
     if outcome not in OUTCOMES:
         raise _bad(f"outcome must be one of {', '.join(OUTCOMES)}, got {outcome!r}")
+    if outcome == "insufficient_data":
+        return
     h4 = data["h4"]
     if activity is not None:
         if activity in h4["counted"]:
@@ -329,8 +344,8 @@ def record_alpha1_outcome(data: dict[str, Any], outcome: str, *, day: date, acti
 
 
 def reset_h4(data: dict[str, Any]) -> None:
-    """`zones estimate --retry-h4`: clear the mark and the streak (counted ids are kept)."""
-    data["h4"].update(streak=0, unreliable=False, since=None)
+    """`zones estimate --retry-h4`: clear the mark, the streak and the counted ids (every run is judged again)."""
+    data["h4"].update(streak=0, unreliable=False, since=None, counted=[])
 
 
 # --- due rule (methods doc 14.6) ---
@@ -366,8 +381,8 @@ def _estimate_reasons(data: dict[str, Any], today: date, runs_since: list[dict[s
         if ((run.get("eventType") or {}).get("typeKey") == "race"):
             reasons.append("estimate: a race since the last estimate")
             break
-    if any((run.get("aerobicTrainingEffect") or 0) >= HARD_TRAINING_EFFECT for run in fresh):
-        reasons.append(f"estimate: a run with aerobic training effect >= {HARD_TRAINING_EFFECT} since the last estimate")
+    if any((run.get("aerobicTrainingEffect") or 0) >= HARD_EFFORT_TE for run in fresh):
+        reasons.append(f"estimate: a run with aerobic training effect >= {HARD_EFFORT_TE} since the last estimate")
     days = sorted(d for d in (_day(r.get("startTimeLocal") or r.get("date")) for r in runs_since) if d)
     for prev, nxt in zip(days, days[1:], strict=False):
         if (nxt - prev).days >= BREAK_DAYS and (today - nxt).days >= RETRAIN_DAYS:
@@ -473,5 +488,5 @@ def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, An
     }
 
 
-__all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "h2_of",
+__all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "floor_errors", "h2_of",
            "provenance", "last_complete_estimate_day", "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]

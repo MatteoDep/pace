@@ -24,14 +24,11 @@ from garminconnect import Garmin
 from pace import api, config, store
 from pace.cache import CacheTracker
 from pace.envelope import PaceError
+from pace.rules import GAP_RR_S, STOP_GAP_S, STOP_SLOW_S, STOP_SPEED_MPS
 
 NO_RR_REASONS = ("no_hrv_messages", "rr_rejected", "fit_unreadable")
 RR_INVALID_S = 65.5          # 0xFFFF / 1000: FIT padding
 RESYNC_S = 3.0               # beat clock vs record clock tolerance
-GAP_RR_S = 2.0               # a raw RR above this is a signal dropout
-STOP_GAP_S = 5.0             # section 1 stop rule: record gap
-STOP_SPEED_MPS = 1.0         # section 1 stop rule: slow stretch ...
-STOP_SLOW_S = 10.0           # ... longer than this
 SANITY_SPAN_FRAC = 0.02
 SANITY_BPM = 5.0
 MAX_FIT_BYTES = 64 * 1024 * 1024
@@ -180,13 +177,14 @@ def _sanity(records: list[dict[str, Any]], rr: list[float], msgs: list[list[floa
                 if b["t"] - a["t"] > STOP_GAP_S and r0 <= a["t"] < r_last)
     span = r_last - r0 - pause
     if span > 0 and abs(rr_sum - span) > SANITY_SPAN_FRAC * span:
-        raise RRRejected(f"RR sum {rr_sum:.1f} s differs by more than 2% from the record span {span:.1f} s")
+        raise RRRejected(f"RR sum {rr_sum:.1f} s differs by more than {SANITY_SPAN_FRAC:.0%} from the record "
+                         f"span {span:.1f} s")
     hrs = [r["hr"] for r in records if r0 <= r["t"] <= r_last and r["hr"] is not None]
     if hrs:
         rr_hr, rec_hr = 60 / (sum(rr) / len(rr)), sum(hrs) / len(hrs)
         if abs(rr_hr - rec_hr) > SANITY_BPM:
             raise RRRejected(f"RR heart rate {rr_hr:.1f} bpm differs from the record heart rate {rec_hr:.1f} bpm "
-                             "by more than 5 bpm")
+                             f"by more than {SANITY_BPM:g} bpm")
 
 
 def aligned_rr(fit: dict[str, Any]) -> list[dict[str, Any]]:

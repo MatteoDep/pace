@@ -13,18 +13,30 @@ from typing import Any
 
 from pace import hrv
 from pace.envelope import PaceError
+from pace.rules import (
+    DRIFT_MAX_GAIN,
+    H5_MIN_S,
+    H5_RUN_S,
+    H5_START_S,
+    HARD_EFFORT_TE,
+    HR_MAX,
+    HR_MIN,
+    MAX_ASCENT_M_PER_KM,
+    MAX_GRADE,
+    MAX_HR_SKIP_S,
+    MIN_CADENCE,
+    SEL_MAX_GAIN,
+    STOP_GAP_S,
+    STOP_SLOW_S,
+    STOP_SPEED_MPS,
+    WARMUP_S,
+    ascent_profile,
+)
 from pace.zones import R
 
-STOP_SPEED = 1.0           # m/s; a stretch below this for more than STOP_SECONDS is a stop (section 1)
-STOP_SECONDS = 10
-STOP_GAP = 5               # a timestamp gap above this is a stop (section 1)
-HR_MIN, HR_MAX = 30, 230   # HR samples outside are dropped
-MAX_HR_SKIP_S = 300        # dry-strap spikes: first 5 minutes ignored for max HR
 MAX_HR_WINDOW = 5
-WARMUP_S = 600
-MIN_CADENCE = 140          # steps/min; below is walking
-FLAT_GRADE = 0.02
-MAX_ASCENT_M_PER_KM = 10.0
+ASCENT_REASON = f"ascent above {MAX_ASCENT_M_PER_KM:g} m per km"
+NO_WINDOW_REASON = f"no valid window (flat, stop-free, cadence >= {MIN_CADENCE}, after {WARMUP_S} s)"
 
 H1_WINDOWS = (180, 420, 720)
 H1_PR_RANGE = (120, 1200)
@@ -46,15 +58,12 @@ LT1_FRACTION = 0.823
 
 WRIST_REASON = "wrist HR (use --include-wrist)"
 
-H5_START_S = 900           # H5 segments start at 900 s, 60 s steps (methods doc 7)
-H5_STEP_S = 60
+H5_STEP_S = 60             # H5 segments grow from H5_START_S in 60 s steps (methods doc 7; see pace.rules)
 H5_MAX_S = 4500
-H5_MIN_S = 2700
 H5_SPEED_TOL = 0.05
 H5_GRADE_WINDOW_S = 300
 H5_MAX_TEMP_C = 24
 H5_PREVIOUS_RACE_H = 24
-H5_HARD_TE = 4.0
 H5_SPLIT = 5.0             # drift % above which a run counts as "above" LT1
 H5_MAX_GAP = 15
 H5_MEDIUM_GAP = 8
@@ -126,7 +135,8 @@ def samples(details: dict) -> list[dict]:
 
 
 def moving_samples(rows: list[dict]) -> tuple[list[dict], int]:
-    """Methods doc 1 stop rule: drop stretches above 10 s below 1.0 m/s; a timestamp gap above 5 s is a stop.
+    """Methods doc 1 stop rule: drop stretches above STOP_SLOW_S below STOP_SPEED_MPS; a timestamp gap above
+    STOP_GAP_S is a stop.
 
     Returns the kept rows and the excluded seconds (dropped stretches plus the timestamp gaps).
     The rows around a stop are left with a time hole; windows never span a hole above 5 s.
@@ -138,10 +148,10 @@ def moving_samples(rows: list[dict]) -> tuple[list[dict], int]:
     while i < n:
         if _slow(rows[i]):
             j = i
-            while j + 1 < n and _slow(rows[j + 1]) and rows[j + 1]["t"] - rows[j]["t"] <= STOP_GAP:
+            while j + 1 < n and _slow(rows[j + 1]) and rows[j + 1]["t"] - rows[j]["t"] <= STOP_GAP_S:
                 j += 1
             span = rows[j]["t"] - rows[i]["t"] + 1
-            if span > STOP_SECONDS:
+            if span > STOP_SLOW_S:
                 excluded += round(span)
             else:
                 kept.extend(rows[i:j + 1])
@@ -150,14 +160,14 @@ def moving_samples(rows: list[dict]) -> tuple[list[dict], int]:
             kept.append(rows[i])
             i += 1
     for a, b in zip(rows, rows[1:]):
-        if b["t"] - a["t"] > STOP_GAP:
+        if b["t"] - a["t"] > STOP_GAP_S:
             excluded += round(b["t"] - a["t"] - 1)
     return kept, excluded
 
 
 def _slow(row: dict) -> bool:
     s = row.get("speed")
-    return s is not None and s < STOP_SPEED
+    return s is not None and s < STOP_SPEED_MPS
 
 
 def max_hr(table: list[dict]) -> int | None:
@@ -188,10 +198,7 @@ class _Block:
         self.cad_sum = _prefix_sum(cad)
         self.hr_sum = _prefix_sum(hr)
         self.bad_hr = _prefix_bad(hr)
-        asc = [0.0]
-        for a, b in zip(alt, alt[1:]):
-            asc.append(asc[-1] + (max(b - a, 0.0) if a is not None and b is not None else 0.0))
-        self.asc = asc
+        self.asc = ascent_profile(alt)   # section 1 ascent with hysteresis, cumulative per grid index
 
     def start_index(self, from_t: float) -> int:
         return max(0, math.ceil(from_t - self.t0))
@@ -201,7 +208,7 @@ class _Block:
         d = self.dist[j] - self.dist[i]
         if d <= 0 or self.bad_alt[j + 1] - self.bad_alt[i] or self.bad_cad[j + 1] - self.bad_cad[i]:
             return False
-        if abs(self.alt[j] - self.alt[i]) / d > FLAT_GRADE or (self.asc[j] - self.asc[i]) > MAX_ASCENT_M_PER_KM * d / 1000:
+        if abs(self.alt[j] - self.alt[i]) / d > MAX_GRADE or (self.asc[j] - self.asc[i]) > MAX_ASCENT_M_PER_KM * d / 1000:
             return False
         return (self.cad_sum[j + 1] - self.cad_sum[i + 1]) / (j - i) >= MIN_CADENCE
 
@@ -236,7 +243,7 @@ def _blocks(table: list[dict]) -> tuple[list[_Block], int]:
     kept, excluded = moving_samples([r for r in table if isinstance(r.get("dist"), (int, float))])
     groups: list[list[dict]] = []
     for r in kept:
-        if groups and r["t"] - groups[-1][-1]["t"] <= STOP_GAP:
+        if groups and r["t"] - groups[-1][-1]["t"] <= STOP_GAP_S:
             groups[-1].append(r)
         else:
             groups.append([r])
@@ -295,7 +302,7 @@ def critical_speed(runs: list[dict], *, prs: list[dict] | None) -> dict:
                     if T not in best or d > best[T]["distance_m"]:
                         best[T] = {"T": T, "distance_m": d, "speed_mps": d / T, "run": r["id"], "start_t": blk.t0 + i}
         if not entry["used"]:
-            entry["reason"] = "no valid window (flat, stop-free, cadence >= 140, after 600 s)"
+            entry["reason"] = NO_WINDOW_REASON
         report.append(entry)
     for T, w in best.items():
         for entry in report:
@@ -326,7 +333,7 @@ def critical_speed(runs: list[dict], *, prs: list[dict] | None) -> dict:
     if len({w["run"] for w in windows}) < 2:
         reasons.append("windows come from fewer than 2 different runs")
     if best[180]["speed_mps"] < H1_NEAR_MAX * v720:
-        reasons.append("180 s speed below 1.08 x the 720 s speed (short effort not near maximal)")
+        reasons.append(f"180 s speed below {H1_NEAR_MAX} x the 720 s speed (short effort not near maximal)")
     return {"status": "ok", "cs_mps": cs, "d_prime_m": dprime, "pace_s_per_km": R(1000 / cs),
             "windows": windows, "points": len(points), "confidence": "low" if reasons else "medium",
             "reasons": reasons, "runs": report}
@@ -404,7 +411,8 @@ def lt2_from_cs(cs: dict, h2: dict | None) -> dict:
     if not h2 or h2.get("status") != "ok":
         out["reasons"].append("no HR-speed regression")
     elif h2["v_max"] < LT2_MIN_FRACTION * cs["cs_mps"]:
-        out["reasons"].append("fastest steady segment below 0.90 x CS: LT2 HR not extrapolated (suggest the 30-min test)")
+        out["reasons"].append(f"fastest steady segment below {LT2_MIN_FRACTION:.2f} x CS: LT2 HR not extrapolated "
+                              "(suggest the 30-min test)")
     else:
         out["hr"] = hr_at(h2, cs["cs_mps"])
         if h2["see"] > SEE_LIMIT:
@@ -481,9 +489,9 @@ def _stop_lengths(rows: list[dict], a: float, b: float) -> list[int]:
     kept, _ = moving_samples([r for r in rows if isinstance(r.get("dist"), (int, float))])
     if not kept:
         return [round(b - a)]
-    out = [round(y["t"] - x["t"] - 1) for x, y in zip(kept, kept[1:]) if y["t"] - x["t"] > STOP_GAP]
+    out = [round(y["t"] - x["t"] - 1) for x, y in zip(kept, kept[1:]) if y["t"] - x["t"] > STOP_GAP_S]
     for gap in (kept[0]["t"] - a, b - kept[-1]["t"]):
-        if gap > STOP_GAP:
+        if gap > STOP_GAP_S:
             out.append(round(gap))
     return out
 
@@ -547,7 +555,7 @@ def drift_candidate(row: dict, rows: list[dict]) -> bool:
         if other is row:
             continue
         hard = ((other.get("eventType") or {}).get("typeKey") == "race"
-                or (other.get("aerobicTrainingEffect") or 0) >= H5_HARD_TE)
+                or (other.get("aerobicTrainingEffect") or 0) >= HARD_EFFORT_TE)
         o = _start_time(other)
         if hard and o is not None and 0 < (start - o).total_seconds() < H5_PREVIOUS_RACE_H * 3600:
             return False
@@ -599,10 +607,10 @@ def drift_segment(run: dict, *, fit_records: list[dict] | None, include_wrist: b
     length, blk, s = best
     e = s + length
     if _ascent_per_km(blocks, s, e) > MAX_ASCENT_M_PER_KM:
-        return {"id": rid, "rejected": "ascent above 10 m per km", "excluded_s": excluded}
+        return {"id": rid, "rejected": ASCENT_REASON, "excluded_s": excluded}
     temp = _mean_temp(fit_records, s, e)
     if temp != "unknown" and temp >= H5_MAX_TEMP_C:
-        return {"id": rid, "rejected": "mean temperature >= 24 C", "excluded_s": excluded}
+        return {"id": rid, "rejected": f"mean temperature >= {H5_MAX_TEMP_C} C", "excluded_s": excluded}
     mid = s + length / 2
     h1, h2 = _half_stats([blk], s, mid), _half_stats([blk], mid, e)
     d = _drift_pct(h1, h2)
@@ -708,7 +716,7 @@ def drift(table: list[dict], *, laps: list[dict], treadmill: bool, fit_records: 
     if stops and max(stops) > F1_MAX_STOP_S:
         reasons.append(f"a stop longer than {F1_MAX_STOP_S} s")
     if not treadmill and _ascent_per_km(blocks, start, end) > MAX_ASCENT_M_PER_KM:
-        reasons.append("ascent above 10 m per km")
+        reasons.append(ASCENT_REASON)
     mid = start + (end - start) / 2
     h1, h2 = _half_stats(blocks, start, mid), _half_stats(blocks, mid, end)
     d = _drift_pct(h1, h2, treadmill)
@@ -746,7 +754,8 @@ def drift(table: list[dict], *, laps: list[dict], treadmill: bool, fit_records: 
 
 def _tt_window(table: list[dict], laps: list[dict]) -> tuple[float, float] | None:
     """The time trial: consecutive laps summing to 1680..1920 s, closest to 1800 (ties: earliest); else the
-    fastest stop-free 1800 s window; the window is cut to 1800 s."""
+    fastest 1800 s window that spans no stop above STOP_SLOW_S (shorter stops are allowed, as with laps, and
+    `time_trial` reports them); the window is cut to 1800 s."""
     if laps and len(laps) >= 2:
         spans = _lap_spans(laps)
         best = None
@@ -757,20 +766,40 @@ def _tt_window(table: list[dict], laps: list[dict]) -> tuple[float, float] | Non
                     best = (abs(total - F2_S), spans[k][0], min(spans[j][1], spans[k][0] + F2_S))
         if best:
             return best[1], best[2]
+    kept, _ = moving_samples([r for r in table if isinstance(r.get("dist"), (int, float))])
+    return _fastest_window(kept)
+
+
+def _fastest_window(kept: list[dict]) -> tuple[float, float] | None:
+    """F2 without laps: the F2_S window (starting on a moving sample) with the most distance, never spanning a
+    stop above STOP_SLOW_S (ties: earliest). Distance at the window end is interpolated on the samples."""
+    ts, ds = [r["t"] for r in kept], [r["dist"] for r in kept]
+    regions, lo = [], 0
+    for k in range(1, len(kept)):
+        gap = ts[k] - ts[k - 1]
+        if gap > STOP_GAP_S and round(gap - 1) > STOP_SLOW_S:   # a stop's length as in _stop_lengths
+            regions.append((lo, k - 1))
+            lo = k
+    regions.append((lo, len(kept) - 1))
     top = None
-    blocks, _ = _blocks(table)
-    for blk in blocks:
-        for i in range(blk.n - F2_S):
-            d = blk.dist[i + F2_S] - blk.dist[i]
+    for i0, i1 in regions:
+        for i in range(i0, i1 + 1):
+            end = ts[i] + F2_S
+            if end > ts[i1]:
+                break
+            j = bisect.bisect_left(ts, end, i, i1 + 1)
+            d_end = ds[j] if ts[j] == end else _lerp(ds[j - 1], ds[j], (end - ts[j - 1]) / (ts[j] - ts[j - 1]))
+            d = d_end - ds[i]
             if top is None or d > top[0]:
-                top = (d, blk.t0 + i)
+                top = (d, ts[i])
     return None if top is None else (top[1], top[1] + F2_S)
 
 
 def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     """F2 (methods doc 9, 14.4): LT2 HR = mean HR over 600..1800 s of the trial, pace = duration / distance.
 
-    Rejected when shorter than 1680 s, a stop above 10 s (`excluded_s` reports it) or ascent above 10 m per km.
+    Rejected when shorter than F2_MIN_S, a stop above STOP_SLOW_S (`excluded_s` reports it) or ascent above
+    MAX_ASCENT_M_PER_KM.
     Fade (second 15 min speed < 0.95 x first) gives confidence low, else medium.
     """
     win = _tt_window(table, laps)
@@ -785,10 +814,10 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     reasons = []
     if b - a < F2_MIN_S:
         reasons.append(f"trial shorter than {F2_MIN_S} s")
-    if stops and max(stops) > STOP_SECONDS:
-        reasons.append("a stop longer than 10 s")
+    if stops and max(stops) > STOP_SLOW_S:
+        reasons.append(f"a stop longer than {STOP_SLOW_S} s")
     if blocks and _ascent_per_km(blocks, a, b) > MAX_ASCENT_M_PER_KM:
-        reasons.append("ascent above 10 m per km")
+        reasons.append(ASCENT_REASON)
     dists = [r["dist"] for r in rows if isinstance(r.get("dist"), (int, float))]
     if not blocks or len(dists) < 2:
         reasons.append("distance missing")
@@ -806,7 +835,7 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     if fade:
         notes.append("faded, started too fast")
     if stops:
-        notes.append(f"stops of {sum(stops)} s excluded (none above 10 s)")
+        notes.append(f"stops of {sum(stops)} s excluded (none above {STOP_SLOW_S} s)")
     return {"status": "ok", "lt2": {"hr": R(last["hr"]), "pace_s_per_km": R((b - a) / (dist / 1000))},
             "distance_m": dist, "speed_ratio": ratio, "fade": fade,
             "confidence": "low" if fade or stops else "medium", "reasons": notes, **base}
@@ -922,6 +951,7 @@ H4_MAX_R = -0.5
 H4_MEDIUM_SPREAD = 6
 MEDIUM_ARTIFACTS = 0.03
 F3_WINDOW_S = 120
+F3_MIN_STEPS = 3           # fewer step laps are refused before the gate (which needs 3 on each side)
 F3_MEDIUM_SIDE = 2
 AGREE_BPM = 5
 _CONF_RANK = {None: -1, "low": 0, "medium": 1, "high": 2}
@@ -1161,13 +1191,21 @@ def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict:
     """F3 (methods doc 9a, 14.8): one alpha1 window per step (its last 120 s), the gate, then the 0.75 crossing.
 
     aligned = pace.fit.aligned_rr output; steps = the laps between the warm-up lap and the cool-down lap.
-    `outcome` is the gate outcome for the H4 memory (None when refused before the gate). Treadmill: HR only.
+    Laps that look automatic (F1's `_auto_laps` heuristic) are not steps, and fewer than F3_MIN_STEPS steps
+    refuse the test. `outcome` is the gate outcome for the H4 memory (None when refused before the gate).
+    Treadmill: HR only.
     """
     out: dict[str, Any] = {"status": "rejected", "outcome": None, "lt1": None, "confidence": None, "bracketed": False,
                            "saveable": False, "steps": [], "dropped_coupling": 0, "gate": None, "fit": None,
                            "treadmill": treadmill, "reasons": [], "notes": []}
-    if len(laps or []) < 3:
-        out["reasons"].append("steps need laps: a warm-up lap, the step laps and a cool-down lap")
+    laps = laps or []
+    if laps and _auto_laps(laps):
+        out["reasons"].append(f"the laps look automatic (every lap {AUTO_LAP_M} m or {AUTO_LAP_S // 60} min or "
+                              "shorter): press lap at the warm-up end and at each step change")
+        return out
+    if len(laps) - 2 < F3_MIN_STEPS:
+        out["reasons"].append(f"fewer than {F3_MIN_STEPS} steps: steps need laps (a warm-up lap, at least "
+                              f"{F3_MIN_STEPS} step laps and a cool-down lap)")
         return out
     if not aligned:
         out["reasons"].append("no RR data")
@@ -1283,10 +1321,7 @@ def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | No
 SEL_SLOTS = 6
 SEL_PERCENTILES = (10, 30, 50, 70, 90, 100)
 SEL_MIN_S = 1200
-SEL_MAX_GAIN = 15.0        # m per km, history picks
 STEADY_S = (1800, 5400)
-DRIFT_S = (3600, 7200)
-DRIFT_MAX_GAIN = 10.0      # m per km, drift picks
 FIT_MAX_DOWNLOADS = 6
 FIT_MIN_SPAN_MIN = 5.0
 FIT_BAND_BPM = 15
@@ -1379,9 +1414,10 @@ def select_drift(rows_12w: list[dict], *, ref_hr: int | None, exclude: set[int] 
     for row in rows_12w:
         if _row_id(row) in exclude:
             continue
-        reason = _prefilter(row, DRIFT_S, DRIFT_MAX_GAIN)
+        reason = _prefilter(row, H5_RUN_S, DRIFT_MAX_GAIN)
         if reason is None and not drift_candidate(row, rows_12w):
-            reason = "within 24 h after a race or a run with aerobicTrainingEffect >= 4.0"
+            reason = (f"within {H5_PREVIOUS_RACE_H} h after a race or a run with aerobicTrainingEffect "
+                      f">= {HARD_EFFORT_TE}")
         if reason:
             skipped.append({"id": _row_id(row), "reason": reason})
         else:

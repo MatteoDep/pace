@@ -261,7 +261,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
                           "field_test_every_days": zonesmod.FIELD_TEST_EVERY_DAYS,
                           "break_days": zonesmod.BREAK_DAYS, "retrain_days": zonesmod.RETRAIN_DAYS,
                           "hr_drift_bpm": zonesmod.HR_DRIFT_BPM, "pace_drift_frac": zonesmod.PACE_DRIFT_FRAC,
-                          "hard_training_effect": zonesmod.HARD_TRAINING_EFFECT,
+                          "hard_training_effect": zonesmod.HARD_EFFORT_TE,
                           "f3_recent_days": F3_RECENT_DAYS},
                   "max_calls": {"default": DEFAULT_MAX_CALLS,
                                 "rule": "hard cap on all Garmin calls of one estimate, extension included; each "

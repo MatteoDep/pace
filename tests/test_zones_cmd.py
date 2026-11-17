@@ -214,12 +214,29 @@ def test_show_combines_local_and_garmin(garmin) -> None:
     assert out["current"]["lt1"] == {"id": 1, "source": "lab", "date": day(10), "method": None, "confidence": None}
     assert [r["current_for"] for r in out["records"]] == [["lt1", "lt2"]]
     assert out["zones"]["floors"]["zone4Floor"] == 165 and out["in_sync"] is True
+    assert out["zones"]["floor_errors"] == []
     assert out["expired"] == {"lt1": False, "lt2": False} and out["hr_max"]["bpm"] == 190
     est = ze_record(date_=day(1), lt1=(142, 320), lt2=None)
     out = run("show")
     assert [c["id"] for c in out["candidates"]] == [est] and out["candidates"][0]["candidate_for"] == ["lt1"]
     garmin["zones"] = [{**FLOORS, "zone2Floor": 100}]
     assert run("show", "--no-cache")["in_sync"] is False
+
+
+def test_show_reports_floor_errors(garmin) -> None:
+    # methods doc 14.5: zone5Floor must stay below HRmax; show reports it instead of hiding the floors
+    lab()
+    with zones.transaction() as data:
+        data["hr_max"] = {"bpm": 166, "activity": None, "date": day(1)}
+    out = run("show")
+    assert out["zones"]["floors"]["zone5Floor"] == 166
+    assert out["zones"]["floor_errors"] == ["zone5Floor 166 is not below max HR 166"]
+
+
+def test_add_pace_is_whole_seconds_per_km() -> None:
+    rec = run("add", "--source", "lab", "--date", day(10), "--lt2-pace", "4:10")["record"]
+    assert rec["lt2"]["pace_s_per_km"] == 250 and isinstance(rec["lt2"]["pace_s_per_km"], int)
+    assert ze._pace_s("4:10", "--lt2-pace") == 250 and isinstance(ze._pace_s("4:10", "--lt2-pace"), int)
 
 
 def test_show_without_watch_zones_still_answers(garmin) -> None:
@@ -374,7 +391,7 @@ def test_estimate_retry_h4_resets_then_reapplies(garmin, stub_estimate) -> None:
     assert stored()["h4"]["unreliable"] is True
     run("estimate", "--retry-h4")
     h4 = stored()["h4"]
-    assert h4["unreliable"] is False and h4["streak"] == 1 and h4["counted"] == [7, 8, 1]
+    assert h4["unreliable"] is False and h4["streak"] == 1 and h4["counted"] == [1]   # reset clears counted ids
 
 
 def test_show_tolerates_a_failing_list_read(garmin) -> None:
@@ -455,8 +472,9 @@ def test_analyze_drift_old_f3_is_ignored(garmin) -> None:
 @pytest.mark.parametrize(("hr2", "verdict", "next_hr"), [(141, "below LT1", 145), (156, "above LT1", 135)])
 def test_analyze_drift_save_refuses_other_verdicts(garmin, hr2, verdict, next_hr) -> None:
     drift_garmin(garmin, hr2=hr2)
-    err = fails("analyze", "77", "--test", "drift", "--save")
-    assert verdict in err["message"] and str(next_hr) in err["message"]
+    out = run("analyze", "77", "--test", "drift", "--save")
+    assert out["saved"] is None and out["verdict"] == verdict and out["retest_hr"] == next_hr   # full analysis
+    assert verdict in out["save_refused"] and str(next_hr) in out["save_refused"]
     d = stored()
     assert d["records"] == [] and d["hr_max"] is not None        # the local write of hr_max still happened
 
@@ -465,16 +483,17 @@ def test_analyze_drift_save_refuses_uneven_pace(garmin) -> None:
     drift_garmin(garmin, speed=lambda t: 3.2 + (0.6 if (t // 60) % 2 else -0.6))
     out = run("analyze", "77", "--test", "drift")
     assert out["uneven_pace"] is True and out["saveable"] is False
-    err = fails("analyze", "77", "--test", "drift", "--save")
-    assert "uneven" in err["message"]
+    out = run("analyze", "77", "--test", "drift", "--save")
+    assert out["saved"] is None and "uneven" in out["save_refused"]
     assert stored()["records"] == []
 
 
 def test_analyze_drift_rejected_save_refused(garmin) -> None:
     drift_garmin(garmin, n=1500)
     garmin["splits"] = laps_for(600, 900)
-    err = fails("analyze", "77", "--test", "drift", "--save")
-    assert "rejected" in err["message"]
+    out = run("analyze", "77", "--test", "drift", "--save")
+    assert out["status"] == "rejected" and out["saved"] is None and "rejected" in out["save_refused"]
+    assert run("analyze", "77", "--test", "drift")["save_refused"] is None    # nothing asked, nothing refused
 
 
 def test_analyze_time_trial(garmin) -> None:
@@ -496,8 +515,8 @@ def test_analyze_time_trial_fade_saves_low_and_rejected_is_refused(garmin) -> No
     assert rec["confidence"] == "low"
     garmin["details"] = details_for(900, lambda t: 160, lambda t: 3.0)
     garmin["splits"] = laps_for(300, 600)
-    err = fails("analyze", "89", "--test", "time_trial", "--save")
-    assert "rejected" in err["message"] and len(stored()["records"]) == 1
+    out = run("analyze", "89", "--test", "time_trial", "--save")
+    assert out["saved"] is None and "rejected" in out["save_refused"] and len(stored()["records"]) == 1
 
 
 def test_analyze_wrist_run_is_low_confidence(garmin) -> None:
@@ -559,8 +578,8 @@ def test_analyze_ramp_save_and_refusal(garmin, ramp_stub) -> None:
     d = stored()
     assert d["h4"]["counted"] == [55] and d["h4"]["streak"] == 0
     ramp_stub["result"] = BAD_RAMP
-    err = fails("analyze", "55", "--test", "ramp", "--save")
-    assert "alpha1_unusable" in err["message"] and "rho" in err["message"]
+    out = run("analyze", "55", "--test", "ramp", "--save")
+    assert out["saved"] is None and "alpha1_unusable" in out["save_refused"] and "rho" in out["save_refused"]
     assert len(stored()["records"]) == 1
 
 
@@ -568,8 +587,8 @@ def test_analyze_ramp_refusal_still_counts_toward_h4(garmin, ramp_stub, _home) -
     ramp_garmin(garmin)
     ramp_stub["result"] = BAD_RAMP
     (_home / "fit" / "56.json").write_text((_home / "fit" / "55.json").read_text())
-    fails("analyze", "55", "--test", "ramp", "--save")
-    fails("analyze", "56", "--test", "ramp", "--save")
+    run("analyze", "55", "--test", "ramp", "--save")
+    run("analyze", "56", "--test", "ramp", "--save")
     h4 = stored()["h4"]
     assert h4["unreliable"] is True and h4["counted"] == [55, 56]
 
