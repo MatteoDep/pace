@@ -1,15 +1,17 @@
-"""History threshold methods H1 (critical speed), H2 (HR-speed regression), H3 (LT1 from CS), max HR.
+"""Threshold methods H1-H5, field tests F1-F3, the LT1 combination and run selection, max HR.
 
-Pure functions over per-second sample tables (no Garmin calls). Methods:
-docs/superpowers/specs/2026-11-17-zones-methods.md sections 1, 3, 4, 5 and 14.1/14.2.
+Pure functions over list rows, per-second sample tables and aligned RR beats (no Garmin calls). Methods:
+docs/superpowers/specs/2026-11-17-zones-methods.md sections 1, 3-9a and 14.
 A sample row is {"t" (elapsed s), "hr", "speed", "dist", "alt", "cadence" (steps/min)}.
 """
 
+import bisect
 import math
 import statistics
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
+from pace import hrv
 from pace.envelope import PaceError
 from pace.zones import R
 
@@ -901,3 +903,563 @@ def _ramp_workout(record: dict | None, estimate_hr: int | None, h2: dict | None)
     return {"name": "LT1 alpha1 ramp (F3)", "sport": "running",
             "description": "Eight 4-min steps, each 6 bpm above the last; hold the pace steady within each step.",
             "steps": steps}
+
+
+# --- alpha1 gate and H4 (methods doc 6, 14.2) ---
+
+A1_THRESHOLD = 0.75
+A1_RHO_MAX = -0.6          # usable only if Spearman rho of HR and alpha1 <= this
+A1_MIN_SIDE = 3            # windows or steps needed on each side of 0.75
+A1_LINEAR = (0.5, 1.0)     # near-linear part of the alpha1 decline (Rogers et al. 2020)
+A1_LT2_NOTE = 0.5          # alpha1 0.5: a note only, never LT2
+H4_MIN_POINTS = 60         # 5 min of window centres per side
+H4_MIN_HR_SPAN = 10
+H4_MAX_R = -0.5
+H4_MEDIUM_SPREAD = 6
+MEDIUM_ARTIFACTS = 0.03
+F3_WINDOW_S = 120
+F3_MEDIUM_SIDE = 2
+AGREE_BPM = 5
+_CONF_RANK = {None: -1, "low": 0, "medium": 1, "high": 2}
+
+
+def _ranks(v: list[float]) -> list[float]:
+    """1-based ranks, ties get the average rank."""
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    out = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            out[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return out
+
+
+def _pearson(x: list[float], y: list[float]) -> float | None:
+    """Pearson r; None with fewer than 2 points or no variance."""
+    if len(x) < 2:
+        return None
+    mx, my = statistics.fmean(x), statistics.fmean(y)
+    sxx = sum((a - mx) ** 2 for a in x)
+    syy = sum((b - my) ** 2 for b in y)
+    if sxx == 0 or syy == 0:
+        return None
+    return sum((a - mx) * (b - my) for a, b in zip(x, y, strict=True)) / math.sqrt(sxx * syy)
+
+
+def spearman(x: list[float], y: list[float]) -> float:
+    """Spearman rank correlation with average ranks for ties; 0.0 with fewer than 2 points or no variance."""
+    if len(x) != len(y):
+        raise ValueError("spearman needs two lists of the same length")
+    r = _pearson(_ranks(x), _ranks(y))
+    return 0.0 if r is None else r
+
+
+def alpha1_gate(points: list[dict]) -> dict:
+    """Section 6 per-run gate (also the F3 gate) over points {"hr", "alpha1"}.
+
+    Usable only if rho <= -0.6 and >= 3 points on each side of 0.75; "not monotonic" takes precedence over
+    "one-sided" as the outcome. rho is None with fewer than 2 points (then only "one-sided" applies).
+    """
+    above = sum(p["alpha1"] > A1_THRESHOLD for p in points)
+    below = sum(p["alpha1"] < A1_THRESHOLD for p in points)
+    rho = spearman([p["hr"] for p in points], [p["alpha1"] for p in points]) if len(points) >= 2 else None
+    reasons = []
+    if rho is not None and rho > A1_RHO_MAX:
+        reasons.append(f"not monotonic, rho = {rho:.2f}")
+    if above < A1_MIN_SIDE or below < A1_MIN_SIDE:
+        reasons.append("one-sided")
+    if not reasons:
+        outcome = "usable"
+    else:
+        outcome = "not_monotonic" if reasons[0].startswith("not monotonic") else "one_sided"
+    return {"usable": not reasons, "outcome": outcome, "rho": rho, "reasons": reasons, "above": above,
+            "below": below, "n": len(points)}
+
+
+def _side_note(points: list[dict]) -> str | None:
+    """One-sided note, e.g. "alpha1 above 0.75 up to 142 bpm", when every point lies on one side."""
+    if points and all(p["alpha1"] > A1_THRESHOLD for p in points):
+        return f"alpha1 above 0.75 up to {R(max(p['hr'] for p in points))} bpm"
+    if points and all(p["alpha1"] < A1_THRESHOLD for p in points):
+        return f"alpha1 below 0.75 from {R(min(p['hr'] for p in points))} bpm"
+    return None
+
+
+def _h4_run(run: dict) -> tuple[dict, list[dict], float | None, float | None]:
+    """One run: gate, then the alpha1-vs-HR and alpha1-vs-speed regressions on the near-linear windows.
+
+    Windows at coupling risk are dropped here too (hrv.windows already drops them; both are counted).
+    Returns (report, used windows, LT1 HR, LT1 speed).
+    """
+    given = run.get("windows") or []
+    ws = [w for w in given if w.get("cadence") is None or not hrv.coupled(w["hr"], w["cadence"])]
+    gate = alpha1_gate(ws)
+    out: dict[str, Any] = {"id": run.get("id"), "outcome": gate["outcome"], "rho": gate["rho"], "windows": len(ws),
+                           "dropped_coupling": (run.get("dropped_coupling") or 0) + len(given) - len(ws),
+                           "reasons": list(gate["reasons"]), "notes": [], "lt1_hr": None, "lt1_speed_mps": None,
+                           "fit": None, "artifact_share": None}
+    note = _side_note(ws)
+    if note:
+        out["notes"].append(note)
+    if not gate["usable"]:
+        return out, [], None, None
+    pts = [w for w in ws if A1_LINEAR[0] <= w["alpha1"] <= A1_LINEAR[1]]
+    up = sum(w["alpha1"] > A1_THRESHOLD for w in pts)
+    down = sum(w["alpha1"] < A1_THRESHOLD for w in pts)
+    if up < H4_MIN_POINTS or down < H4_MIN_POINTS:
+        out["reasons"].append(f"{up} windows above and {down} below 0.75 within alpha1 0.5..1.0, "
+                              f"need {H4_MIN_POINTS} each")
+        return out, [], None, None
+    a1 = [w["alpha1"] for w in pts]
+    hrs = [w["hr"] for w in pts]
+    lo, hi = min(hrs), max(hrs)
+    if hi - lo < H4_MIN_HR_SPAN:
+        out["reasons"].append(f"HR range of the windows below {H4_MIN_HR_SPAN} bpm")
+        return out, [], None, None
+    c, d = _ols(a1, hrs)
+    r = _pearson(a1, hrs)
+    out["fit"] = {"points": len(pts), "hr_range": [lo, hi], "hr": {"c": c, "d": d, "r": r}, "speed": None}
+    if d >= 0 or r is None or r > H4_MAX_R:
+        out["reasons"].append("HR does not fall with alpha1 (need d < 0 and r <= -0.5)")
+        return out, [], None, None
+    hr = c + d * A1_THRESHOLD
+    if not lo <= hr <= hi:
+        out["reasons"].append("0.75 crossing outside the HR range of the windows (no extrapolation)")
+        return out, [], None, None
+    out["lt1_hr"] = hr
+    out["artifact_share"] = statistics.median(w["artifact_share"] for w in pts)
+    speed = None
+    speeds = [w.get("speed") for w in pts]
+    if all(isinstance(v, (int, float)) for v in speeds):
+        e, f = _ols(a1, speeds)
+        rv = _pearson(a1, speeds)
+        out["fit"]["speed"] = {"e": e, "f": f, "r": rv}
+        if f < 0 and rv is not None and rv <= H4_MAX_R:
+            speed = e + f * A1_THRESHOLD
+    if speed is None:
+        out["notes"].append("speed does not fall with alpha1: HR only")
+    out["lt1_speed_mps"] = speed
+    hr_half = c + d * A1_LT2_NOTE
+    if lo <= hr_half <= hi:
+        out["notes"].append(f"alpha1 0.5 at {R(hr_half)} bpm (a note, never LT2)")
+    return out, pts, hr, speed
+
+
+def alpha1_lt1(run_windows: list[dict]) -> dict:
+    """H4 (methods doc 6): LT1 HR and pace from the alpha1 windows of strap runs.
+
+    run_windows = [{"id", "windows" (pace.hrv.windows output), "dropped_coupling"}]; the caller keeps the 12-week
+    and strap rules. Per-run outcomes ("usable" | "not_monotonic" | "one_sided") feed the H4 memory.
+    """
+    runs, hrs, speeds, used = [], [], [], []
+    for run in run_windows:
+        report, pts, hr, speed = _h4_run(run)
+        runs.append(report)
+        if hr is not None:
+            hrs.append(hr)
+            used += pts
+            if speed is not None:
+                speeds.append(speed)
+    notes = [f"run {r['id']}: {n}" for r in runs for n in r["notes"]]
+    out: dict[str, Any] = {"status": "ok", "hr": None, "pace_s_per_km": None, "speed_mps": None, "spread": None,
+                           "confidence": None, "artifact_share": None, "runs": runs, "notes": notes, "reasons": []}
+    if not hrs:
+        if runs and all(r["outcome"] != "usable" for r in runs):
+            out.update(status="alpha1_unusable", reasons=["no run passed the alpha1 gate"])
+        else:
+            out.update(status="insufficient_data",
+                       reasons=["no run with a valid 0.75 crossing" if runs else "no runs with RR data"])
+        return out
+    spread = max(hrs) - min(hrs)
+    share = statistics.median(w["artifact_share"] for w in used)
+    medium = len(hrs) >= 2 and spread <= H4_MEDIUM_SPREAD and share <= MEDIUM_ARTIFACTS
+    out.update(hr=R(statistics.median(hrs)), spread=spread, artifact_share=share,
+               confidence="medium" if medium else "low")
+    if speeds:
+        v = statistics.median(speeds)
+        out.update(speed_mps=v, pace_s_per_km=R(1000 / v))
+    return out
+
+
+# --- F3 ramp (methods doc 9a, 14.8) ---
+
+def _ramp_step(k: int, span: tuple[float, float], aligned: list[dict], times: list[float], corr: tuple,
+               treadmill: bool) -> dict:
+    """One step: the last 120 s with the section 6 extraction, then coupling, artifact and beat rules."""
+    start, end = span
+    t0, t1 = end - F3_WINDOW_S, end
+    step: dict[str, Any] = {"step": k, "bounds": [t0, t1], "status": "skipped", "reason": None, "hr": None,
+                            "speed_mps": None, "cadence": None, "alpha1": None, "artifact_share": None, "beats": None}
+    ctimes, cvals, flags = corr
+    lo, hi = bisect.bisect_left(times, t0), bisect.bisect_left(times, t1)
+    cads = [b.get("cadence") for b in aligned[lo:hi]]
+    if end - start < F3_WINDOW_S:
+        step["reason"] = f"step shorter than {F3_WINDOW_S} s"
+    elif hi == lo:
+        step["reason"] = "no beats in the window"
+    elif any(hrv.bad_beat(b) for b in aligned[lo:hi]):
+        step["reason"] = "gap or stop in the window"
+    elif any(c is None for c in cads):
+        step["reason"] = "cadence missing"
+    if step["reason"]:
+        return step
+    x = cvals[bisect.bisect_left(ctimes, t0):bisect.bisect_left(ctimes, t1)]
+    hr, cadence = 60 / statistics.fmean(x), statistics.fmean(cads)
+    share = sum(flags[lo:hi]) / (hi - lo)
+    step.update(hr=hr, cadence=cadence, artifact_share=share, beats=len(x))
+    if not treadmill:
+        da, db = _beat_dist(aligned, times, t0), _beat_dist(aligned, times, t1)
+        step["speed_mps"] = None if da is None or db is None else (db - da) / F3_WINDOW_S
+    if hrv.coupled(hr, cadence):
+        step.update(status="dropped", reason="coupling risk: HR within 5% of the step rate or of half of it")
+    elif share > hrv.MAX_ARTIFACT_SHARE:
+        step.update(status="dropped", reason="artifact share above 5%")
+    elif len(x) < hrv.MIN_BEATS:
+        step["reason"] = f"fewer than {hrv.MIN_BEATS} corrected beats"
+    else:
+        step["alpha1"] = hrv.dfa_alpha1(x)
+        if step["alpha1"] is None:
+            step["reason"] = "alpha1 undefined"
+        else:
+            step["status"] = "kept"
+    return step
+
+
+def _beat_dist(aligned: list[dict], times: list[float], t: float) -> float | None:
+    idx = bisect.bisect_right(times, t) - 1
+    v = aligned[idx].get("dist") if idx >= 0 else None
+    return v if isinstance(v, (int, float)) else None
+
+
+def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict:
+    """F3 (methods doc 9a, 14.8): one alpha1 window per step (its last 120 s), the gate, then the 0.75 crossing.
+
+    aligned = pace.fit.aligned_rr output; steps = the laps between the warm-up lap and the cool-down lap.
+    `outcome` is the gate outcome for the H4 memory (None when refused before the gate). Treadmill: HR only.
+    """
+    out: dict[str, Any] = {"status": "rejected", "outcome": None, "lt1": None, "confidence": None, "bracketed": False,
+                           "saveable": False, "steps": [], "dropped_coupling": 0, "gate": None, "fit": None,
+                           "treadmill": treadmill, "reasons": [], "notes": []}
+    if len(laps or []) < 3:
+        out["reasons"].append("steps need laps: a warm-up lap, the step laps and a cool-down lap")
+        return out
+    if not aligned:
+        out["reasons"].append("no RR data")
+        return out
+    times = [b["t_s"] for b in aligned]
+    corr = hrv.corrected_beats(aligned)
+    steps = [_ramp_step(k, span, aligned, times, corr, treadmill)
+             for k, span in enumerate(_lap_spans(laps)[1:-1], start=1)]
+    kept = [s for s in steps if s["status"] == "kept"]
+    gate = alpha1_gate(kept)
+    out.update(steps=steps, gate=gate, outcome=gate["outcome"],
+               dropped_coupling=sum(s["status"] == "dropped" and s["reason"].startswith("coupling") for s in steps))
+    if not gate["usable"]:
+        out.update(status="alpha1_unusable", reasons=list(gate["reasons"]))
+        return out
+    pts = [s for s in kept if A1_LINEAR[0] <= s["alpha1"] <= A1_LINEAR[1]]
+    up = sum(s["alpha1"] > A1_THRESHOLD for s in pts)
+    down = sum(s["alpha1"] < A1_THRESHOLD for s in pts)
+    if not up or not down:
+        out["reasons"].append("the ramp does not cross alpha1 0.75 within 0.5..1.0")
+        return out
+    a1 = [s["alpha1"] for s in pts]
+    c, d = _ols(a1, [s["hr"] for s in pts])
+    out["fit"] = {"points": len(pts), "hr": {"c": c, "d": d}, "speed": None}
+    if d >= 0:
+        out["reasons"].append("HR does not fall with alpha1 (d >= 0)")
+        return out
+    pace = None
+    speeds = [s["speed_mps"] for s in pts]
+    if not treadmill and all(isinstance(v, (int, float)) for v in speeds):
+        e, f = _ols(a1, speeds)
+        out["fit"]["speed"] = {"e": e, "f": f}
+        v = e + f * A1_THRESHOLD
+        if f < 0 and v > 0:
+            pace = R(1000 / v)
+    if not treadmill and pace is None:
+        out["notes"].append("speed does not fall with alpha1: no LT1 pace")
+    share = statistics.median(s["artifact_share"] for s in kept)
+    medium = up >= F3_MEDIUM_SIDE and down >= F3_MEDIUM_SIDE and share <= MEDIUM_ARTIFACTS
+    out.update(status="ok", lt1={"hr": R(c + d * A1_THRESHOLD), "pace_s_per_km": pace},
+               confidence="medium" if medium else "low", bracketed=True, saveable=True)
+    return out
+
+
+# --- LT1 combination (14.2) ---
+
+def _lt1_of(res: dict | None) -> float | None:
+    """LT1 HR of an H3/H4 ("hr") or H5 ("estimate") result with status ok, else None."""
+    if not res or res.get("status") != "ok":
+        return None
+    return res.get("hr") if res.get("hr") is not None else res.get("estimate")
+
+
+def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | None) -> dict:
+    """Methods doc 14.2: H4 and H5 combined, H3 as fallback (never averaged in).
+
+    h3 = lt1_from_cs, h4 = alpha1_lt1, h5 = drift_bounds, h2 = hr_speed (or {"a", "b"}) results.
+    Final confidence is medium only if the picked result's own confidence is medium, a method outside the picked
+    ones agrees within 5 bpm, and no method with own confidence medium disagrees; never high.
+    """
+    vals = {"H3": _lt1_of(h3), "H4": _lt1_of(h4), "H5": _lt1_of(h5)}
+    confs = {"H3": "low", "H4": (h4 or {}).get("confidence"), "H5": (h5 or {}).get("confidence")}
+    out: dict[str, Any] = {"status": "insufficient_data", "hr": None, "pace_s_per_km": None, "method": None,
+                           "confidence": None, "own_confidence": None, "flags": [], "suggest": None,
+                           "h3": {"hr": (h3 or {}).get("hr"), "pace_s_per_km": (h3 or {}).get("pace_s_per_km")},
+                           "notes": [], "reasons": []}
+    v4, v5 = vals["H4"], vals["H5"]
+    if v4 is not None and v5 is not None:
+        if abs(v4 - v5) <= AGREE_BPM:
+            picked, hr = ["H4", "H5"], R((v4 + v5) / 2)
+            own = max(confs["H4"], confs["H5"], key=lambda c: _CONF_RANK.get(c, -1))
+        else:
+            name = "H4" if _CONF_RANK.get(confs["H4"], -1) > _CONF_RANK.get(confs["H5"], -1) else "H5"
+            picked, hr, own = [name], R(vals[name]), confs[name]
+            out["flags"].append(f"H4 and H5 disagree by {R(abs(v4 - v5))} bpm")
+            out["suggest"] = {"test": "F1", "hr": R((v4 + v5) / 2)}
+    elif v4 is not None or v5 is not None:
+        name = "H4" if v4 is not None else "H5"
+        picked, hr, own = [name], R(vals[name]), confs[name]
+    elif h3 and h3.get("status") == "ok":
+        picked, own = ["H3"], "low"
+        hr = None if vals["H3"] is None else R(vals["H3"])
+    else:
+        out["reasons"].append("no LT1 method gave an estimate")
+        return out
+    if picked == ["H3"]:
+        pace = h3.get("pace_s_per_km")
+    elif h2 and h2.get("status", "ok") == "ok" and h2.get("b"):
+        v = (hr - h2["a"]) / h2["b"]
+        pace = R(1000 / v) if v > 0 else None
+    elif "H4" in picked:
+        pace = h4.get("pace_s_per_km")
+    else:
+        pace = None
+    others = [v for m, v in vals.items() if m not in picked and v is not None]
+    vetoed = any(confs[m] == "medium" and abs(v - hr) > AGREE_BPM
+                 for m, v in vals.items() if v is not None and hr is not None)
+    agreed = hr is not None and any(abs(v - hr) <= AGREE_BPM for v in others)
+    out.update(status="ok", hr=hr, pace_s_per_km=pace, method="+".join(picked), own_confidence=own,
+               confidence="medium" if own == "medium" and agreed and not vetoed else "low")
+    out["notes"] += [f"H4: {n}" for n in (h4 or {}).get("notes") or []]
+    bounds = (h5 or {}).get("bounds") or {}
+    if (h5 or {}).get("status") != "ok" and hr is not None and (bounds.get("lower") is None) != (bounds.get("upper") is None):
+        lower, upper = bounds.get("lower"), bounds.get("upper")
+        text, ok = (f"LT1 HR >= {lower}", hr >= lower) if lower is not None else (f"LT1 HR <= {upper}", hr <= upper)
+        out["notes"].append(f"H5: {text} ({'consistent' if ok else 'inconsistent'} with {hr})")
+    return out
+
+
+# --- run selection (14.7) ---
+
+SEL_SLOTS = 6
+SEL_PERCENTILES = (10, 30, 50, 70, 90, 100)
+SEL_MIN_S = 1200
+SEL_MAX_GAIN = 15.0        # m per km, history picks
+STEADY_S = (1800, 5400)
+DRIFT_S = (3600, 7200)
+DRIFT_MAX_GAIN = 10.0      # m per km, drift picks
+FIT_MAX_DOWNLOADS = 6
+FIT_MIN_SPAN_MIN = 5.0
+FIT_BAND_BPM = 15
+FIT_WINDOW_S = 120
+FIT_STEP_S = 5
+
+
+def _row_id(row: dict) -> int:
+    return row.get("activityId")
+
+
+def _tie(row: dict) -> tuple[float, int]:
+    """Tie-break key: newest first, then lowest activity id."""
+    start = _start_time(row)
+    ts = (start.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds() if start else -math.inf
+    return -ts, _row_id(row)
+
+
+def _num(v: Any) -> float | None:
+    return v if isinstance(v, (int, float)) else None
+
+
+def _prefilter(row: dict, span: tuple[int, int | None], max_gain: float) -> str | None:
+    """List-row filter of 14.7; the reason a row is not a candidate, or None."""
+    kind = _type_key(row)
+    if kind != "running":
+        return f"not outdoor running ({kind})"
+    dur = _num(row.get("duration"))
+    if dur is None or dur < span[0] or (span[1] is not None and dur > span[1]):
+        return (f"duration outside {span[0] // 60}-{span[1] // 60} min" if span[1] is not None
+                else f"shorter than {span[0] // 60} min")
+    if _num(row.get("averageHR")) is None:
+        return "no average HR"
+    dist = _num(row.get("distance"))
+    if not dist:
+        return "no distance"
+    if (_num(row.get("elevationGain")) or 0) / (dist / 1000) > max_gain:
+        return f"elevation gain above {max_gain:g} m per km"
+    return None
+
+
+def _percentile_picks(pool: list[dict], key: str) -> tuple[list[int], list[dict]]:
+    """Up to 6 picks: for each p, the not yet picked row nearest the nearest-rank percentile of `key`."""
+    vals = sorted(r[key] for r in pool)
+    n = len(vals)
+    picks: list[int] = []
+    targets = []
+    for p in SEL_PERCENTILES:
+        if len(picks) == n:
+            break
+        target = vals[(p * n + 99) // 100 - 1]
+        rest = [r for r in pool if _row_id(r) not in picks]
+        best = min(rest, key=lambda r: (round(abs(r[key] - target), 9), *_tie(r)))
+        picks.append(_row_id(best))
+        targets.append({"p": p, "target": target, "id": _row_id(best)})
+    return picks, targets
+
+
+def select_history(rows_8w: list[dict], *, exclude: set[int] = frozenset()) -> dict:
+    """14.7 phase 1 on list rows only: up to 6 effort runs (races, then maxHR, then averageSpeed) and up to 6
+    steady runs (30-90 min, nearest-rank averageSpeed percentiles) among the rest. `exclude`: ids already picked."""
+    cands, skipped = [], []
+    for row in rows_8w:
+        if _row_id(row) in exclude:
+            continue
+        reason = _prefilter(row, (SEL_MIN_S, None), SEL_MAX_GAIN)
+        if reason:
+            skipped.append({"id": _row_id(row), "reason": reason})
+        else:
+            cands.append(row)
+
+    def effort_key(r: dict) -> tuple:
+        race = (r.get("eventType") or {}).get("typeKey") == "race"
+        return not race, -(_num(r.get("maxHR")) or 0), -(_num(r.get("averageSpeed")) or 0), *_tie(r)
+
+    effort = [_row_id(r) for r in sorted(cands, key=effort_key)[:SEL_SLOTS]]
+    pool = [r for r in cands if _row_id(r) not in effort and _num(r.get("averageSpeed")) is not None
+            and STEADY_S[0] <= r["duration"] <= STEADY_S[1]]
+    steady, targets = _percentile_picks(pool, "averageSpeed")
+    return {"effort": effort, "steady": steady, "steady_targets": targets, "skipped": skipped}
+
+
+def select_drift(rows_12w: list[dict], *, ref_hr: int | None, exclude: set[int] = frozenset()) -> dict:
+    """14.7 phase 2: up to 6 H5 drift picks among 60-120 min flat runs (previous-day rule of section 7).
+
+    With a ref: alternate nearest averageHR below ref, then at or above, continuing on the other side when one
+    runs out; without: nearest-rank percentiles of averageHR. `exclude`: ids to leave out (e.g. wrist runs).
+    """
+    cands, skipped = [], []
+    for row in rows_12w:
+        if _row_id(row) in exclude:
+            continue
+        reason = _prefilter(row, DRIFT_S, DRIFT_MAX_GAIN)
+        if reason is None and not drift_candidate(row, rows_12w):
+            reason = "within 24 h after a race or a run with aerobicTrainingEffect >= 4.0"
+        if reason:
+            skipped.append({"id": _row_id(row), "reason": reason})
+        else:
+            cands.append(row)
+    if ref_hr is None:
+        picks, targets = _percentile_picks(cands, "averageHR")
+        return {"picks": picks, "mode": "percentile", "ref_hr": None, "targets": targets, "skipped": skipped}
+    below = sorted((r for r in cands if r["averageHR"] < ref_hr),
+                   key=lambda r: (round(ref_hr - r["averageHR"], 9), *_tie(r)))
+    above = sorted((r for r in cands if r["averageHR"] >= ref_hr),
+                   key=lambda r: (round(r["averageHR"] - ref_hr, 9), *_tie(r)))
+    picks = []
+    while len(picks) < SEL_SLOTS and (below or above):
+        first, second = (below, above) if len(picks) % 2 == 0 else (above, below)
+        picks.append(_row_id((first or second).pop(0)))
+    return {"picks": picks, "mode": "alternate", "ref_hr": ref_hr, "targets": [], "skipped": skipped}
+
+
+def _window_hrs(table: list[dict]) -> list[float]:
+    """Mean HR of each qualifying 2-min window of a sample table (section 6 rules without the RR ones):
+    inside 600..4500 s, stop-free, flat, cadence >= 140, steady 30 s sub-windows, steady 120 s before, no 30 s
+    surge in the 180 s before, no coupling risk. Windows every 5 s, so each counts as 5 s of window centres."""
+    out = []
+    blocks, _ = _blocks(table)
+    for blk in blocks:
+        t0 = FIT_STEP_S * math.ceil(max(hrv.WINDOW_FROM_S, blk.t0 + hrv.PRIOR_SURGE_S) / FIT_STEP_S)
+        while t0 + FIT_WINDOW_S <= hrv.WINDOW_TO_S and t0 + FIT_WINDOW_S - blk.t0 < blk.n:
+            i = t0 - blk.t0
+            j = i + FIT_WINDOW_S
+            t0 += FIT_STEP_S
+            if not blk.window_ok(i, j):
+                continue
+            v = blk.speed(i, j)
+            band = hrv.SPEED_BAND * v
+            sub = hrv.SUB_WINDOW_S
+            if any(abs(blk.speed(k, k + sub) - v) > band for k in range(i, j, sub)):
+                continue
+            if abs(blk.speed(i - hrv.PRIOR_MEAN_S, i) - v) > band:
+                continue
+            if any(blk.speed(k, k + sub) > v + band for k in range(i - hrv.PRIOR_SURGE_S, i - sub + 1, FIT_STEP_S)):
+                continue
+            n_hr = FIT_WINDOW_S - (blk.bad_hr[j + 1] - blk.bad_hr[i + 1])
+            if n_hr < HR_COVERAGE * FIT_WINDOW_S:
+                continue
+            hr = (blk.hr_sum[j + 1] - blk.hr_sum[i + 1]) / n_hr
+            if hrv.coupled(hr, (blk.cad_sum[j + 1] - blk.cad_sum[i + 1]) / FIT_WINDOW_S):
+                continue
+            out.append(hr)
+    return out
+
+
+def fit_span_score(table: list[dict], ref_hr: int | None) -> float:
+    """14.7 span score in minutes: min(minutes of qualifying windows with HR in [ref - 15, ref), minutes in
+    [ref, ref + 15)); without a ref, the minutes with HR inside the run's middle 80% (nearest-rank P10..P90 of the
+    HR samples in 600..4500 s)."""
+    hrs = _window_hrs(table)
+    per = FIT_STEP_S / 60
+    if ref_hr is not None:
+        lo = sum(ref_hr - FIT_BAND_BPM <= h < ref_hr for h in hrs)
+        hi = sum(ref_hr <= h < ref_hr + FIT_BAND_BPM for h in hrs)
+        return min(lo, hi) * per
+    vals = sorted(r["hr"] for r in table
+                  if hrv.WINDOW_FROM_S < r["t"] <= hrv.WINDOW_TO_S and _clean_hr(r.get("hr")) is not None)
+    if not vals:
+        return 0.0
+    n = len(vals)
+    p10, p90 = vals[(10 * n + 99) // 100 - 1], vals[(90 * n + 99) // 100 - 1]
+    return sum(p10 <= h <= p90 for h in hrs) * per
+
+
+def _run_day(run: dict) -> date | None:
+    d = run.get("date")
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, date):
+        return d
+    try:
+        return date.fromisoformat(str(d)[:10])
+    except ValueError:
+        return None
+
+
+def select_fit(detailed: list[dict], *, ref_hr: int | None, cached: set[int], no_rr: set[int], rr_since: date,
+               unreliable: bool, include_wrist: bool = False) -> list[int]:
+    """14.7 FIT downloads for H4: up to 6 ids by span score (>= 5 min; ties newest first, then lowest id).
+
+    detailed = [{"id", "date", "hr_source", "table"}] (runs already fetched in detail). Skips cached and no-RR
+    runs, wrist runs (unless include_wrist) and runs before rr_since; [] while H4 is marked unreliable.
+    """
+    if unreliable:
+        return []
+    scored = []
+    for run in detailed:
+        rid = run["id"]
+        day = _run_day(run)
+        if rid in cached or rid in no_rr or day is None or day < rr_since:
+            continue
+        if run.get("hr_source") != "strap" and not include_wrist:
+            continue
+        score = fit_span_score(run["table"], ref_hr)
+        if score >= FIT_MIN_SPAN_MIN:
+            scored.append((round(score, 9), day, rid))
+    scored.sort(key=lambda s: (-s[0], -s[1].toordinal(), s[2]))
+    return [rid for *_, rid in scored[:FIT_MAX_DOWNLOADS]]

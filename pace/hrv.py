@@ -145,9 +145,30 @@ def dfa_alpha1(rr: list[float], *, n_min: int = 4, n_max: int = 16, lam: float |
     return _ols_slope(log_n, log_f)
 
 
-def _coupled(hr: float, cadence: float) -> bool:
+def coupled(hr: float, cadence: float) -> bool:
     """Cardio-locomotor coupling risk: HR within 5% of the step rate or of half of it."""
     return abs(hr - cadence) / cadence <= COUPLING_BAND or abs(hr - cadence / 2) / (cadence / 2) <= COUPLING_BAND
+
+
+def corrected_beats(aligned: list[dict[str, Any]]) -> tuple[list[float], list[float], list[bool]]:
+    """Artifact-corrected beats of a whole aligned series: (times, values, flag per raw beat).
+
+    A missed beat split into j values gets times evenly spaced inside its raw interval.
+    """
+    times = [b["t_s"] for b in aligned]
+    rr = [b["rr_s"] for b in aligned]
+    entries, flags = _correct(rr)
+    ctimes, cvals = [], []
+    for v, k, i, j in entries:
+        prev = times[k - 1] if k > 0 else times[k] - rr[k]
+        ctimes.append(prev + (times[k] - prev) * i / j)
+        cvals.append(v)
+    return ctimes, cvals, flags
+
+
+def bad_beat(beat: dict[str, Any]) -> bool:
+    """A beat no window may contain: a gap, a stop or a raw RR above 2 s."""
+    return bool(beat.get("gap")) or bool(beat.get("stop")) or beat["rr_s"] > GAP_RR_S
 
 
 def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5) -> dict[str, Any]:
@@ -163,17 +184,11 @@ def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5
     if not aligned:
         return result
     times = [b["t_s"] for b in aligned]
-    rr = [b["rr_s"] for b in aligned]
-    entries, flags = _correct(rr)
-    ctimes, cvals = [], []
-    for v, k, i, j in entries:
-        prev = times[k - 1] if k > 0 else times[k] - rr[k]
-        ctimes.append(prev + (times[k] - prev) * i / j)
-        cvals.append(v)
+    ctimes, cvals, flags = corrected_beats(aligned)
     flag_cum, bad_cum = [0], [0]
     for b, f in zip(aligned, flags, strict=True):
         flag_cum.append(flag_cum[-1] + f)
-        bad_cum.append(bad_cum[-1] + (bool(b.get("gap")) or bool(b.get("stop")) or b["rr_s"] > GAP_RR_S))
+        bad_cum.append(bad_cum[-1] + bad_beat(b))
 
     def dist_at(t: float) -> float | None:
         idx = bisect.bisect_right(times, t) - 1
@@ -224,7 +239,7 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
     if not x:
         return None
     hr = 60 / (sum(x) / len(x))
-    if _coupled(hr, cadence):  # counted only for windows that passed every check above
+    if coupled(hr, cadence):  # counted only for windows that passed every check above
         result["dropped_coupling"] += 1
         return None
     share = (flag_cum[hi] - flag_cum[lo]) / raw

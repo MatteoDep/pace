@@ -1,9 +1,13 @@
+import copy
 import json
-from datetime import datetime, timedelta
+import math
+import statistics
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from pace import hrv, zones
 from pace import thresholds as th
 from pace.workout import build_workout
 
@@ -696,3 +700,338 @@ def test_h5_bounds_wrist_caps_confidence_and_pace_guard():
     # v = (142 - 200) / 25 < 0: no pace instead of a negative or failing one
     assert th.drift_bounds(BASE, h2={"a": 200, "b": 25})["pace_s_per_km"] is None
     assert th.drift_bounds(BASE, h2={"a": 142, "b": 25})["pace_s_per_km"] is None
+
+
+# --- Task 4: spearman, alpha1 gate, H4 (methods doc 6, 14.2) ---
+
+def a1w(alpha1, hr, speed, cadence=172, share=0.01, n=20):
+    return [{"alpha1": alpha1, "hr": hr, "speed": speed, "cadence": cadence, "artifact_share": share,
+             "beats": 300} for _ in range(n)]
+
+
+H4_A = [(1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52), (0.60, 154, 3.76),
+        (0.50, 160, 4.00)]
+OBSERVED = [(126, 0.54), (133, 0.65), (136, 0.45), (139, 0.35), (142, 0.37), (148, 0.35), (151, 0.46),
+            (156, 0.61), (159, 0.63), (164, 1.03), (170, 1.13), (176, 0.99), (180, 0.35)]
+OBSERVED_CADENCE = [166, 168, 169, 170, 171, 172, 174, 176, 178, 180, 182, 185, 188]
+
+
+def h4_run(rid, pts, share=0.01, cadence=172, dropped=0):
+    return {"id": rid, "windows": [w for a, hr, v in pts for w in a1w(a, hr, v, cadence, share)],
+            "dropped_coupling": dropped}
+
+
+def test_spearman_average_ranks_for_ties():
+    assert th.spearman([1, 2, 3], [3, 2, 1]) == pytest.approx(-1)
+    assert th.spearman([1, 2, 2, 3], [1, 2, 3, 4]) == pytest.approx(4.5 / (4.5 * 5) ** 0.5)
+    assert th.spearman([1, 1, 1], [1, 2, 3]) == 0.0      # no variance: no monotonic relation
+    hr = [h for h, _ in OBSERVED]
+    a1 = [a for _, a in OBSERVED]
+    keep = list(range(11))
+    assert th.spearman([hr[i] for i in keep], [a1[i] for i in keep]) == pytest.approx(0.492, abs=0.001)
+
+
+def test_alpha1_gate_outcomes():
+    falling = [{"hr": 130 + 6 * k, "alpha1": 1.0 - 0.1 * k} for k in range(6)]
+    g = th.alpha1_gate(falling)
+    assert g["usable"] and g["outcome"] == "usable" and g["rho"] == pytest.approx(-1) and g["reasons"] == []
+    one = th.alpha1_gate(falling[:3])
+    assert one["outcome"] == "one_sided" and one["reasons"] == ["one-sided"] and not one["usable"]
+    rising = [{"hr": p["hr"], "alpha1": 1.5 - p["alpha1"]} for p in falling]
+    both = th.alpha1_gate(rising[:2] + falling[3:])
+    assert both["outcome"] == "not_monotonic" and both["reasons"][1] == "one-sided"
+    assert both["reasons"][0].startswith("not monotonic, rho = ")
+    assert th.alpha1_gate([])["outcome"] == "one_sided" and th.alpha1_gate([])["rho"] is None
+
+
+def test_h4_regression_worked_example():
+    a = h4_run(1, H4_A, share=0.01)
+    b = h4_run(2, [(x, hr + 2, v + 0.08) for x, hr, v in H4_A], share=0.02)
+    out = th.alpha1_lt1([a, b])
+    ra, rb = out["runs"]
+    assert ra["outcome"] == "usable" and ra["rho"] == pytest.approx(-1)
+    assert ra["fit"]["hr"]["c"] == pytest.approx(190) and ra["fit"]["hr"]["d"] == pytest.approx(-60)
+    assert ra["fit"]["speed"]["e"] == pytest.approx(5.20) and ra["fit"]["speed"]["f"] == pytest.approx(-2.40)
+    assert ra["fit"]["hr"]["r"] == pytest.approx(-1)
+    assert ra["lt1_hr"] == pytest.approx(145) and ra["lt1_speed_mps"] == pytest.approx(3.40)
+    assert rb["lt1_hr"] == pytest.approx(147) and rb["lt1_speed_mps"] == pytest.approx(3.48)
+    assert out["status"] == "ok" and out["hr"] == 146 and out["pace_s_per_km"] == 291
+    assert out["spread"] == pytest.approx(2) and out["artifact_share"] == pytest.approx(0.015)
+    assert out["confidence"] == "medium"
+
+
+def test_h4_confidence_low_with_one_run_wide_spread_or_artifacts():
+    assert th.alpha1_lt1([h4_run(1, H4_A)])["confidence"] == "low"
+    far = h4_run(2, [(x, hr + 8, v) for x, hr, v in H4_A], cadence=185)   # 168 bpm vs 172 would be coupled
+    wide = th.alpha1_lt1([h4_run(1, H4_A), far])
+    assert wide["spread"] == pytest.approx(8) and wide["confidence"] == "low"
+    dirty = th.alpha1_lt1([h4_run(1, H4_A, share=0.04), h4_run(2, H4_A, share=0.04)])
+    assert dirty["confidence"] == "low"
+
+
+def test_h4_crossing_requirements():
+    few = [(x, hr, v) for x, hr, v in H4_A]
+    short = {"id": 1, "windows": [w for a, hr, v in few for w in a1w(a, hr, v, n=10)], "dropped_coupling": 0}
+    out = th.alpha1_lt1([short])                     # gate passes, but only 30 points per side
+    assert out["runs"][0]["outcome"] == "usable" and out["runs"][0]["lt1_hr"] is None
+    assert out["status"] == "insufficient_data" and out["hr"] is None
+    flat_v = h4_run(2, [(x, hr, 3.0) for x, hr, _ in H4_A])
+    r = th.alpha1_lt1([flat_v])
+    assert r["runs"][0]["lt1_hr"] == pytest.approx(145) and r["runs"][0]["lt1_speed_mps"] is None
+    assert r["hr"] == 145 and r["pace_s_per_km"] is None
+
+
+def test_h4_one_sided_run_note_and_memory():
+    out = th.alpha1_lt1([h4_run(3, H4_A[:3])])
+    r = out["runs"][0]
+    assert r["outcome"] == "one_sided" and r["reasons"] == ["one-sided"]
+    assert r["notes"] == ["alpha1 above 0.75 up to 142 bpm"]
+    assert out["status"] == "alpha1_unusable" and out["hr"] is None
+    data = copy.deepcopy(zones.EMPTY)
+    zones.record_alpha1_outcome(data, r["outcome"], day=date(2026, 11, 17), activity=3)
+    assert data["h4"]["streak"] == 0
+
+
+def test_h4_gate_observed_pattern_not_monotonic_marks_unreliable():
+    def observed_run(rid):
+        ws = [w for (hr, a), c in zip(OBSERVED, OBSERVED_CADENCE) for w in a1w(a, hr, 3.0, cadence=c)]
+        return {"id": rid, "windows": ws, "dropped_coupling": 0}
+
+    out = th.alpha1_lt1([observed_run(5)])
+    r = out["runs"][0]
+    assert r["dropped_coupling"] == 40 and r["windows"] == 220
+    assert r["rho"] == pytest.approx(0.49, abs=0.005)
+    assert r["outcome"] == "not_monotonic" and r["reasons"][0] == "not monotonic, rho = 0.49"
+    assert out["status"] == "alpha1_unusable" and out["hr"] is None
+    data = copy.deepcopy(zones.EMPTY)
+    for rid in (5, 6):
+        res = th.alpha1_lt1([observed_run(rid)])["runs"][0]
+        zones.record_alpha1_outcome(data, res["outcome"], day=date(2026, 11, 17), activity=rid)
+    assert data["h4"]["unreliable"] is True
+    assert th.select_fit([], ref_hr=142, cached=set(), no_rr=set(), rr_since=date(2026, 9, 1),
+                         unreliable=data["h4"]["unreliable"]) == []
+
+
+# --- F3 ramp (methods doc 9a, 14.8) ---
+
+def ramp_beats(steps, *, step_s=240, warm=600, cool=300, art=None):
+    """Aligned beats and laps: warm-up, one lap per (hr, speed, cadence) step, cool-down. RR = 60 / HR exactly;
+    art = {step index: n} turns n beats of the step's last 120 s into "other" artifacts (0.7 x RR)."""
+    segs = [(warm, 120, 2.5, 170)] + [(step_s, hr, v, c) for hr, v, c in steps] + [(cool, 120, 2.5, 170)]
+    ends, acc = [], 0
+    for dur, *_ in segs:
+        acc += dur
+        ends.append(acc)
+    dist_sec, d = [0.0], 0.0
+    for s in range(1, acc + 2):
+        k = next((i for i, e in enumerate(ends) if s - 1 < e), len(segs) - 1)
+        d += segs[k][2]
+        dist_sec.append(d)
+    beats, t = [], 0.0
+    for k, (dur, hr, v, c) in enumerate(segs):
+        while t < ends[k]:   # the last beat of a segment may end just after it, never one of the next before
+            t += 60 / hr
+            beats.append({"t_s": t, "rr_s": 60 / hr, "hr": hr, "speed": v, "dist": dist_sec[math.floor(t)],
+                          "alt": 10.0, "cadence": c, "gap": False, "stop": False})
+    for k, n in (art or {}).items():
+        end = ends[k + 1]
+        idx = [i for i, b in enumerate(beats) if end - 120 <= b["t_s"] < end]
+        for i in idx[3::len(idx) // n][:n]:
+            beats[i]["rr_s"] *= 0.7
+    laps = [lap(0, warm)] + [lap(warm + step_s * k, step_s) for k in range(len(steps))]
+    laps.append(lap(warm + step_s * len(steps), cool))
+    return beats, laps
+
+
+RAMP_STEPS = [(x, hr, v) for x, hr, v in H4_A]
+
+
+@pytest.fixture
+def inject_alpha1(monkeypatch):
+    """Replace DFA by a lookup on the window HR (alpha1 injected per step)."""
+    table_ = {}
+    monkeypatch.setattr(hrv, "dfa_alpha1", lambda x, **kw: table_[round(60 / statistics.fmean(x))])
+    return table_
+
+
+def test_f3_worked_example(inject_alpha1):
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS], art={k: 3 for k in range(6)})
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    assert out["dropped_coupling"] == 0 and out["gate"]["rho"] == pytest.approx(-1)
+    assert out["outcome"] == "usable" and out["status"] == "ok"
+    assert all(s["status"] == "kept" for s in out["steps"]) and len(out["steps"]) == 6
+    assert all(0.009 <= s["artifact_share"] <= 0.012 for s in out["steps"])
+    assert out["fit"]["hr"]["c"] == pytest.approx(190) and out["fit"]["hr"]["d"] == pytest.approx(-60)
+    assert out["fit"]["speed"]["e"] == pytest.approx(5.20) and out["fit"]["speed"]["f"] == pytest.approx(-2.40)
+    assert out["lt1"] == {"hr": 145, "pace_s_per_km": 294}
+    assert out["confidence"] == "medium" and out["bracketed"] and out["saveable"]
+    tm = th.ramp(beats, laps=laps, treadmill=True)
+    assert tm["lt1"] == {"hr": 145, "pace_s_per_km": None} and tm["fit"]["speed"] is None
+
+
+def test_f3_artifact_step_dropped_one_sided(inject_alpha1):
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS], art={3: 18})
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    step = out["steps"][3]
+    assert step["status"] == "dropped" and step["artifact_share"] > 0.05 and "artifact" in step["reason"]
+    assert out["status"] == "alpha1_unusable" and out["outcome"] == "one_sided"
+    assert out["reasons"] == ["one-sided"] and out["lt1"] is None and not out["saveable"]
+
+
+def test_f3_first_three_steps_one_sided(inject_alpha1):
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS[:3]])
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    assert out["status"] == "alpha1_unusable" and out["reasons"] == ["one-sided"]
+
+
+def test_f3_observed_ramp_is_unusable(inject_alpha1):
+    inject_alpha1.update(dict(OBSERVED))
+    beats, laps = ramp_beats([(hr, 3.0, c) for (hr, _), c in zip(OBSERVED, OBSERVED_CADENCE)], step_s=180)
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    assert out["dropped_coupling"] == 2
+    assert [s["step"] for s in out["steps"] if s["status"] == "dropped"] == [12, 13]
+    assert out["gate"]["rho"] == pytest.approx(0.49, abs=0.005)
+    assert out["status"] == "alpha1_unusable" and out["outcome"] == "not_monotonic"
+    assert out["reasons"] == ["not monotonic, rho = 0.49", "one-sided"]
+    assert out["lt1"] is None and not out["saveable"]
+    data = copy.deepcopy(zones.EMPTY)
+    zones.record_alpha1_outcome(data, out["outcome"], day=date(2026, 11, 17), activity=9)
+    assert data["h4"]["streak"] == 1
+
+
+def test_f3_needs_laps_and_skips_gaps(inject_alpha1):
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS])
+    assert th.ramp(beats, laps=[], treadmill=False)["status"] == "rejected"
+    assert th.ramp(beats, laps=laps[:2], treadmill=False)["status"] == "rejected"
+    end = 600 + 240
+    next(b for b in beats if b["t_s"] > end - 60)["gap"] = True
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    assert out["steps"][0]["status"] == "skipped" and out["outcome"] == "one_sided"
+
+
+# --- LT1 combination (14.2) ---
+
+H2_OK = {"status": "ok", "a": 60, "b": 25}
+H3_142 = {"status": "ok", "hr": 142, "pace_s_per_km": 304, "speed_mps": 3.292, "confidence": "low"}
+
+
+def h5(hr, conf="medium"):
+    return {"status": "ok", "estimate": hr, "pace_s_per_km": None, "confidence": conf, "notes": [],
+            "bounds": {"lower": hr - 4, "upper": hr + 4}}
+
+
+def h4(hr, conf="medium", pace=291):
+    return {"status": "ok", "hr": hr, "pace_s_per_km": pace, "confidence": conf, "notes": []}
+
+
+def test_combine_agreement():
+    out = th.combine_lt1(H3_142, h4(146), h5(142), H2_OK)
+    assert out["status"] == "ok" and out["method"] == "H4+H5"
+    assert out["hr"] == 144 and out["pace_s_per_km"] == 298 and out["confidence"] == "medium"
+    assert out["flags"] == [] and out["suggest"] is None and out["h3"]["hr"] == 142
+
+
+def test_combine_disagreement_picks_h5():
+    out = th.combine_lt1(H3_142, h4(152), h5(142), H2_OK)
+    assert out["method"] == "H5" and out["hr"] == 142 and out["pace_s_per_km"] == 305
+    assert out["confidence"] == "low" and out["flags"] == ["H4 and H5 disagree by 10 bpm"]
+    assert out["suggest"] == {"test": "F1", "hr": 147}
+    high = th.combine_lt1(H3_142, h4(152, "medium"), h5(142, "low"), H2_OK)
+    assert high["method"] == "H4" and high["hr"] == 152
+
+
+def test_combine_falls_back_to_h3():
+    one_sided = {"status": "insufficient_data", "estimate": None, "confidence": None, "notes": ["LT1 HR >= 138"],
+                 "bounds": {"lower": 138, "upper": None}}
+    unusable = {"status": "alpha1_unusable", "hr": None, "notes": []}
+    out = th.combine_lt1(H3_142, unusable, one_sided, H2_OK)
+    assert out["method"] == "H3" and out["hr"] == 142 and out["pace_s_per_km"] == 304
+    assert out["confidence"] == "low"
+    assert "H5: LT1 HR >= 138 (consistent with 142)" in out["notes"]
+    assert th.combine_lt1(None, None, None, None)["status"] == "insufficient_data"
+
+
+def test_combine_single_method_and_pace_sources():
+    only4 = th.combine_lt1(H3_142, h4(144), None, None)       # no H2: H4's own pace
+    assert only4["method"] == "H4" and only4["pace_s_per_km"] == 291 and only4["confidence"] == "medium"
+    only5 = th.combine_lt1({"status": "ok", "hr": None, "pace_s_per_km": 304, "confidence": "low"},
+                           None, h5(142), None)                # H5 alone without H2: no pace; nothing agrees
+    assert only5["method"] == "H5" and only5["pace_s_per_km"] is None and only5["confidence"] == "low"
+
+
+# --- run selection (14.7) ---
+
+def srow(aid, day, *, speed=3.0, max_hr=160, avg_hr=140, dur=3000, race=False, type_key="running", gain=0.0):
+    return {"activityId": aid, "activityType": {"typeKey": type_key},
+            "startTimeGMT": f"2026-11-{day:02d} 08:00:00", "duration": dur, "averageHR": avg_hr, "maxHR": max_hr,
+            "averageSpeed": speed, "elevationGain": gain, "distance": speed * dur,
+            "eventType": {"typeKey": "race" if race else "uncategorized"}}
+
+
+def test_select_history_effort_ranking_and_skips():
+    rows = [srow(1, 3, max_hr=150, race=True), srow(2, 4, max_hr=185), srow(3, 5, max_hr=180, speed=3.0),
+            srow(4, 5, max_hr=180, speed=3.5), srow(5, 6, max_hr=175), srow(6, 9, max_hr=175),
+            srow(7, 10, max_hr=170), srow(8, 10, max_hr=170),
+            srow(20, 1, type_key="treadmill_running"), srow(21, 1, type_key="trail_running"),
+            srow(22, 1, dur=1100), srow(23, 1, avg_hr=None), srow(24, 1, gain=200.0)]
+    out = th.select_history(rows)
+    assert out["effort"] == [1, 2, 4, 3, 6, 5]
+    assert out["steady"] == [7, 8]           # fewer candidates than slots: each picked once
+    assert {s["id"] for s in out["skipped"]} == {20, 21, 22, 23, 24}
+    assert all(s["reason"] for s in out["skipped"])
+    assert th.select_history(rows, exclude={1, 2})["effort"] == [4, 3, 6, 5, 7, 8]
+
+
+def test_select_history_steady_nearest_rank_percentiles():
+    effort = [srow(100 + k, 1, max_hr=190, dur=1500) for k in range(6)]   # 25 min: effort only
+    steady = [srow(11 + k, 2, speed=2.5 + 0.1 * k, max_hr=150) for k in range(10)]
+    out = th.select_history(effort + steady)
+    assert out["effort"] == [100, 101, 102, 103, 104, 105]
+    assert out["steady"] == [11, 13, 15, 17, 19, 20]
+    assert [t["p"] for t in out["steady_targets"]] == [10, 30, 50, 70, 90, 100]
+    ties = [srow(31, 5, max_hr=150), srow(32, 9, max_hr=150), srow(33, 9, max_hr=150), srow(34, 9, dur=6000)]
+    assert th.select_history(effort + ties)["steady"] == [32, 33, 31]     # 34 is longer than 90 min
+
+
+def test_select_drift_alternates_and_continues_on_the_other_side():
+    hrs = {1: 141, 2: 138, 3: 142, 4: 145, 5: 150, 6: 155, 7: 160}
+    rows = [srow(i, 2 + i, avg_hr=h, dur=4000) for i, h in hrs.items()]
+    rows += [srow(8, 12, avg_hr=141, dur=3000), srow(9, 12, avg_hr=141, dur=4000, type_key="treadmill_running"),
+             srow(10, 12, avg_hr=141, dur=4000, gain=200.0)]
+    out = th.select_drift(rows, ref_hr=142)
+    assert out["picks"] == [1, 3, 2, 4, 5, 6]
+    assert {s["id"] for s in out["skipped"]} == {8, 9, 10}
+    after_race = rows + [srow(11, 14, race=True, dur=1500), dict(srow(12, 14, avg_hr=139, dur=4000),
+                                                                 startTimeGMT="2026-11-14 20:00:00")]
+    assert 12 not in th.select_drift(after_race, ref_hr=142)["picks"]
+    no_ref = th.select_drift(rows, ref_hr=None)
+    assert no_ref["picks"] == [2, 3, 4, 5, 7, 6]   # targets 138, 142, 145, 150, 160, then 160 again -> 155
+    assert th.select_drift(rows, ref_hr=142, exclude={1})["picks"] == [2, 3, 4, 5, 6, 7]
+
+
+def prog_table(split=2400, hr1=135, hr2=150):
+    return table(4600, lambda t: 3.0, hr_fn=lambda t: hr1 if t <= split else hr2)
+
+
+def test_fit_span_score_minutes_each_side():
+    assert th.fit_span_score(prog_table(), 142) == pytest.approx(348 * 5 / 60)
+    assert th.fit_span_score(prog_table(), None) == pytest.approx(757 * 5 / 60)
+    assert th.fit_span_score(prog_table(hr1=150), 142) == 0
+
+
+def test_select_fit_order_cache_no_rr_and_cap():
+    def det(rid, day, tbl=None, src="strap"):
+        return {"id": rid, "date": date(2026, 10, day), "hr_source": src, "table": tbl or prog_table()}
+
+    runs = [det(1, 5), det(2, 9), det(3, 9, prog_table(hr1=150)), det(4, 10), det(5, 11), det(6, 12, src="wrist")]
+    runs.append({**det(7, 1), "date": date(2026, 8, 30)})
+    kw = {"ref_hr": 142, "rr_since": date(2026, 9, 1), "unreliable": False}
+    assert th.select_fit(runs, cached={4}, no_rr={5}, **kw) == [2, 1]
+    assert th.select_fit(runs, cached=set(), no_rr=set(), unreliable=True, ref_hr=142,
+                         rr_since=date(2026, 9, 1)) == []
+    many = [det(10 + k, 1 + k) for k in range(7)]
+    assert th.select_fit(many, cached=set(), no_rr=set(), **kw) == [16, 15, 14, 13, 12, 11]
