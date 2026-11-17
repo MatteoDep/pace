@@ -26,8 +26,10 @@ def _summary(data: dict, metric: str) -> dict:
               "projected": w["projected"][key]} for w in data["weeks"]]
     today_row = next((d for d in data["days"] if d["date"] == data["today"]), None)
     empty = not any(w["projected"] or w["actual"] for w in weeks)
+    plan_ahead = any(d["planned"] is not None for d in data["days"] if d["date"] >= data["today"])
     return {"metric": metric, "sport": data["sport"], "weeks": weeks,
-            "rolling7_today": today_row["rolling7"][key] if today_row else None, "empty": empty}
+            "rolling7_today": today_row["rolling7"][key] if today_row else None, "plan_ahead": plan_ahead,
+            "empty": empty}
 
 
 def render(data: dict, out: Path, *, metric: str = "km", **_: Any) -> dict:
@@ -60,10 +62,13 @@ def render(data: dict, out: Path, *, metric: str = "km", **_: Any) -> dict:
             ax.bar(x, ahead, width, bottom=actual, align="edge", color=style.COLORS["projected"],
                    edgecolor=style.COLORS["surface"], linewidth=1)
             digits = 1 if metric == "hours" else 0
-            ax.annotate(f"{actual:.{digits}f} / {row['projected']:.{digits}f}",
-                        (style.noon(mon) + timedelta(days=3), row["projected"]), xytext=(0, 4), textcoords="offset points", ha="center", va="bottom", fontsize=10,
-                        color=style.COLORS["text"], zorder=4,
-                        bbox={"boxstyle": "round,pad=0.2", "facecolor": style.COLORS["surface"], "edgecolor": "none"})
+            if actual or row["projected"]:
+                ax.annotate(f"{actual:.{digits}f} / {row['projected']:.{digits}f}",
+                            (style.noon(mon) + timedelta(days=3), row["projected"]), xytext=(0, 4),
+                            textcoords="offset points", ha="center", va="bottom", fontsize=10,
+                            color=style.COLORS["text"], zorder=4,
+                            bbox={"boxstyle": "round,pad=0.2", "facecolor": style.COLORS["surface"],
+                                  "edgecolor": "none"})
         else:
             ax.bar(x, row["projected"], width, align="edge", color=style.COLORS["projected"])
 
@@ -72,7 +77,7 @@ def render(data: dict, out: Path, *, metric: str = "km", **_: Any) -> dict:
     future = [(x, y) for x, y, d in days if d >= data["today"]]
     if past:
         ax.plot(*zip(*past, strict=True), color=style.COLORS["line"])
-    if future:
+    if future and summary["plan_ahead"]:
         ax.plot(*zip(*future, strict=True), color=style.COLORS["line"], linestyle=(0, (3, 2)))
     if start <= today <= end:
         style.today_line(ax, today)

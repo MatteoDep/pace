@@ -115,3 +115,19 @@ def test_sleep_and_recovery_charts(monkeypatch, tmp_path) -> None:
     assert all(c.startswith("/sleep-service/stats/sleep/daily/") for c in calls)
     code, doc = _run("recovery", "--weeks", "2")
     assert code == 2 and doc["error"]["code"] == "bad_args"
+
+
+def test_health_chart_default_range_is_90_days(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    async def safe_call(method, *args, **kwargs):
+        calls.append(args[0])
+        return True, {"individualStats": [], "overallStats": {}}, None
+
+    monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
+    today = date.today()
+    code, doc = _run("sleep", "--out", str(tmp_path / "s.png"))
+    assert code == 0 and doc["data"]["range"] == {"from": (today - timedelta(days=90)).isoformat(),
+                                                  "to": today.isoformat()}
+    assert doc["data"]["summary"]["empty"] is True
+    assert len(calls) >= 4  # 91 days need at least four 28-day windows

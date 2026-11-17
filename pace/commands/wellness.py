@@ -2,9 +2,8 @@
 
 from datetime import date
 
-
-from pace.charts import sources
 from pace.cache import Cache, CacheTracker
+from pace.charts import sources
 from pace.dates import resolve_range
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import DAYS_OPT, FROM_OPT, NO_CACHE_OPT, TO_OPT, build_group

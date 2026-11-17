@@ -423,16 +423,16 @@ Kinds so far:
 
 - `volume`: weekly bars and the rolling 7-day sum, from the same data as `pace load`.
   Flags: `--weeks`, `--weeks-ahead` and `--sport` as in `pace load` (same defaults and checks), and `--metric` `km` (default), `elev` (elevation gain, m) or `hours`.
-  Past weeks show `actual`; the current week shows `actual` with the rest of `projected` stacked lighter and labeled `actual / projected`; future weeks show `projected`, lighter.
+  Past weeks show `actual`; the current week shows `actual` with the rest of `projected` stacked lighter and labeled `actual / projected` (no label when both are 0); future weeks show `projected`, lighter.
   The rolling 7-day line runs at daily resolution, solid up to today and dashed after, so on each Sunday it meets the top of that week's bar.
-  `summary = {"metric", "sport", "weeks": [{"week", "actual", "projected"}], "rolling7_today", "empty"}`: `actual` is null for future weeks, `rolling7_today` is null when today is outside the range.
+  `summary = {"metric", "sport", "weeks": [{"week", "actual", "projected"}], "rolling7_today", "plan_ahead", "empty"}`: `actual` is null for future weeks, `rolling7_today` is null when today is outside the range, `plan_ahead` is false when no session is planned from today on (the line then stops at today instead of dropping to zero).
 - `plan`: one mark per plan session on a date axis, one row per sport, colored and shaped by its `plan status` status; unplanned activities are hollow circles.
   Flags: `--from`, `--to`, `--past`, `--ahead` as in `plan status`; the default range is 14 days back and 14 ahead.
   It makes the same single activities call as `plan status` and never fetches effort.
   `summary = {"counts": {status: n}, "unplanned", "empty"}`, counting every session in the range by its derived status.
 
 - `recovery`: daily resting heart rate (dots) and its 7-day trailing calendar mean (line), from `pace wellness sleep-range`.
-  Flags: `--from`, `--to`, `--past`, `--ahead`; the default range is 28 days back through today.
+  Flags: `--from`, `--to`, `--past`, `--ahead`; the default range is 90 days back through today (the 28-day Garmin cap is handled by chunking).
   The mean covers the 7 calendar days ending on each day and ignores days without a value; the fetch reads 6 days before the range so the first means are complete.
   HRV (`hrv` dots and `hrv_7d` dashed line) goes on a second axis only when any value in the range is non-null.
   `summary = {"days": [{"date", "rhr", "rhr_7d"} (plus "hrv", "hrv_7d" when available)], "rhr_7d_latest", "hrv_available", "empty"}`.

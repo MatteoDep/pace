@@ -167,3 +167,51 @@ def test_recovery_empty_note(tmp_path) -> None:
     assert _png_size(out) == (1200, 675)
     assert summary == {"days": [], "rhr_7d_latest": None, "hrv_available": False, "empty": True}
     assert sleep.render(data, tmp_path / "s.png")["empty"] is True
+
+
+def test_volume_without_plan_stops_line_at_today(tmp_path) -> None:
+    acts = [_act(1, "2026-11-03", 10), _act(4, "2026-11-17", 12)]
+    data = aggregate(acts, [], start=date(2026, 11, 2), end=date(2026, 11, 29), today=TODAY, sport="running")
+    data = {**data, "today": TODAY.isoformat()}
+    summary = volume.render(data, tmp_path / "v.png", metric="km")
+    assert summary["plan_ahead"] is False and summary["empty"] is False
+    assert volume.render(_volume_data(), tmp_path / "v2.png", metric="km")["plan_ahead"] is True
+
+
+def test_volume_no_dashed_segment_without_plan(tmp_path, monkeypatch) -> None:
+    from matplotlib.axes import Axes
+
+    styles = []
+    orig = Axes.plot
+
+    def spy(self, *a, **kw):
+        styles.append(kw.get("linestyle"))
+        return orig(self, *a, **kw)
+
+    monkeypatch.setattr(Axes, "plot", spy)
+    acts = [_act(4, "2026-11-17", 12)]
+    data = aggregate(acts, [], start=date(2026, 11, 2), end=date(2026, 11, 29), today=TODAY, sport="running")
+    volume.render({**data, "today": TODAY.isoformat()}, tmp_path / "v.png", metric="km")
+    assert styles == [None]
+    styles.clear()
+    volume.render(_volume_data(), tmp_path / "v2.png", metric="km")
+    assert len(styles) == 2 and styles[1] is not None
+
+
+def test_volume_current_week_label_hidden_when_zero(tmp_path, monkeypatch) -> None:
+    from matplotlib.axes import Axes
+
+    labels = []
+    orig = Axes.annotate
+
+    def spy(self, text, *a, **kw):
+        labels.append(text)
+        return orig(self, text, *a, **kw)
+
+    monkeypatch.setattr(Axes, "annotate", spy)
+    data = aggregate([_act(1, "2026-11-03", 10)], [], start=date(2026, 11, 2), end=date(2026, 11, 29), today=TODAY,
+                     sport="running")
+    volume.render({**data, "today": TODAY.isoformat()}, tmp_path / "v.png", metric="km")
+    assert not any("/" in t for t in labels)
+    volume.render(_volume_data(), tmp_path / "v2.png", metric="km")
+    assert any("/" in t for t in labels)

@@ -51,7 +51,8 @@ def api(monkeypatch):
 def test_sleep_chunks_fixed_windows() -> None:
     a = sources.sleep_chunks(date(2026, 9, 20), TODAY)
     b = sources.sleep_chunks(date(2026, 9, 20), TODAY - timedelta(days=1))
-    assert a[:-1] == b[:-1] or a[:-2] == b[:-2]
+    # the range end only clips the window holding it, so every earlier chunk is identical
+    assert len(a) == len(b) and a[:-1] == b[:-1]
     assert all((hi - lo).days + 1 <= 28 for lo, hi in a)
     days = [lo + timedelta(days=i) for lo, hi in a for i in range((hi - lo).days + 1)]
     assert days == [date(2026, 9, 20) + timedelta(days=i) for i in range((TODAY - date(2026, 9, 20)).days + 1)]
@@ -60,7 +61,7 @@ def test_sleep_chunks_fixed_windows() -> None:
     assert sources.sleep_chunks(TODAY, TODAY - timedelta(days=1)) == []
     # a range ending today and one ending yesterday share every chunk but the last
     c = sources.sleep_chunks(TODAY - timedelta(days=59), TODAY - timedelta(days=1))
-    assert long[:-1] == c[:-1] or long[:-2] == c[:-2]
+    assert len(long) == len(c) and long[:-1] == c[:-1]
 
 
 def test_sleep_rows_mapping(api, tmp_path) -> None:

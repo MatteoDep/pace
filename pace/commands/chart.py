@@ -23,7 +23,7 @@ DAY_FLAGS = ("--from", "--to", "--past", "--ahead")
 KIND_FLAGS: dict[str, tuple[str, ...]] = {"volume": (*WEEK_FLAGS, "--sport"), "plan": DAY_FLAGS, "recovery": DAY_FLAGS,
                                     "sleep": DAY_FLAGS}
 #: Day-range defaults (past, ahead) for kinds keyed by days.
-DAY_DEFAULTS: dict[str, tuple[int, int]] = {"plan": (14, 14), "recovery": (28, 0), "sleep": (28, 0)}
+DAY_DEFAULTS: dict[str, tuple[int, int]] = {"plan": (14, 14), "recovery": (90, 0), "sleep": (90, 0)}
 
 
 def _check(kind: str, item_id: str | None, given: dict[str, Any]) -> int | None:
