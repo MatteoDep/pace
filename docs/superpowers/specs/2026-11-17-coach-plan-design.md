@@ -219,6 +219,7 @@ Output also carries range totals: planned vs actual time and distance per sport,
   The user can mark a session `done` by hand when Garmin has no activity for it (stored status `done`).
 - `plan push` skips a session that is already pushed and unchanged; `--force` replaces it anyway.
 - Sessions dated in the past are never pushed, re-pushed or unpushed (deleting the workout would erase that day from the Garmin calendar).
+  Refined after the plan 2 review: push needs a session date of today or later; unpush (and the delete step of a re-push) is refused only when both the session date and the day its workout occupies on Garmin (`pushed_as.date`) are in the past; a past session that still has its Garmin workout can be marked `skipped` or `done`; `plan remove` and `plan new` wait for any push in flight.
 - E-bike activities count as cycling; the status carries activity type and average HR so the coach can judge whether the effort was comparable.
 - `plan status` includes RPE/feel for matched and unplanned activities (one cached call per activity; the user logs both after every run).
 - An activity's `workoutId` links it to the pushed session it was run from; that link wins over duration-based matching.
