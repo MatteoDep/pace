@@ -17,12 +17,14 @@ async def cached_call(
     ttl: int,
     tracker: CacheTracker | None = None,
     refresh: bool = False,
+    key_prefix: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Call a Garmin method through `safe_call`, optionally via the cache. Raises PaceError.
 
     `refresh` bypasses the cache read but still writes the fresh result (used by --no-cache,
     which refreshes rather than fully disabling the cache); it is ignored when `cache is None`.
+    `key_prefix` gives a caller its own cache keys (`zones:get_activity:ID`), so it can keep its own TTL.
     """
     async def fetch() -> Any:
         ok, data, err = await safe_call(method, *args, **kwargs)
@@ -37,7 +39,7 @@ async def cached_call(
             tracker.add(False, 0)
         return value
 
-    key_parts = [method, *(str(a) for a in args)]
+    key_parts = [*([key_prefix] if key_prefix else []), method, *(str(a) for a in args)]
     if kwargs:
         key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
     value, hit, age = await cache.get_or_fetch(":".join(key_parts), fetch, ttl=ttl, refresh=refresh)
