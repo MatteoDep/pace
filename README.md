@@ -77,7 +77,15 @@ The diary, the plan and the zones records are local files under `$PACE_HOME` (de
 
 `pace chart` writes PNG charts (1200 x 675 px) to `$PACE_HOME/charts/` unless `--out` names a `.png` path; the envelope returns the path.
 Output contract: `docs/CONTRACT.md`.
-Skill for Claude Code: `.claude/skills/pace/SKILL.md` -- planned (plan 3; not yet in the repo), to be installed with `ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace`.
+## Claude Code skill
+
+```bash
+ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace
+```
+
+The skill loads in any Claude Code session when you talk about training or your Garmin data.
+`pace` must be on PATH (it is when this repo's `.venv/bin` is on PATH, or after `uv tool install -e .`).
+It lives in `.claude/skills/pace/`: `SKILL.md` (always loaded) plus `reference.md`, `coaching.md` and `dashboard.md`, read when needed; `tests/test_skill.py` keeps every `pace ...` command and flag in it in sync with `pace schema`.
 
 ## Cache and config
 
