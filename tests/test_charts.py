@@ -317,3 +317,83 @@ def test_intensity_accepts_activity_type_dicts(tmp_path) -> None:
                            {**ride, "activityType": {"typeKey": "cycling"}}], "sessions": [], "sport": "running",
             "range": {"from": "2026-11-09", "to": "2026-11-15"}, "today": "2026-11-12"}
     assert intensity.render(data, tmp_path / "i.png")["weeks"][0]["zones_s"] == [0, 600, 0, 0, 0]
+
+
+def test_volume_summary_missing_for_the_metric(tmp_path) -> None:
+    data = aggregate([], [_session(1, "2026-11-20", None, elev=80), _session(2, "2026-11-21", 10)],
+                     start=date(2026, 11, 16), end=date(2026, 11, 22), today=TODAY, sport="running")
+    data = {**data, "today": TODAY.isoformat()}
+    km = volume.render(data, tmp_path / "k.png", metric="km")
+    elev = volume.render(data, tmp_path / "e.png", metric="elev")
+    assert km["missing"] == 1 and elev["missing"] == 1
+    # session 1 has no km target (counted missing for km) and an elevation; session 2 has km but no elevation
+    assert km["empty"] is False and elev["empty"] is False
+    only = aggregate([], [_session(3, "2026-11-20", None)], start=date(2026, 11, 16), end=date(2026, 11, 22),
+                     today=TODAY, sport="running")
+    summary = volume.render({**only, "today": TODAY.isoformat()}, tmp_path / "m.png", metric="km")
+    assert summary["empty"] is True and summary["missing"] == 1
+
+
+def _run_details(n: int, step_s: int) -> dict:
+    keys = ("directTimestamp", "directHeartRate", "directSpeed", "sumDistance", "directElevation")
+    rows = [{"metrics": [1_700_000_000_000 + i * step_s * 1000, 140, 3.0, i * step_s * 3.0, 100.0]} for i in range(n)]
+    return {"metricDescriptors": [{"key": k, "metricsIndex": i} for i, k in enumerate(keys)],
+            "activityDetailMetrics": rows}
+
+
+def test_activity_bucket_is_finest_under_300_rows() -> None:
+    from pace.charts import activity
+
+    short = {"details": _run_details(2100, 1)}  # 35 min at 1 Hz
+    table, bucket = activity._table(short)
+    assert bucket == "1m" and len(table["rows"]) <= 300 and len(table["rows"]) >= 35
+    sparse = {"details": _run_details(210, 10)}  # 35 min at 0.1 Hz: raw samples already fit
+    assert activity._table(sparse)[1] == "none"
+    long = {"details": _run_details(10800, 1)}  # 3 h at 1 Hz
+    table, bucket = activity._table(long)
+    assert bucket == "1m" and 120 < len(table["rows"]) <= 300
+    ultra = {"details": _run_details(21600, 1)}  # 6 h: 1 min would be 360 rows
+    assert activity._table(ultra)[1] == "5m"
+
+
+def test_activity_table_built_once(tmp_path, monkeypatch) -> None:
+    from pace.charts import activity
+
+    calls = []
+    orig = activity.details_table
+    monkeypatch.setattr(activity, "details_table", lambda *a, **k: (calls.append(a), orig(*a, **k))[1])
+    activity.render(_activity_data("running", [3.0, 3.5, 3.3]), tmp_path / "a.png")
+    assert len(calls) == 1
+
+
+def _titles(monkeypatch) -> list[str]:
+    from pace.charts import style
+
+    titles: list[str] = []
+    orig = style.save
+
+    def spy(fig, path):
+        titles.extend(a.get_title(loc='left') for a in fig.axes if a.get_title(loc='left'))
+        return orig(fig, path)
+
+    monkeypatch.setattr(style, "save", spy)
+    return titles
+
+
+def test_activity_title_uses_name_and_date(tmp_path, monkeypatch) -> None:
+    from pace.charts import activity
+
+    titles = _titles(monkeypatch)
+    data = _activity_data("running", [3.0, 3.5, 3.3])
+    data["info"]["activityName"] = "Morning Tempo"
+    activity.render(data, tmp_path / "a.png")
+    assert titles[0].startswith("Morning Tempo (2026-11-10)") and "9" not in titles[0].split(":")[0].split("(")[0]
+    titles.clear()
+    activity.render(_activity_data("running", [3.0, 3.5, 3.3]), tmp_path / "b.png")
+    assert titles[0].startswith("Activity (2026-11-10)")
+    titles.clear()
+    empty = _activity_data("running", [])
+    empty["details"] = {"metricDescriptors": [{"key": "directTimestamp", "metricsIndex": 0}],
+                        "activityDetailMetrics": []}
+    activity.render(empty, tmp_path / "c.png")
+    assert titles == ["Activity (2026-11-10)"]

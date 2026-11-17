@@ -138,3 +138,7 @@ def test_default_range() -> None:
     assert load.default_range(far, today=TODAY, weeks=1, weeks_ahead=None)[1].toordinal() == cap
     assert load.default_range(plan, today=TODAY, weeks=1, weeks_ahead=30)[1].toordinal() == cap
     assert load.default_range(far, today=TODAY, weeks=1, weeks_ahead=1)[1] == date(2026, 11, 29)
+
+
+def test_today_is_reported() -> None:
+    assert agg([], [], date(2026, 11, 9), date(2026, 11, 15))["today"] == "2026-11-18"

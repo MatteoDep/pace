@@ -121,7 +121,7 @@ def aggregate(activities: list[dict], sessions: list[dict], *, start: date, end:
             "projected": _round(w["projected"]),
         })
     return {"weeks": rows, "days": days, "range": {"from": start.isoformat(), "to": end.isoformat()},
-            "sport": sport}
+            "sport": sport, "today": today.isoformat()}
 
 
 def default_range(plan_data: dict, *, today: date, weeks: int, weeks_ahead: int | None) -> tuple[date, date]:

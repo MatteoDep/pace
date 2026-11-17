@@ -57,7 +57,7 @@ def chart(kind: str = typer.Argument(..., metavar="KIND", help="volume, plan, re
           sport: str | None = typer.Option(None, "--sport", help="volume, intensity: running (default) or all. intensity default range: whole weeks."),
           out: str | None = typer.Option(None, "--out", help="PNG path; default $PACE_HOME/charts/<name>.png."),
           no_cache: bool = NO_CACHE_OPT) -> None:
-    """Render a PNG chart; data.path is the file, data.summary the numbers it shows."""
+    """Render a PNG chart (volume, plan, recovery, sleep, weight, intensity, activity); data.path is the file, data.summary the numbers it shows."""
     async def work() -> Result:
         given = {"--weeks": weeks, "--weeks-ahead": weeks_ahead, "--from": from_, "--to": to, "--past": past,
                  "--ahead": ahead, "--metric": metric, "--sport": sport}

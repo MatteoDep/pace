@@ -17,7 +17,7 @@ from pace.dates import parse_date, resolve_range
 from pace.effort import parse_feel, parse_rpe, with_effort
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
-from pace.shape import BUCKETS, apply, choose_bucket, prune, tz_offset_s
+from pace.shape import BUCKETS, MAX_ROWS, apply, choose_bucket, prune, tz_offset_s
 from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
 
 app = typer.Typer(no_args_is_help=True, help="Workouts and activity history; set effort (RPE/feel) on one activity.")
@@ -171,7 +171,7 @@ def last(fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT
     run("activity last", echo, work)
 
 
-def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
+def details_table(payload: dict, bucket: str, max_rows: int = MAX_ROWS) -> tuple[dict, str]:
     """Reshape Garmin per-sample metrics into one bucketed table. Returns (table, bucket_used)."""
     index = {
         d.get("key"): d.get("metricsIndex")
@@ -197,7 +197,7 @@ def details_table(payload: dict, bucket: str) -> tuple[dict, str]:
         samples.append((int(ts), [m[index[k]] if index[k] < len(m) else None for k, _ in cols_present]))
     samples.sort(key=lambda s: s[0])
     span_s = (samples[-1][0] - samples[0][0]) // 1000 if len(samples) > 1 else 0
-    used = choose_bucket(span_s, len(samples)) if bucket == "auto" else bucket
+    used = choose_bucket(span_s, len(samples), max_rows) if bucket == "auto" else bucket
     offset = tz_offset_s(payload, samples[0][0] if samples else None)
     names = [c for _, c in cols_present]
 

@@ -386,7 +386,7 @@ The end is capped at 26 weeks ahead, also when `--weeks-ahead` asks for more.
 `--sport` is `running` (running family activities and running sessions, the default) or `all`; anything else, `--weeks 0` or a negative `--weeks-ahead` is `bad_args`.
 The range always covers whole ISO weeks (Monday to Sunday).
 
-`data = {"weeks", "days", "range": {"from", "to"}, "sport"}`.
+`data = {"weeks", "days", "range": {"from", "to"}, "sport", "today"}`; `today` is the local ISO date the split between actual and projected used, so consumers cut at the same day.
 Metrics are `km`, `elev_m` and `hours`, rounded to 2 decimals at output only.
 An activity counts `distance / 1000`, `elevationGain` and `movingDuration` (else `duration`) over 3600; a missing value counts 0.
 Its day is the local date from `startTimeLocal`, never the GMT one.
@@ -417,6 +417,7 @@ That method pages internally in requests the rate limiter does not count.
 Every chart is a PNG of exactly 1200 x 675 px with one shared light style.
 Without `--out` the file is `$PACE_HOME/charts/<name>.png`, where name is `volume-<metric>[-all]-<from>-<to>` for `volume`, `activity-<id>` for `activity` and `<kind>-<from>-<to>` for the others, so two volume charts with different metrics or sports never overwrite each other.
 `--out` must end in `.png`; its parent directories are created and `path` is returned absolute.
+A negative `--past` or `--ahead` (day-ranged kinds, also `plan show`, `plan status` and `workout calendar`) is `bad_args`.
 An unknown `KIND`, an `ID` given to a kind that takes none (or missing for `activity`), or a flag the kind does not use is `bad_args`.
 
 Kinds so far:
@@ -425,7 +426,7 @@ Kinds so far:
   Flags: `--weeks`, `--weeks-ahead` and `--sport` as in `pace load` (same defaults and checks), and `--metric` `km` (default), `elev` (elevation gain, m) or `hours`.
   Past weeks show `actual`; the current week shows `actual` with the rest of `projected` stacked lighter and labeled `actual / projected` (no label when both are 0); future weeks show `projected`, lighter.
   The rolling 7-day line runs at daily resolution, solid up to today and dashed after, so on each Sunday it meets the top of that week's bar.
-  `summary = {"metric", "sport", "weeks": [{"week", "actual", "projected"}], "rolling7_today", "plan_ahead", "empty"}`: `actual` is null for future weeks, `rolling7_today` is null when today is outside the range, `plan_ahead` is false when no session is planned from today on (the line then stops at today instead of dropping to zero).
+  `summary = {"metric", "sport", "weeks": [{"week", "actual", "projected"}], "rolling7_today", "plan_ahead", "missing", "empty"}`: `missing` counts the planned sessions in range whose target lacks this metric (the `planned.missing` totals of the weeks for it); `empty` is true when no week has actual or projected value for this metric, so with `missing` above 0 it means "planned, but with no target for this metric", not "nothing planned"; `actual` is null for future weeks, `rolling7_today` is null when today is outside the range, `plan_ahead` is false when no session is planned from today on (the line then stops at today instead of dropping to zero).
 - `plan`: one mark per plan session on a date axis, one row per sport, colored and shaped by its `plan status` status; unplanned activities are hollow circles.
   Flags: `--from`, `--to`, `--past`, `--ahead` as in `plan status`; the default range is 14 days back and 14 ahead.
   It makes the same single activities call as `plan status` and never fetches effort.
@@ -436,11 +437,12 @@ Kinds so far:
   The mean covers the 7 calendar days ending on each day and ignores days without a value; the fetch reads 6 days before the range so the first means are complete.
   HRV (`hrv` dots and `hrv_7d` dashed line) goes on a second axis only when any value in the range is non-null.
   `summary = {"days": [{"date", "rhr", "rhr_7d"} (plus "hrv", "hrv_7d" when available)], "rhr_7d_latest", "hrv_available", "empty"}`.
+  The data of `recovery`, `sleep` and `weight` stops at today even when `--to` is later (days after today are never requested).
 - `sleep`: stacked deep, light, REM and awake hours per night; the sleep score is a line on a second axis only when present.
   Flags and default range as `recovery`.
   `summary = {"nights": [{"date", "sleep_h", "deep_h", "light_h", "rem_h", "awake_h", "score"}], "sleep_7d_mean_h", "score_available", "empty"}`; `sleep_7d_mean_h` is the mean of the nights in the 7 calendar days ending at the last night, awake time excluded.
 
-- `weight`: one dot per weigh-in (the latest of each day) and its 7-day trailing calendar mean, from one `get_weigh_ins` call.
+- `weight`: one dot per weigh-in (the latest of each day) and its 7-day trailing calendar mean, from one `get_weigh_ins` call (cached 1 hour when the range ends today, 1 day when it ends yesterday, 7 days before).
   Flags and default range as `recovery`.
   The mean covers the weigh-ins within D-6 .. D and is drawn on days that have a weigh-in; the fetch reads 6 days before the range.
   `summary = {"points": [{"date", "kg", "kg_7d"}], "first", "last", "mean", "count", "empty"}`; `first`, `last` and `mean` are null when there are no weigh-ins.
@@ -450,7 +452,9 @@ Kinds so far:
   A range cut by explicit flags shows partial edge weeks, only the days inside it; sessions without a `duration_s` are counted per week and noted on the bar.
   `summary = {"sport", "weeks": [{"week", "start", "zones_s": [z1..z5], "planned_s": {easy, moderate, hard}, "planned_missing", "low_share"}], "empty"}`; `low_share` is the fraction of zone time in zones 1-2 (null when no zone time).
 - `activity ID`: pace (running family, min/km, faster is up, samples under 0.5 m/s dropped) or speed (other sports, km/h), heart rate on a second axis and elevation below, all over distance.
-  Takes no flags; it reads `get_activity_details` (bucketed as `pace activity details` does) and `get_activity` (type, summary), both cached for a day.
+  Takes no flags; it reads `get_activity_details` and `get_activity` (type, name, summary), both cached for a day.
+  The details use the finest bucket of the `pace activity details` ladder that gives at most 300 points (raw samples when there are that few or fewer).
+  The title is the activity name (else "Activity") and its local date, never the id.
   `range` is the day of the activity, `from` = `to`.
   `summary = {"activity_id", "family", "distance_km", "moving_time_s", "avg_pace_min_km" (running) or "avg_speed_kmh" (others), "avg_hr", "elevation_gain_m", "empty"}`.
 
@@ -460,7 +464,9 @@ Kinds so far:
 Row: `{"date", "sleep_s", "deep_s", "light_s", "rem_s", "awake_s", "rhr", "avg_hr", "hrv", "hrv_7d", "score"}`; seconds throughout, `sleep_s` is deep + light + REM (awake excluded), and any field is null when Garmin has none.
 `hrv`, `hrv_7d` and `score` are null on the current watch (Forerunner 55).
 It reads `/sleep-service/stats/sleep/daily/{from}/{to}` through `connectapi`, which accepts at most 28 days inclusive per call (29 is HTTP 400).
-The range is cut into fixed 28-day windows anchored on the calendar (day ordinal divided by 28), each clipped to the range, so a repeated read asks for the same windows and hits the cache.
+The range is cut into fixed 28-day windows anchored on the calendar (day ordinal divided by 28), each clipped only at its upper end (the range end or today, whichever is earlier).
+A window may therefore start before `--from`; rows outside the range are dropped.
+Two reads with different starts inside one window ask for the same first window and hit the cache.
 Days after today are never requested; a window ending in the past is cached for 7 days, one ending yesterday for 1 day, one holding today for 1 hour.
 There is no `--fields`, `--bucket` or `--raw`; the charts read the same rows.
 

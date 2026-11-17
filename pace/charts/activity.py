@@ -11,6 +11,7 @@ from pace.commands.activity import details_table
 from pace.sports import family
 
 MIN_SPEED_MPS = 0.5  # slower samples are standing still: no pace for them
+MAX_POINTS = 300  # the finest bucket that keeps a run under this many points (a line, not a table)
 
 
 async def fetch(start: date, end: date, *, today: date, cache: Any, tracker: Any, refresh: bool,
@@ -28,8 +29,13 @@ async def fetch(start: date, end: date, *, today: date, cache: Any, tracker: Any
             "range": {"from": when.isoformat(), "to": when.isoformat()}}
 
 
+def _table(data: dict) -> tuple[dict, str]:
+    """(details table, bucket used): the finest bucket giving at most MAX_POINTS rows, or raw samples."""
+    return details_table(data["details"], "auto", MAX_POINTS)
+
+
 def _series(data: dict) -> dict[str, list[float | None]]:
-    table, _ = details_table(data["details"], "auto")
+    table, _ = _table(data)
     cols = table["cols"]
     rows = table["rows"]
 
@@ -39,8 +45,7 @@ def _series(data: dict) -> dict[str, list[float | None]]:
     return {"dist_m": col("dist_m"), "speed": col("speed_mps"), "hr": col("hr"), "elev": col("elev_m")}
 
 
-def _summary(data: dict) -> dict:
-    s = _series(data)
+def _summary(data: dict, s: dict[str, list[float | None]]) -> dict:
     dists = [d for d in s["dist_m"] if d is not None]
     hrs = [h for h in s["hr"] if h is not None]
     sm = data["info"].get("summaryDTO") or {}
@@ -72,11 +77,14 @@ def render(data: dict, out: Path, **_: Any) -> dict:
     """data = {details: get_activity_details payload, info: get_activity payload, family, id, range}."""
     from matplotlib.ticker import FuncFormatter
 
-    summary = _summary(data)
+    s = _series(data)
+    summary = _summary(data, s)
     fig, ax = style.figure()
     running = data["family"] == "running"
+    name = data["info"].get("activityName") or "Activity"
+    heading = f"{name} ({data['range']['from']})"
     if summary["empty"]:
-        ax.set_title(f"Activity {data['id']}")
+        ax.set_title(heading)
         ax.set_yticks([])
         style.empty_note(ax)
         style.save(fig, out)
@@ -84,8 +92,7 @@ def render(data: dict, out: Path, **_: Any) -> dict:
 
     fig.clear()
     top, bottom = fig.subplots(2, 1, sharex=True, height_ratios=[3, 1])
-    top.set_title(f"Activity {data['id']}: {'pace' if running else 'speed'}, heart rate, elevation")
-    s = _series(data)
+    top.set_title(f"{heading}: {'pace' if running else 'speed'}, heart rate, elevation")
     pts = [(d / 1000, v, h, e) for d, v, h, e in zip(s["dist_m"], s["speed"], s["hr"], s["elev"], strict=True)
            if d is not None]
     handles = []

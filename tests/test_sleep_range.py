@@ -55,9 +55,11 @@ def test_sleep_chunks_fixed_windows() -> None:
     assert len(a) == len(b) and a[:-1] == b[:-1]
     assert all((hi - lo).days + 1 <= 28 for lo, hi in a)
     days = [lo + timedelta(days=i) for lo, hi in a for i in range((hi - lo).days + 1)]
-    assert days == [date(2026, 9, 20) + timedelta(days=i) for i in range((TODAY - date(2026, 9, 20)).days + 1)]
+    # windows may begin before the start but are contiguous, cover it and stop at the end
+    assert a[0][0] <= date(2026, 9, 20) < a[0][0] + timedelta(days=28) and days[-1] == TODAY
+    assert days == [days[0] + timedelta(days=i) for i in range(len(days))]
     long = sources.sleep_chunks(TODAY - timedelta(days=59), TODAY)
-    assert sum((hi - lo).days + 1 for lo, hi in long) == 60
+    assert 60 <= sum((hi - lo).days + 1 for lo, hi in long) < 60 + 28
     assert sources.sleep_chunks(TODAY, TODAY - timedelta(days=1)) == []
     # a range ending today and one ending yesterday share every chunk but the last
     c = sources.sleep_chunks(TODAY - timedelta(days=59), TODAY - timedelta(days=1))
@@ -89,3 +91,44 @@ def test_sleep_range_command(api) -> None:
     assert len(doc["data"]) == 31 and doc["data"][0]["sleep_s"] == 30540
     assert len(api) == 2 and all(c[0] == "connectapi" for c in api)
     assert api[0][1][0].startswith("/sleep-service/stats/sleep/daily/")
+
+
+def test_sleep_chunk_keys_do_not_depend_on_start(api) -> None:
+    """Two starts inside the same 28-day window ask Garmin for the same first (a, b) and hit one cache entry."""
+    a = sources.sleep_chunks(TODAY - timedelta(days=60), TODAY)
+    b = sources.sleep_chunks(TODAY - timedelta(days=58), TODAY)
+    assert a[0] == b[0] and a[0][0] < TODAY - timedelta(days=60) + timedelta(days=1)
+    assert all((hi - lo).days == 27 for lo, hi in a[:-1])
+
+    async def read(start):
+        cache = Cache()
+        try:
+            return await sources.sleep_stats(start, TODAY, today=TODAY, cache=cache, tracker=CacheTracker(),
+                                             refresh=False)
+        finally:
+            cache.close()
+
+    first = asyncio.run(read(TODAY - timedelta(days=60)))
+    n = len(api)
+    second = asyncio.run(read(TODAY - timedelta(days=58)))
+    assert len(api) == n  # all served from cache
+    assert first[0]["date"] == (TODAY - timedelta(days=60)).isoformat()
+    assert second[0]["date"] == (TODAY - timedelta(days=58)).isoformat()
+
+
+def test_weigh_ins_ttl_follows_the_end_day(monkeypatch) -> None:
+    seen = []
+
+    async def fake(*args, **kwargs):
+        seen.append(kwargs["ttl"])
+        return {}
+
+    monkeypatch.setattr(sources, "cached_call", fake)
+
+    async def go(end):
+        await sources.weigh_ins(end - timedelta(days=10), end, today=TODAY, cache=None, tracker=None, refresh=False)
+
+    asyncio.run(go(TODAY))
+    asyncio.run(go(TODAY - timedelta(days=1)))
+    asyncio.run(go(TODAY - timedelta(days=5)))
+    assert seen == [3600, 86400, 604800]

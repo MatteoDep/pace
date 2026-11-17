@@ -162,3 +162,15 @@ def test_load_is_week_keyed_and_noted() -> None:
     assert entry["name"] == "load" and entry["keyed"] == "week"
     assert "--from" not in entry["flags"] and {"--weeks", "--weeks-ahead", "--sport"} <= set(entry["flags"])
     assert any("keyed week" in n for n in doc["notes"])
+
+
+def test_chart_help_names_every_kind() -> None:
+    from pace.charts import KINDS
+    from pace.cli import app as cli_app
+
+    (entry,) = build_schema("chart")["commands"]
+    assert all(kind in entry["help"] for kind in KINDS)
+    assert "14" in entry["help"] and "90" in entry["help"] and "56" in entry["help"]
+    chart_help = next(c.help for c in cli_app.registered_commands if c.name == "chart")
+    assert all(kind in chart_help for kind in KINDS)
+    assert all(kind in build_schema(None)["groups"]["chart"] for kind in KINDS)

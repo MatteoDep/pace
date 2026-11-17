@@ -16,17 +16,18 @@ _FIELDS = {"sleep_s": "totalSleepTimeInSeconds", "deep_s": "deepTime", "light_s"
 
 
 def sleep_chunks(start: date, end: date) -> list[tuple[date, date]]:
-    """Fixed 28-day windows anchored on the ordinal, each clipped to [start, end].
+    """Fixed 28-day windows anchored on the ordinal that cover start..end; only the last is clipped, at end.
 
-    The windows do not depend on the range, so a repeated read asks for the same (a, b) and hits the cache.
+    A window may begin before `start` (callers filter the rows), so the keys do not depend on `start`
+    and a repeated read asks for the same (a, b) and hits the cache.
     """
     chunks: list[tuple[date, date]] = []
+    if start > end:
+        return chunks
     k = start.toordinal() // SLEEP_CHUNK_DAYS
     while k * SLEEP_CHUNK_DAYS <= end.toordinal():
-        lo = max(start, date.fromordinal(k * SLEEP_CHUNK_DAYS))
-        hi = min(end, date.fromordinal((k + 1) * SLEEP_CHUNK_DAYS - 1))
-        if lo <= hi:
-            chunks.append((lo, hi))
+        chunks.append((date.fromordinal(k * SLEEP_CHUNK_DAYS),
+                       min(end, date.fromordinal((k + 1) * SLEEP_CHUNK_DAYS - 1))))
         k += 1
     return chunks
 
@@ -40,7 +41,7 @@ async def sleep_stats(start: date, end: date, *, today: date, cache: Any, tracke
                                     ttl=ttl_for_day(b, _TODAY_TTL, today), tracker=tracker, refresh=refresh)
         for item in (payload or {}).get("individualStats") or []:
             day = item.get("calendarDate")
-            if not isinstance(day, str) or not a.isoformat() <= day <= b.isoformat():
+            if not isinstance(day, str) or not start.isoformat() <= day <= end.isoformat():
                 continue
             values = item.get("values") or {}
             rows[day] = {"date": day, **{k: values.get(v) for k, v in _FIELDS.items()}}
@@ -52,7 +53,7 @@ async def weigh_ins(start: date, end: date, *, today: date, cache: Any, tracker:
     end = min(end, today)
     if start > end:
         return []
-    payload = await cached_call("get_weigh_ins", start.isoformat(), end.isoformat(), cache=cache, ttl=3600,
+    payload = await cached_call("get_weigh_ins", start.isoformat(), end.isoformat(), cache=cache, ttl=ttl_for_day(end, _TODAY_TTL, today),
                                 tracker=tracker, refresh=refresh)
     rows: dict[str, float] = {}
     for item in (payload or {}).get("dailyWeightSummaries") or []:

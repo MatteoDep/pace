@@ -27,7 +27,9 @@ _ACTIVITY_TTL = 86400  # same key and ttl as `activity show`
 
 
 def plan_range(from_: str | date | None, to: str | date | None, past: int, ahead: int, today: date) -> tuple[date, date]:
-    """Resolve --from/--to (winning when given) or fall back to today-past / today+ahead."""
+    """Resolve --from/--to (winning when given) or fall back to today-past / today+ahead; negative offsets are bad_args."""
+    if past < 0 or ahead < 0:
+        raise PaceError("bad_args", "--past and --ahead must be >= 0")
     start = parse_date(from_) if isinstance(from_, str) else from_
     end = parse_date(to) if isinstance(to, str) else to
     if start is None:

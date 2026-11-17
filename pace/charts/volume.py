@@ -16,8 +16,7 @@ async def fetch(start: date, end: date, *, today: date, cache: Any, tracker: Any
                 sport: str = "running", **_: Any) -> dict:
     acts, sessions = await load_mod.fetch_inputs(start, end, today=today, cache=cache, tracker=tracker,
                                                  refresh=refresh)
-    data = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sport)
-    return {**data, "today": today.isoformat()}
+    return load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sport)
 
 
 def _summary(data: dict, metric: str) -> dict:
@@ -26,14 +25,15 @@ def _summary(data: dict, metric: str) -> dict:
               "projected": w["projected"][key]} for w in data["weeks"]]
     today_row = next((d for d in data["days"] if d["date"] == data["today"]), None)
     empty = not any(w["projected"] or w["actual"] for w in weeks)
+    missing = sum(w["planned"]["missing"][key] for w in data["weeks"] if w["planned"] is not None)
     plan_ahead = any(d["planned"] is not None for d in data["days"] if d["date"] >= data["today"])
     return {"metric": metric, "sport": data["sport"], "weeks": weeks,
             "rolling7_today": today_row["rolling7"][key] if today_row else None, "plan_ahead": plan_ahead,
-            "empty": empty}
+            "missing": missing, "empty": empty}
 
 
 def render(data: dict, out: Path, *, metric: str = "km", **_: Any) -> dict:
-    """data = `pace.load.aggregate(...)` plus `today` (ISO date)."""
+    """data = `pace.load.aggregate(...)`; its `today` splits actual from projected."""
     summary = _summary(data, metric)
     key, unit = METRICS[metric], UNITS[metric]
     today = date.fromisoformat(data["today"])

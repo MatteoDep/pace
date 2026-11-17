@@ -196,3 +196,10 @@ def test_activity_requires_id(api, args) -> None:
 def test_id_rejected_for_other_kinds(api, kind) -> None:
     code, doc = _run(kind, "123")
     assert code == 2 and doc["error"]["code"] == "bad_args"
+
+
+@pytest.mark.parametrize("args", [["plan", "--past", "-1"], ["recovery", "--ahead", "-2"], ["sleep", "--past", "-3"],
+                                  ["weight", "--ahead", "-1"], ["intensity", "--past", "-1"]])
+def test_negative_past_ahead_is_bad_args(api, args) -> None:
+    code, doc = _run(*args)
+    assert code == 2 and doc["error"]["code"] == "bad_args" and api == []
