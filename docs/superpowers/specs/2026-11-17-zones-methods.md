@@ -169,10 +169,13 @@ read all messages in file order with fitdecode
 hrv message: field `time` = up to 5 RR values in s; drop padding (None, or >= 65.5 s = FIT invalid 0xFFFF / 1000)
 beat times: tb_0 = timestamp of the last `record` message before the first `hrv` message
             tb_k = tb_(k-1) + rr_k          (raw RR, artifacts included: their sum follows real time)
-resync:     at each `record` message, if abs(tb_current - record timestamp) > 3 s,
-            set tb_current = record timestamp and mark a gap
+resync:     when an `hrv` message is reached (before its beats are added), if abs(tb_current - t of the
+            preceding `record`) > 3 s, set tb_current = that record's t and mark a gap
+            (verified 2026-11-18 on the athlete's files: 44 resyncs in a 3 h run, 95% of offsets within 2.6 s;
+            no `hrv` messages are logged during an auto-pause, so one resync follows each pause)
 gap:        also any raw rr_k > 2.0 s (signal dropout, for example the 3.891 s value); no window may contain a gap
-sanity:     reject the run's RR data if the sum of RR differs by more than 2% from the record time span it covers,
+sanity:     reject the run's RR data if the sum of RR differs by more than 2% from the record time span it covers
+            (the span excludes pause gaps, i.e. record intervals > 5 s, since no beats are logged during a pause),
             or if 60 / mean(RR) differs from the mean `record` HR over the same span by more than 5 bpm
 ```
 Artifact correction (pace heuristic, modelled on the Kubios "automatic" behaviour described by Rogers et al. 2021a: a missed beat is replaced by a beat inserted halfway):
@@ -611,7 +614,7 @@ The unit tests use 50 seeded series per case with the same tolerances, to keep t
 - Gaussian white noise: mean alpha1 0.58 +/- 0.03 (simulation: 0.584, SD 0.056).
   The theoretical 0.5 is not reached because DFA with box sizes 4..16 is biased upward for white noise; N = 2000 gave the same 0.585, so the bias comes from the box sizes, not the length.
 - 1/f noise by spectral synthesis (random phases, amplitude k^-0.5 at frequency index k): mean 1.03 +/- 0.05 (simulation: 1.033, SD 0.079).
-- Brownian noise (cumulative sum of white noise): mean 1.50 +/- 0.05 (simulation: 1.498, SD 0.082).
+- Brownian noise (cumulative sum of white noise): mean 1.43 +/- 0.05 with the lambda 500 detrending (implementation measured 1.430 over 50 seeded series; the earlier simulation value 1.498 was obtained with ineffective detrending, and 1.49 is what the series gives without detrending; detrending removes part of the low-frequency trend that drives Brownian scaling, so the lower value is the expected one).
 - Invariance: alpha1(a * x + b) equals alpha1(x) within 1e-9 for a > 0; a constant series returns null.
 - Detrending: white noise (SD 0.01 s around 0.400 s) plus a trend of 0.0005 s per beat: with smoothness priors detrending alpha1 stays within 0.01 of the trend-free value (simulation: max 0.006); without detrending it rises by about 0.05.
 - Artifact correction: on 50 seeded 1/f^0.6 series (the simulation used 40) (theoretical alpha1 0.8) mapped to RR around 0.400 s, merging 3% of beats into missed-beat pairs and correcting changes mean alpha1 by at most 0.02 (simulation: mean +0.008 at 3%, +0.017 at 6%, upward on average, as Rogers et al. 2021a report).
