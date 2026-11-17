@@ -45,7 +45,8 @@ Everything in project 1 must work the same when project 2 drives it, so no step 
 4. Planned versus done: match Garmin activities to plan sessions and report done, missed, modified, unplanned.
 5. Charts as PNG files (`pace chart`), usable in a terminal and sendable as Telegram photos later.
 6. A persistent training load dashboard as a private Claude artifact, kept current by the skill; further deep dives as artifacts on request.
-7. The coaching skill: data access, intake, coaching principles with pushback, check-ins (workout feedback, weight), presentation.
+7. The coaching skill: data access, intake, coaching principles with pushback, a review after each run, check-ins (weight, drift, decisions), presentation.
+8. Lactate thresholds and training zones: estimated from past runs, refined by field tests, overridden by lab tests, kept in sync on the watch (section 7).
 
 ## Non-goals
 
@@ -303,24 +304,36 @@ Installed by symlink into `~/.claude/skills/pace` as planned.
 As in the 2026-09-04 spec section 5A, extended with `diary`, `plan`, `chart`.
 Presentation contract unchanged (scope line, one table, at most 3 notes, ASCII), plus: when a chart answers the question better than a table, render it and give the path; the table stays for exact numbers.
 
-### B. Session start (check-in)
+### B. Session start: run reviews and check-in
 
-Run together: `auth status`, `diary show`, `plan status --days 7` (and future 7 days).
-Then, in this order, at most once each per session:
+Revised by the user on 2026-11-17: the coach checks on the user after each run, and the full check-in runs only when it is due.
 
-1. Intake gaps: if profile keys the coach needs for the current question are empty, ask (open questions, one at a time), then `diary set`.
+**Run review (every session start, and in project 2 after each synced run).**
+Run together: `auth status`, `diary show`, `diary show --kind feedback --since <checkin.last date>`, `plan status --from <checkin.last date, at most 21 days back; 7 days on first run> --ahead 7`.
+For each activity since the last review that has no `feedback` entry, the coach writes one short, specific opener built from the data, not a generic question:
+- matched and on target: "Your easy run looked good, anything to add?"
+- matched but off target (intensity vs HR zone time, duration or distance vs target, RPE vs the session's intent): "I think you ran your easy run a bit too hard (mostly zone 3-4, RPE 6). Was there a change of plans?"
+- unplanned: first read the Garmin calendar around its date (did the user move the planned workout?), then ask what it was.
+Several pending runs go in one message, one line each.
+RPE and feel already on the activity are used as given (the user logs them on the watch); only when they are missing does the coach ask, and the user's own statement is the approval for that one `activity effort` write (the skill echoes what it wrote).
+The answer goes to `diary add --kind feedback --ref activity:<id>` (and `session:<id>` when matched); no answer, or "nothing", is recorded as feedback "no comment", so the run is not raised again.
+Reported pain becomes an `injury` entry after the user confirms the wording.
+Zones for the intensity judgement come from section 7 (current thresholds), falling back to the Garmin HR zones.
+
+**Full check-in (when the user asks for one, or `checkin.last` is more than 20 hours old).**
+After the run review, in this order, each at most once per session:
+
+1. Intake gaps: if profile keys the coach needs are empty, ask (open questions, one at a time), then `diary set`.
    A full intake happens on the first session; afterwards only gaps and changes.
-2. Workout feedback: for each activity since the last check-in without RPE/feel or a `feedback` diary entry, ask how it went (RPE 1-10, feel, a free comment; pain or niggles explicitly).
-   The user's own statement of RPE/feel is the approval for that single `activity effort` write (designer's call, to keep check-ins light); the skill echoes what it wrote.
-   The comment goes to `diary add --kind feedback --ref activity:<id>` (and `session:<id>` when matched).
-   Reported pain becomes an `injury` entry after the user confirms the wording.
-3. Weight: if the latest weigh-in is older than `checkin.weight_days`, ask for it.
+2. Weight: if the latest weigh-in (`log weight list`) is older than `checkin.weight_days`, ask for it.
    A number the user gives is the approval for one `log weight add`.
    The coach never comments on weight in a way that pushes restriction; see guardrails.
-4. Plan drift: missed, modified, stale or unplanned items from `plan status` are mentioned and, when they matter, lead to a proposed adjustment.
-   For an unplanned activity, the skill first reads the Garmin calendar around its date (did the user move the planned workout?), then asks the user why, and records the answer as `feedback`; apart from this, pace assumes nobody edits pushed workouts on Garmin (user's call).
-5. Due decisions from `diary show` are checked against the data and discussed.
-6. End of check-in: `diary set checkin.last <now>`, refresh the dashboard (section 4).
+3. Plan drift: missed, modified, unconfirmed, stale or unplanned items from `plan status` are mentioned and, when they matter, lead to a proposed adjustment; apart from the calendar check above, pace assumes nobody edits pushed workouts on Garmin (user's call).
+4. Due decisions from `diary show` are checked against the data, discussed, and closed (`diary set-due ID --clear` plus a follow-up entry with `--ref entry:<id>`).
+5. Thresholds: if section 7 says a retest or a new estimate is due, propose it.
+6. End: `diary set checkin.last now`, refresh the dashboard (section 4).
+
+A quick data question ("how did I sleep?") gets the run review if runs are pending, then its answer, without the rest of the check-in.
 
 ### C. Coaching
 
@@ -353,6 +366,54 @@ They enter the plan as sessions (`sport` other than running); cycling, swimming,
 - Chart: each kind renders a non-empty PNG from fixtures; `summary` numbers equal the plotted data; `--out` honored.
 - Schema drift test covers new groups; skill drift test (plan 3) covers `plan` and `chart`.
 - Docs: `docs/CONTRACT.md` (diary, plan, chart sections), `README.md` (commands, skill install), this spec's post-hoc notes after implementation.
+
+## 7. Thresholds and zones (added 2026-11-17)
+
+The coach helps the user find their lactate thresholds (LT1, LT2) and keeps training zones current.
+
+### Sources of a threshold record, and precedence
+
+- **Estimate** from past workouts, computed by pace (default, kept current as data arrives).
+- **Field test**: a specific test run the coach plans with the user (for example a heart-rate drift / aerobic decoupling run for LT1, a time trial for LT2), analyzed by pace.
+- **Lab test** reported by the user (values typed in).
+
+A record holds: date, source, method, LT1 and LT2 as heart rate and pace where known, max and resting HR used, the activities it came from, a confidence note.
+The **current** record is the one the zones come from; it changes only on the user's yes, except that a reported lab test becomes current when entered.
+A lab test stays current while it is less than 6 months old (user's call); after that the coach suggests a retest and shows newer estimates or field tests next to it without applying them until the user accepts one.
+
+### Methods
+
+The builder researches the state of the art and records each method in `coaching.md` with evidence grade and verified sources, as for the other principles.
+Constraints that are already known:
+- The user's Forerunner 55 has no Garmin lactate threshold detection and its wrist sensor gives no beat-to-beat data, so DFA alpha1 is out.
+- The user runs with a chest strap on almost every run (24 of the last 25, checked 2026-11-17); each activity's `metadataDTO.sensors` shows a heart-rate sensor (`bleDeviceType: HEART_RATE`) when the strap was used.
+  Threshold estimates use strap runs only, or weight wrist runs down, and say which they used.
+- Candidates to check, not to trust: critical speed from best efforts or race results for LT2; average HR of the last 20 minutes of a 30-minute time trial for LT2 HR; HR drift / aerobic decoupling (pace:HR) over a long steady run for LT1.
+
+All arithmetic (drift %, critical speed, zone boundaries) is done by pace, deterministically; the coach explains it.
+
+### Zones
+
+Zones are derived from the current LT1 and LT2: a three-zone model (below LT1, between, above LT2) and a five-zone mapping for the watch, with the mapping rule documented in `pace schema`.
+HR zones and pace zones are both kept; HR is primary (terrain distorts pace).
+pace keeps the watch's HR zones in sync with the current record (user's call): a Garmin write, shown and confirmed like every other.
+Garmin's current zones are readable today (`GET /biometric-service/heartRateZones`: method, max and resting HR used, five zone floors); the write endpoint is verified live before it is built.
+Run reviews (section 5B) and workout DSL HR targets use pace's zones once a current record exists, Garmin's zones before.
+
+### Commands (names are the design; flags the builder's)
+
+| command | effect |
+|---|---|
+| `zones show` | current record, derived zones, history, and Garmin's zones on the watch |
+| `zones estimate` | estimates from recent history per method, with the activities used and confidence; no write |
+| `zones analyze ACTIVITY_ID --test KIND` | analysis of a test run (drift, time trial) |
+| `zones test-workout KIND` | a DSL workout for the test, to add to the plan |
+| `zones add` | add a record (lab, field test, estimate) |
+| `zones accept ID` | make a record current |
+| `zones push [--dry-run]` | write the current zones to Garmin |
+
+Storage: `$PACE_HOME/zones.json`, same store rules as the diary and plan.
+This section is built as coach plan 5, after plan 2.
 
 ## Left to the builder
 
