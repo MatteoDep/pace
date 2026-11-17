@@ -174,3 +174,31 @@ def test_chart_help_names_every_kind() -> None:
     chart_help = next(c.help for c in cli_app.registered_commands if c.name == "chart")
     assert all(kind in chart_help for kind in KINDS)
     assert all(kind in build_schema(None)["groups"]["chart"] for kind in KINDS)
+
+
+def test_zones_in_schema() -> None:
+    from pace import fit, zones
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"zones show", "zones estimate", "zones analyze", "zones test-workout", "zones add", "zones accept",
+             "zones remove"}
+    assert names <= set(entries)
+    writes = {"zones estimate", "zones analyze", "zones add", "zones accept", "zones remove"}
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name in writes), name
+    assert entries["zones add"]["required_flags"] == ["--source"]
+    assert entries["zones analyze"]["required_flags"] == ["--test"]
+    assert "--save" in entries["zones analyze"]["help"] and "also stores a field-test record" in entries["zones analyze"]["help"]
+    assert "--save also stores a full record" in entries["zones estimate"]["help"]
+    assert "10-minute" in entries["zones estimate"]["help"]
+    assert {"--weeks", "--max-calls", "--include-wrist", "--retry-h4", "--save", "--no-cache"} <= set(entries["zones estimate"]["flags"])
+    assert "zones" in data["groups"] and "zones" in data["writes"]["confirm"]
+    z = data["zones"]
+    assert z["rule"] == "lt-5z-v1" and z["lab_valid_days"] == 183 and z["sources"] == ["estimate", "field_test", "lab"]
+    assert z["max_calls"]["default"] == 40 and "hard cap" in z["max_calls"]["rule"]
+    assert z["due"]["estimate_every_days"] == zones.ESTIMATE_EVERY_DAYS and z["due"]["field_test_every_days"] == 84
+    assert z["no_rr_reasons"] == list(fit.NO_RR_REASONS) and "fit_unreadable" in z["no_rr_reasons"]
+    res = runner.invoke(app, ["schema", "zones"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"zones"}

@@ -346,6 +346,12 @@ def _last_estimates(data: dict[str, Any], n: int) -> list[dict[str, Any]]:
     return [e for e in data["estimates"] if not e.get("partial")][-n:]
 
 
+def last_complete_estimate_day(data: dict[str, Any]) -> date | None:
+    """Date of the newest non-partial entry of `estimates`, or None."""
+    last = _last_estimates(data, 1)
+    return _day(last[0].get("date")) if last else None
+
+
 def _estimate_reasons(data: dict[str, Any], today: date, runs_since: list[dict[str, Any]]) -> list[str]:
     reasons = []
     last = _last_estimates(data, 1)
@@ -384,12 +390,12 @@ def _differs(t: str, est: dict[str, Any], cur: dict[str, Any]) -> bool:
 
 
 def _field_test_reasons(data: dict[str, Any], t: str, today: date) -> list[str]:
+    """Rules tied to the current record (estimate without a field test, estimates drifting away) need one;
+    the age of the latest field test does not."""
     cur = _current_record(data, t)
-    if cur is None:
-        return []
     reasons = []
     tests = _field_tests(data, t)
-    if cur.get("source") == "estimate" and not tests:
+    if cur is not None and cur.get("source") == "estimate" and not tests:
         reasons.append(f"{t}: current record is a history estimate and no field test exists")
     if tests:
         latest = max(d for d in (_day(r["date"]) for r in tests) if d)
@@ -397,7 +403,7 @@ def _field_test_reasons(data: dict[str, Any], t: str, today: date) -> list[str]:
         if age >= FIELD_TEST_EVERY_DAYS:
             reasons.append(f"{t}: latest field test is {age} days old (>= {FIELD_TEST_EVERY_DAYS})")
     last2 = _last_estimates(data, 2)
-    if len(last2) == 2 and all(_differs(t, e, cur) for e in last2):
+    if cur is not None and len(last2) == 2 and all(_differs(t, e, cur) for e in last2):
         reasons.append(f"{t}: the last two estimates both differ from the current record")
     return reasons
 
@@ -416,7 +422,7 @@ def due(data: dict[str, Any], *, today: date, runs_since: list[dict[str, Any]]) 
 
 # --- status ---
 
-def _provenance(record: dict[str, Any] | None) -> dict[str, Any] | None:
+def provenance(record: dict[str, Any] | None) -> dict[str, Any] | None:
     if record is None:
         return None
     return {k: record.get(k) for k in ("id", "source", "date", "method", "confidence")}
@@ -456,7 +462,7 @@ def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, An
     if garmin is not None and floors is not None:
         in_sync = all(garmin.get(k) == floors[k] for k in FLOOR_KEYS)
     return {
-        "current": {t: _provenance(cur[t]) for t in THRESHOLDS},
+        "current": {t: provenance(cur[t]) for t in THRESHOLDS},
         "expired": {t: _expired(cur[t], today) for t in THRESHOLDS},
         "zones": derived, "records": records, "candidates": candidates,
         "due": due(data, today=today, runs_since=runs_since),
@@ -466,4 +472,4 @@ def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, An
 
 
 __all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "h2_of",
-           "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]
+           "provenance", "last_complete_estimate_day", "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]

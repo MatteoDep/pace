@@ -4,8 +4,10 @@ from typing import Any
 
 import typer
 
-from pace import __version__
+from pace import __version__, fit
+from pace import zones as zonesmod
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
+from pace.commands.zones import DEFAULT_MAX_CALLS, DEFAULT_WEEKS, F3_RECENT_DAYS, TESTS
 from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
@@ -67,7 +69,7 @@ WRITES: dict[str, Any] = {
                    "state, so repeating them is harmless. "
                    "plan push skips unchanged pushed sessions (unless --force) and records every landed id.",
     "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
-               "local_write commands (diary) are outside this rule; the coaching skill decides when to ask about them.",
+               "local_write commands (diary, plan edits, zones) are outside this rule; the coaching skill decides when to ask about them.",
 }
 
 GLOBAL_FLAGS = {
@@ -187,6 +189,13 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "plan remove", "help": "Delete sessions; refused for any with a Garmin workout.", "keyed": "none", "args": ["ID..."], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan push", "help": "Upload and schedule sessions on Garmin (workout named 'pace: <name>'); unchanged pushed sessions are skipped unless --force; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--force", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "plan unpush", "help": "Delete the sessions' workouts from Garmin (404 counts as done); the sessions stay, planned; refused when both the session date and the date its workout was pushed to are past.", "keyed": "none", "args": ["ID..."], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "zones show", "help": "Current LT1 and LT2 records with provenance, expired (per threshold), derived zones (rule lt-5z-v1), all records (current_for), candidates, due (estimate, field_test per threshold, reasons), hr_max, the alpha1 (h4) status, the watch's HR zones (garmin; null when unreadable) and in_sync. Two Garmin reads: the activity list for the due rule and the watch zones (cached).", "keyed": "none", "args": [], "flags": ["--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "zones estimate", "help": "Estimate LT1 and LT2 from recent runs (critical speed, HR-speed regression, alpha1, HR drift). Hard cap --max-calls on Garmin calls: the rest is deferred and the estimate logged as partial; a cold run takes up to about 4 minutes (use a 10-minute timeout), near-instant from cache. Always appends a summary to the local estimates log and raises hr_max; --save also stores a full record (source estimate); records never become current without `zones accept`.", "keyed": "none", "args": [], "flags": ["--weeks", "--max-calls", "--include-wrist", "--retry-h4", "--save", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones analyze", "help": "Analyze a field-test run: drift (F1, LT1 HR and pace), time_trial (F2, LT2) or ramp (F3, alpha1 steps; needs the FIT file, downloaded once). Needs laps for F2 and F3. Always raises hr_max (strap runs) and, for ramp, records the alpha1 gate outcome; --save also stores a field-test record, refused (bad_args, the verdict and next test in the message) for an F1 that is not 'at LT1' with even pace, a rejected F2 or an unusable or unbracketed F3.", "keyed": "id", "args": ["ACTIVITY_ID"], "flags": ["--test", "--treadmill", "--save", "--no-cache"], "required_flags": ["--test"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones test-workout", "help": "Workout DSL for a field test (drift, time_trial, ramp), targets from the current LT1 record or the newest estimate; add it to the plan. No Garmin call.", "keyed": "none", "args": ["KIND"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "zones add", "help": "Add a threshold record (lab, field_test or estimate); paces are m:ss per km. A lab record becomes current for each threshold it has unless that threshold's current record is newer. Refused when LT1 HR is not below LT2 HR.", "keyed": "none", "args": [], "flags": ["--source", "--date", "--lt1-hr", "--lt1-pace", "--lt2-hr", "--lt2-pace", "--max-hr", "--rest-hr", "--method", "--confidence", "--activity", "--notes"], "required_flags": ["--source"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones accept", "help": "Make a record current for every threshold it has, or only --only lt1|lt2; refused when the resulting LT1 HR is not below LT2 HR.", "keyed": "none", "args": ["ID"], "flags": ["--only"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones remove", "help": "Delete a record; refused while it is current for a threshold unless --force (then that threshold has no current record).", "keyed": "none", "args": ["ID"], "flags": ["--force"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
 ]
 
 
@@ -232,7 +241,8 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "diary": "Athlete diary: the coach's durable memory (local file).",
                    "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin.",
                    "load": "Weekly and daily training load.",
-                   "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity."},
+                   "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
+                   "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file)."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
@@ -244,12 +254,27 @@ def build_schema(group: str | None) -> dict[str, Any]:
                  "derived_statuses": ["done", "modified", "missed", "unconfirmed", "rest"], "phases": PHASES,
                  "session_fields": SESSION_FIELDS, "modified_tolerance": MODIFIED_TOLERANCE,
                  "workout_name_prefix": WORKOUT_PREFIX},
+        "zones": {"path": "$PACE_HOME/zones.json", "rule": zonesmod.ZONE_RULE, "sources": list(zonesmod.SOURCES),
+                  "confidences": list(zonesmod.CONFIDENCES), "tests": list(TESTS),
+                  "lab_valid_days": zonesmod.LAB_VALID_DAYS, "weeks_default": DEFAULT_WEEKS,
+                  "due": {"estimate_every_days": zonesmod.ESTIMATE_EVERY_DAYS,
+                          "field_test_every_days": zonesmod.FIELD_TEST_EVERY_DAYS,
+                          "break_days": zonesmod.BREAK_DAYS, "retrain_days": zonesmod.RETRAIN_DAYS,
+                          "hr_drift_bpm": zonesmod.HR_DRIFT_BPM, "pace_drift_frac": zonesmod.PACE_DRIFT_FRAC,
+                          "hard_training_effect": zonesmod.HARD_TRAINING_EFFECT,
+                          "f3_recent_days": F3_RECENT_DAYS},
+                  "max_calls": {"default": DEFAULT_MAX_CALLS,
+                                "rule": "hard cap on all Garmin calls of one estimate, extension included; each "
+                                        "picked run costs get_activity + get_activity_details, a FIT download one "
+                                        "call; cache hits are free; at the cap the rest is deferred and the "
+                                        "estimate is logged partial (the due rule skips partial entries)"},
+                  "no_rr_reasons": list(fit.NO_RR_REASONS)},
     }
 
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "zones"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

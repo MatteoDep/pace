@@ -1,4 +1,6 @@
-"""`zones` commands. This part: the estimate orchestrator (methods doc 14.7).
+"""`zones` commands: show, estimate, analyze, test-workout, add, accept, remove.
+
+The estimate orchestrator (methods doc 14.7) comes first; the typer commands are at the end of the file.
 
 `run_estimate` reads Garmin data through an injected `Fetcher` that checks the cache first and counts the calls
 it makes; `--max-calls` is a hard cap on them. At the cap a cache hit is still served and a read that needs a
@@ -8,20 +10,26 @@ phase 1 picks in rank order, extension picks, phase 2 (drift) picks, FIT downloa
 Methods: docs/superpowers/specs/2026-11-17-zones-methods.md sections 1, 6, 7 and 14.
 """
 
+import copy
 import math
 import statistics
 from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
 from typing import Any, Protocol
 
+import typer
+
 from pace import fit as fitmod
 from pace import hrv, thresholds, zones
 from pace.cache import Cache, CacheTracker
 from pace.charts.sources import sleep_chunks, sleep_stats
 from pace.commands._helpers import cached_call
-from pace.envelope import PaceError
+from pace.envelope import PaceError, Result
+from pace.envelope import run as run_command
+from pace.factory import NO_CACHE_OPT
 from pace.ratelimit import limiter
 from pace.spec import TTL_STATIC
+from pace.workout import parse_pace
 
 RR_SINCE = date(2026, 9, 1)     # first date with RR data on this athlete's watch (14.7)
 DRIFT_WEEKS = 12                # H5 drift picks and H4 runs: the last 12 weeks
@@ -32,6 +40,14 @@ OLD_RUN_TTL = 60 * 86400        # zones reads of runs started more than 1 day ag
 NEW_RUN_TTL = 3600
 PR_DISTANCES_M = {1: 1000.0, 2: 1609.344, 3: 5000.0}   # Garmin PR typeId: 1 km, 1 mile, 5 km
 STOP_CODES = ("rate_limited", "network")   # a read failing with these defers every later miss
+DEFAULT_WEEKS = 8
+DEFAULT_MAX_CALLS = 40
+GARMIN_ZONES_PATH = "/biometric-service/heartRateZones"
+GARMIN_ZONES_TTL = 300
+DUE_LOOKBACK_DAYS = 56          # `zones show` reads the list this far before the last estimate (the run before it)
+NO_ESTIMATE_LOOKBACK_DAYS = 84
+F3_RECENT_DAYS = 28             # F1 compares with the newest F3 of this many days (methods doc 9a)
+TESTS = ("drift", "time_trial", "ramp")
 ALL_WRIST = "no chest-strap run to examine: wrist HR runs were skipped (use --include-wrist)"
 
 
@@ -116,6 +132,13 @@ class GarminFetcher:
     async def details(self, activity_id: int, *, maxchart: int) -> dict:
         return await self._call("get_activity_details", activity_id, ttl=self._run_ttl(activity_id), prefix="zones",
                                 maxchart=maxchart)
+
+    async def splits(self, activity_id: int) -> dict:
+        return await self._call("get_activity_splits", activity_id, ttl=self._run_ttl(activity_id), prefix="zones")
+
+    def learn_day(self, activity_id: int, day: date) -> None:
+        """Tell the fetcher when a run started (for its cache TTL) when it did not come from a list row."""
+        self._days[activity_id] = day
 
     async def prs(self) -> list[dict]:
         return await self._call("get_personal_record", ttl=TTL_STATIC) or []
@@ -239,9 +262,12 @@ class _Reads:
             if err.code == "not_found" and entry["kind"] == "run":
                 self.skip_one(entry["id"], entry["group"], f"not found on Garmin: {err.message}")
                 return None
-            if err.code == "internal" and entry["kind"] == "fit":
+            if entry["kind"] == "fit" and isinstance(err, fitmod.FitUnreadable):
                 fitmod.mark_no_rr(entry["id"], "fit_unreadable")
                 self.fit_errors.append({"id": entry["id"], "reason": "fit_unreadable", "detail": err.message})
+                return None
+            if err.code == "internal" and entry["kind"] == "fit":   # transient download oddity: retry next run
+                self._defer({**entry, "error": err.code})
                 return None
             raise
 
@@ -450,7 +476,7 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
                        include_wrist: bool = False, retry_h4: bool = False) -> dict:
     """One history estimate (methods doc 14.7). Updates `data` in place: hr_max, the H4 memory, the estimates log
     (always, partial when reads were deferred). Owns mark_no_rr(id, "rr_rejected") when aligned_rr raises and
-    mark_no_rr(id, "fit_unreadable") when a FIT download cannot be parsed.
+    mark_no_rr(id, "fit_unreadable") when a FIT download cannot be parsed (fitmod.FitUnreadable only).
 
     A rate_limited or network error stops further Garmin calls: that read and every later miss are deferred
     (entries carry "error" for the failing read) and the estimate is partial; a picked run not found is skipped.
@@ -542,3 +568,339 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
         "extended": extended, "ref_hr": ref, "summary": summary,
         "record": _record(today, lt1, lt2, methods, data=data, rest_hr=rest_hr, reads=reads, extras=extras),
     }
+
+
+# --- commands ---
+
+app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, pretty_exceptions_enable=False,
+                  help="Thresholds and zones: estimate, analyze field tests, record, accept (local file + Garmin reads).")
+
+
+def _bad(msg: str, hint: str | None = None) -> PaceError:
+    return PaceError("bad_args", msg, hint=hint)
+
+
+def _current_view(data: dict) -> dict:
+    cur = zones.current(data)
+    return {t: zones.provenance(cur[t]) for t in zones.THRESHOLDS}
+
+
+def _is_run(row: dict) -> bool:
+    t = row.get("activityType")
+    key = t.get("typeKey") if isinstance(t, dict) else t
+    return "run" in str(key or "").lower()
+
+
+def _runs_since(data: dict, rows: list[dict]) -> list[dict]:
+    """`due` input: the runs after the last complete estimate plus the last run before it (so a break that
+    straddles the estimate is seen); every run in the window when there is no complete estimate."""
+    runs = [r for r in rows if _is_run(r) and _row_day(r) is not None]
+    last = zones.last_complete_estimate_day(data)
+    if last is None:
+        return runs
+    after = [r for r in runs if _row_day(r) > last]  # type: ignore[operator]
+    before = [r for r in runs if _row_day(r) <= last]  # type: ignore[operator]
+    return ([max(before, key=lambda r: (_row_day(r), _start_key(r)))] if before else []) + after
+
+
+async def _garmin_zones(cache: Cache, tracker: CacheTracker, refresh: bool) -> list[dict] | None:
+    """The watch's HR zones; any failure but auth leaves them unknown (show still answers from local data)."""
+    try:
+        payload = await cached_call("connectapi", GARMIN_ZONES_PATH, cache=cache, ttl=GARMIN_ZONES_TTL,
+                                    tracker=tracker, refresh=refresh)
+    except PaceError as err:
+        if err.code == "auth_required":
+            raise
+        return None
+    return [e for e in payload if isinstance(e, dict)] if isinstance(payload, list) else None
+
+
+@app.command("show")
+def show(no_cache: bool = NO_CACHE_OPT) -> None:
+    """Current thresholds with provenance, derived zones, records, candidates, due, the watch zones and in_sync."""
+    async def work() -> Result:
+        today = date.today()
+        data = zones.load()
+        last = zones.last_complete_estimate_day(data)
+        start = last - timedelta(days=DUE_LOOKBACK_DAYS) if last else today - timedelta(days=NO_ESTIMATE_LOOKBACK_DAYS)
+        cache, tracker = Cache(), CacheTracker()
+        try:
+            fetcher = GarminFetcher(cache, today=today, refresh=no_cache, tracker=tracker)
+            rows = await fetcher.list_rows(start, today)
+            garmin = await _garmin_zones(cache, tracker, no_cache)
+        finally:
+            cache.close()
+        out = zones.status(data, today=today, garmin_zones=garmin, runs_since=_runs_since(data, rows))
+        return Result(out, tracker.report())
+
+    run_command("zones show", {"no_cache": no_cache}, work)
+
+
+def _merge_estimate(fresh: dict, snap: dict, logged_before: int) -> None:
+    """Apply what an estimate changed in its snapshot to the freshly locked file (records and current of
+    concurrent commands are kept; the H4 memory is the snapshot's)."""
+    fresh["estimates"].extend(snap["estimates"][logged_before:])
+    top = snap.get("hr_max")
+    if top:
+        zones.update_hr_max(fresh, top["bpm"], activity=top.get("activity"), day=date.fromisoformat(top["date"]))
+    fresh["h4"] = snap["h4"]
+
+
+@app.command("estimate")
+def estimate(weeks: int = typer.Option(DEFAULT_WEEKS, "--weeks", help="History window in weeks (extended to 2x)."),
+             max_calls: int = typer.Option(DEFAULT_MAX_CALLS, "--max-calls",
+                                           help="Hard cap on Garmin calls; the rest is deferred (partial estimate)."),
+             include_wrist: bool = typer.Option(False, "--include-wrist", help="Also use wrist HR runs (low confidence)."),
+             retry_h4: bool = typer.Option(False, "--retry-h4", help="Clear the alpha1-unreliable mark and try again."),
+             save: bool = typer.Option(False, "--save", help="Also store a full record (source estimate)."),
+             no_cache: bool = NO_CACHE_OPT) -> None:
+    """Estimate LT1 and LT2 from recent runs; logs a summary locally (and stores a record with --save)."""
+    async def work() -> Result:
+        if weeks < 1:
+            raise _bad("--weeks must be >= 1")
+        if max_calls < 0:
+            raise _bad("--max-calls must be >= 0")
+        today = date.today()
+        snap = zones.load()
+        logged_before = len(snap["estimates"])
+        cache, tracker = Cache(), CacheTracker()
+        try:
+            fetcher = GarminFetcher(cache, today=today, refresh=no_cache, tracker=tracker)
+            result = await run_estimate(fetcher, snap, today=today, weeks=weeks, max_calls=max_calls,
+                                        include_wrist=include_wrist, retry_h4=retry_h4)
+        finally:
+            cache.close()
+        saved, refused = None, None
+        with zones.transaction() as data:   # short lock: the reads above can take minutes
+            _merge_estimate(data, snap, logged_before)
+            if save and result["record"] is not None:
+                try:
+                    saved = zones.add_record(data, result["record"], today=today)
+                except PaceError as err:
+                    refused = err
+        if refused is not None:
+            raise PaceError("bad_args", f"{refused.message}; the estimate was logged but no record was saved",
+                            hint="Inspect the candidate with a run without --save.")
+        if saved is not None:
+            result["record"] = saved
+        return Result({**result, "saved": saved}, tracker.report())
+
+    run_command("zones estimate", {"weeks": weeks, "max_calls": max_calls, "include_wrist": include_wrist,
+                           "retry_h4": retry_h4, "save": save}, work)
+
+
+# --- analyze ---
+
+def _run_day(act: dict) -> date | None:
+    s = act.get("summaryDTO") or {}
+    for v in (s.get("startTimeLocal"), act.get("startTimeLocal"), s.get("startTimeGMT")):
+        try:
+            return date.fromisoformat(str(v)[:10])
+        except ValueError:
+            continue
+    return None
+
+
+def _newest_f3_hr(data: dict, today: date) -> int | None:
+    since = (today - timedelta(days=F3_RECENT_DAYS)).isoformat()
+    f3 = [r for r in data["records"] if r.get("source") == "field_test" and (r.get("details") or {}).get("test") == "F3"
+          and r["date"] >= since and ((r.get("lt1") or {}).get("hr") is not None)]
+    return max(f3, key=lambda r: (r["date"], r["id"]))["lt1"]["hr"] if f3 else None
+
+
+def _rejected_ramp(reasons: list[str]) -> dict:
+    return {"status": "rejected", "outcome": None, "lt1": None, "confidence": None, "bracketed": False,
+            "saveable": False, "steps": [], "gate": None, "fit": None, "reasons": reasons, "notes": []}
+
+
+async def _ramp_analysis(fetcher: GarminFetcher, activity_id: int, *, laps: list[dict], treadmill: bool) -> dict:
+    """F3: the FIT RR data (cached, else one download), then thresholds.ramp; unreadable or rejected data is
+    remembered in no_rr.json and reported as a rejected test."""
+    try:
+        fd = await fetcher.fit(activity_id)
+    except fitmod.FitUnreadable as err:
+        fitmod.mark_no_rr(activity_id, "fit_unreadable")
+        return _rejected_ramp([f"FIT file unreadable: {err.message}"])
+    if fd is None:
+        return _rejected_ramp([f"no RR data (marked {fitmod.no_rr(activity_id) or 'none'})"])
+    try:
+        aligned = fitmod.aligned_rr(fd)
+    except fitmod.RRRejected as exc:
+        fitmod.mark_no_rr(activity_id, "rr_rejected")
+        return _rejected_ramp([f"RR data rejected: {exc}"])
+    return thresholds.ramp(aligned, laps=laps, treadmill=treadmill)
+
+
+def _field_record(test: str, a: dict, *, activity_id: int, day: date, treadmill: bool, f3_hr: int | None,
+                  wrist: bool) -> tuple[dict | None, str | None]:
+    """(record --save would store, why --save refuses): methods doc 14.3, 14.4, 14.8."""
+    tag = {"drift": "F1", "time_trial": "F2", "ramp": "F3"}[test]
+    if a["status"] != "ok" or not a.get("saveable", test == "time_trial"):
+        why = "; ".join(a.get("reasons") or []) or "no reason given"
+        if test == "drift" and a["status"] == "ok":
+            if a["verdict"] == "at LT1":   # uneven pace
+                why = "at LT1 but with uneven pace; repeat at a steadier pace"
+            else:
+                why = f"{a['verdict']} (drift {a['drift_pct']}%); next test: start at HR {a['retest_hr']}"
+        return None, f"{tag} not saved, {'status ' + a['status'] + ': ' if a['status'] != 'ok' else 'verdict '}{why}"
+    notes = list(a.get("reasons") or []) + list(a.get("notes") or [])
+    conf = a.get("confidence")
+    if wrist:
+        conf = "low"
+        notes.append("wrist HR: confidence low")
+    if test == "drift" and f3_hr is not None and abs(f3_hr - a["lt1"]["hr"]) <= thresholds.F3_DISAGREE:
+        notes.append(f"agrees with the newest F3 LT1 HR {f3_hr} (within {thresholds.F3_DISAGREE} bpm)")
+    kind = {"drift": "lt1", "time_trial": "lt2", "ramp": "lt1"}[test]
+    details: dict[str, Any] = {"test": tag, "treadmill": treadmill, "bounds": a.get("bounds")}
+    if test == "drift":
+        details.update(drift_pct=a["drift_pct"], halves=a["halves"], excluded_s=a["excluded_s"],
+                       temperature=a["temperature"], f3_hr=f3_hr)
+    elif test == "time_trial":
+        details.update(distance_m=a["distance_m"], speed_ratio=a["speed_ratio"], fade=a["fade"],
+                       excluded_s=a["excluded_s"])
+    else:
+        details.update(fit=a["fit"], steps=a["steps"], gate=a["gate"])
+    method = {"drift": "F1 drift test", "time_trial": "F2 30-minute time trial", "ramp": "F3 alpha1 ramp"}[test]
+    return {"date": day.isoformat(), "source": "field_test", "method": method + (" (treadmill)" if treadmill else ""),
+            kind: a[kind], "confidence": conf, "activities": [activity_id], "notes": "; ".join(notes) or None,
+            "details": details}, None
+
+
+@app.command("analyze")
+def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
+            test: str = typer.Option(..., "--test", help=f"One of {', '.join(TESTS)}."),
+            treadmill: bool = typer.Option(False, "--treadmill", help="Treadmill run: HR only, device speed ignored."),
+            save: bool = typer.Option(False, "--save", help="Also store a field-test record (when the test allows it)."),
+            no_cache: bool = NO_CACHE_OPT) -> None:
+    """Analyze a test run (drift F1, time_trial F2, ramp F3); raises hr_max, ramp records its alpha1 gate outcome."""
+    async def work() -> Result:
+        if test not in TESTS:
+            raise _bad(f"--test must be one of {', '.join(TESTS)}, got {test!r}")
+        today = date.today()
+        snap = zones.load()
+        cache, tracker = Cache(), CacheTracker()
+        try:
+            fetcher = GarminFetcher(cache, today=today, refresh=no_cache, tracker=tracker)
+            act = await fetcher.activity(activity_id)
+            day = _run_day(act) or today
+            fetcher.learn_day(activity_id, day)
+            elapsed = (act.get("summaryDTO") or {}).get("elapsedDuration")
+            row = {"elapsedDuration": elapsed}
+            table = thresholds.samples(await fetcher.details(activity_id, maxchart=_maxchart(row)))
+            laps = (await fetcher.splits(activity_id) or {}).get("lapDTOs") or []
+            strap = thresholds.hr_source(act) == "strap"
+            f3_hr = _newest_f3_hr(snap, today)
+            if test == "ramp":
+                analysis = await _ramp_analysis(fetcher, activity_id, laps=laps, treadmill=treadmill)
+            elif test == "time_trial":
+                analysis = thresholds.time_trial(table, laps=laps)
+            else:
+                records = None
+                if fetcher.fit_cached(activity_id):   # cached FIT data only: it serves the temperature
+                    records = ((await fetcher.fit(activity_id)) or {}).get("records") or None
+                analysis = thresholds.drift(table, laps=laps, treadmill=treadmill, fit_records=records, f3_hr=f3_hr)
+            calls = fetcher.calls
+        finally:
+            cache.close()
+        candidate, refusal = _field_record(test, analysis, activity_id=activity_id, day=day, treadmill=treadmill,
+                                           f3_hr=f3_hr, wrist=not strap)
+        top = thresholds.max_hr(table) if strap else None
+        saved = None
+        with zones.transaction() as data:
+            if top is not None:
+                zones.update_hr_max(data, top, activity=activity_id, day=day)
+            if analysis.get("outcome") is not None:
+                zones.record_alpha1_outcome(data, analysis["outcome"], day=day, activity=activity_id)
+            if save and candidate is not None:
+                try:
+                    saved = zones.add_record(data, candidate, today=today)
+                except PaceError as err:
+                    refusal = f"not saved: {err.message}"
+            hr_max, h4 = data["hr_max"], copy.deepcopy(data["h4"])
+        if save and saved is None:
+            raise _bad(refusal or "not saved",
+                       hint="Nothing was stored except hr_max and the alpha1 memory; run without --save to see the analysis.")
+        out = {**analysis, "test": test, "activity_id": activity_id, "date": day.isoformat(),
+               "hr_source": "strap" if strap else "wrist", "calls": calls, "hr_max": hr_max, "h4": h4,
+               "record": saved or candidate, "saved": saved}
+        return Result(out, tracker.report())
+
+    run_command("zones analyze", {"activity_id": activity_id, "test": test, "treadmill": treadmill, "save": save}, work)
+
+
+# --- local commands ---
+
+@app.command("test-workout")
+def test_workout(kind: str = typer.Argument(..., metavar="KIND", help=f"One of {', '.join(TESTS)}.")) -> None:
+    """A workout DSL for a field test, targets from the current LT1 record or the newest estimate."""
+    async def work() -> Result:
+        data = zones.load()
+        cur = zones.current(data)
+        est = next((e["lt1_hr"] for e in reversed(data["estimates"]) if e.get("lt1_hr") is not None), None)
+        return Result({"workout": thresholds.test_workout(kind, lt1_record=cur["lt1"], estimate_lt1_hr=est,
+                                                         h2=zones.h2_of(cur["lt1"], cur["lt2"]))})
+
+    run_command("zones test-workout", {"kind": kind}, work)
+
+
+def _pace_s(text: str | None, flag: str) -> float | None:
+    return None if text is None else float(round(1000.0 / parse_pace(text, flag)))
+
+
+def _threshold(hr: int | None, pace: str | None, flag: str) -> dict | None:
+    p = _pace_s(pace, flag)
+    return {"hr": hr, "pace_s_per_km": p} if hr is not None or p is not None else None
+
+
+@app.command("add")
+def add(source: str = typer.Option(..., "--source", help=f"One of {', '.join(zones.SOURCES)}."),
+        on: str | None = typer.Option(None, "--date", help="Record date; default today."),
+        lt1_hr: int | None = typer.Option(None, "--lt1-hr"),
+        lt1_pace: str | None = typer.Option(None, "--lt1-pace", help="m:ss per km."),
+        lt2_hr: int | None = typer.Option(None, "--lt2-hr"),
+        lt2_pace: str | None = typer.Option(None, "--lt2-pace", help="m:ss per km."),
+        max_hr: int | None = typer.Option(None, "--max-hr"),
+        rest_hr: int | None = typer.Option(None, "--rest-hr"),
+        method: str | None = typer.Option(None, "--method", help="For a lab: its criterion, e.g. VT1/VT2."),
+        confidence: str | None = typer.Option(None, "--confidence", help=f"One of {', '.join(zones.CONFIDENCES)}."),
+        activity: list[int] | None = typer.Option(None, "--activity", help="Garmin activity id; repeatable."),
+        notes: str | None = typer.Option(None, "--notes")) -> None:
+    """Add a record; a lab record becomes current for each threshold it has unless that current one is newer."""
+    async def work() -> Result:
+        from pace.dates import parse_date
+        today = date.today()
+        record = {"date": parse_date(on).isoformat(), "source": source, "method": method,
+                  "lt1": _threshold(lt1_hr, lt1_pace, "--lt1-pace"), "lt2": _threshold(lt2_hr, lt2_pace, "--lt2-pace"),
+                  "max_hr": max_hr, "rest_hr": rest_hr, "confidence": confidence, "activities": activity or [],
+                  "notes": notes}
+        with zones.transaction() as data:
+            stored = zones.add_record(data, record, today=today)
+            return Result({"record": stored, "current": _current_view(data)})
+
+    run_command("zones add", {"source": source, "date": on, "lt1_hr": lt1_hr, "lt1_pace": lt1_pace, "lt2_hr": lt2_hr,
+                      "lt2_pace": lt2_pace, "max_hr": max_hr, "rest_hr": rest_hr, "method": method,
+                      "confidence": confidence, "activity": activity, "notes": notes}, work)
+
+
+@app.command("accept")
+def accept(record_id: int = typer.Argument(..., metavar="ID"),
+           only: str | None = typer.Option(None, "--only", help="lt1 or lt2: make it current for that threshold only.")) -> None:
+    """Make a record current for every threshold it has (or one); refused when LT1 HR would reach LT2 HR."""
+    async def work() -> Result:
+        with zones.transaction() as data:
+            zones.accept(data, record_id, only=only)
+            return Result({"current": _current_view(data)})
+
+    run_command("zones accept", {"id": record_id, "only": only}, work)
+
+
+@app.command("remove")
+def remove(record_id: int = typer.Argument(..., metavar="ID"),
+           force: bool = typer.Option(False, "--force", help="Remove a record that is current (it becomes none).")) -> None:
+    """Delete a record; refused while it is current unless --force."""
+    async def work() -> Result:
+        with zones.transaction() as data:
+            removed = zones.remove(data, record_id, force=force)
+            return Result({"removed": removed, "current": _current_view(data)})
+
+    run_command("zones remove", {"id": record_id, "force": force}, work)

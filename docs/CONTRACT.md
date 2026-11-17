@@ -470,6 +470,94 @@ Two reads with different starts inside one window ask for the same first window 
 Days after today are never requested; a window ending in the past is cached for 7 days, one ending yesterday for 1 day, one holding today for 1 hour.
 There is no `--fields`, `--bucket` or `--raw`; the charts read the same rows.
 
+## Zones
+
+`pace zones` keeps the athlete's lactate thresholds (LT1, LT2) and derives training zones from them.
+It reads and writes one local file, `$PACE_HOME/zones.json`; `show`, `estimate` and `analyze` also read Garmin.
+Commands: `zones show`, `estimate`, `analyze`, `test-workout`, `add`, `accept`, `remove`.
+`pace schema` marks `estimate`, `analyze`, `add`, `accept` and `remove` `"local_write": true` and describes the rules under the top-level `zones` key (`rule`, `sources`, `lab_valid_days`, `due`, `max_calls`, `no_rr_reasons`).
+The methods, formulas and evidence are in `docs/superpowers/specs/2026-11-17-zones-methods.md`.
+Writing the zones to the watch (`zones push`) is not available yet and is not described here.
+
+File shape: `{"records": [...], "current": {"lt1": id|null, "lt2": id|null}, "next_id": N, "estimates": [...], "hr_max": {"bpm", "activity", "date"}|null, "h4": {"streak", "unreliable", "since", "counted"}}`.
+A record is `{"id", "date", "source": "estimate"|"field_test"|"lab", "method", "lt1": {"hr", "pace_s_per_km"}|null, "lt2": {...}|null, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities", "confidence": "low"|"medium"|"high"|null, "notes", "details"}`.
+Paces on the command line are `m:ss` per km and are stored as seconds per km.
+
+### Current, accept, remove
+
+Current is per threshold: the zones come from the current LT1 record and the current LT2 record, which may be different records.
+`zones add --source lab` makes the new record current for each threshold it has, unless that threshold's current record is newer.
+Estimates and field-test records never become current by themselves: `zones accept ID` (every threshold the record has) or `zones accept ID --only lt1|lt2`.
+Both are refused with `bad_args` when the resulting pair has LT1 HR at or above LT2 HR; `zones add` is refused the same way, and when LT1 pace is not slower than LT2 pace.
+`zones remove ID` is refused while the record is current unless `--force`; the threshold then has no current record.
+A current lab record older than 183 days is reported `expired: true` for that threshold (advisory only).
+A missing id is `not_found` with a hint that names `pace zones show` and never Garmin.
+
+### `zones show`
+
+`data` has `current` (per threshold: `id`, `source`, `date`, `method`, `confidence`), `expired`, `zones` (rule `lt-5z-v1`: `three_hr`, `three_pace`, `floors`, `pace_floors`; pieces are null while their inputs are missing), `records` (newest first, each with `current_for`), `candidates` (records newer than the current one for a threshold they have), `due`, `hr_max`, `h4` (alpha1 memory), `garmin` (the watch's HR zones entry, null when Garmin cannot be read) and `in_sync` (the five derived floors equal the watch's `zone1Floor` to `zone5Floor`; null when either side is missing).
+It makes two cached Garmin reads: the activity list and the watch zones (`connectapi /biometric-service/heartRateZones`, 5 minutes).
+`due` is `{"estimate": bool, "field_test": {"lt1": bool, "lt2": bool}, "reasons": [...]}`.
+The list read starts 56 days before the last complete estimate (84 days back when there is none) so that `due` sees the last run before that estimate: a break of 14 days or more that straddles the estimate still counts when 14 days of training follow it.
+Partial estimates are skipped by `due`.
+The latest field test being 84 days old or more makes a retest due even when the threshold has no current record.
+
+### `zones estimate`
+
+`zones estimate [--weeks 8] [--max-calls 40] [--include-wrist] [--retry-h4] [--save] [--no-cache]` estimates both thresholds from recent runs.
+`data` is the estimate result: `lt1`, `lt2`, `methods` (H1 to H5, each with `status` `ok|insufficient_data|skipped|alpha1_unusable`, `reasons`, and `suggest` when a field test is the way forward), `runs_used`, `runs_skipped`, `deferred`, `calls`, `estimated_seconds`, `hr_max`, `rest_hr`, `h4`, `weeks`, `extended`, `ref_hr`, `summary`, `record` (the full record `--save` would store, or null) and `saved` (the stored record or null).
+An estimate with `insufficient_data` methods is still `ok`.
+It always appends `summary` to the `estimates` log and raises `hr_max`; without `--save` no record is stored, so the user can look at the candidate first.
+With `--save` a record that the store refuses (for example LT1 HR at or above LT2 HR) is `bad_args` after the estimate has been logged.
+
+Budget: `--max-calls` is a hard cap on every Garmin call of the run, the 2x extension included.
+Each picked run costs one `get_activity` and one `get_activity_details`, a FIT download one call, and the activity list, personal records and sleep stats a few more; cache hits are free.
+At the cap the remaining reads are not made: they are listed in `deferred` (`{"kind", "id"?, "error"?}`), the methods run on what was read and the estimate is logged with `partial: true`.
+A `rate_limited` or `network` error stops further calls the same way (the entry carries `error`).
+Other `internal` errors on a FIT download defer that one read; nothing is remembered about the run.
+Reads of runs older than one day are cached for 60 days under their own keys, so rerunning a capped or interrupted estimate continues from the cache.
+`calls` and `estimated_seconds` (the rate limiter's minimum time for those calls) report the cost.
+
+Timing and timeout: a cold estimate makes up to 40 calls at 10 per minute plus response times, about 4 minutes; from cache it is near-instant.
+Callers use a 10-minute timeout for the shell call.
+`pace cache clear` does not clear `$PACE_HOME/fit/` (downloaded FIT data and `no_rr.json`).
+
+### FIT data and `no_rr`
+
+HRV methods read the RR intervals of a run's FIT file.
+Only derived JSON is stored, in `$PACE_HOME/fit/<activity id>.json` (RR values, per-second records without GPS, no device or serial fields); the zip is parsed in memory.
+`$PACE_HOME/fit/no_rr.json` maps an activity id to the reason pace stops trying that run:
+
+| reason | meaning |
+|---|---|
+| `no_hrv_messages` | the file has no RR messages (no chest strap, or none recorded) |
+| `rr_rejected` | the RR series fails the sanity check against the records |
+| `fit_unreadable` | the downloaded file could not be parsed (nothing cached) |
+
+Only a parse failure marks `fit_unreadable`; a transient download error does not.
+The reasons appear in the `rejected` list of the alpha1 method.
+`zones estimate --retry-h4` clears the "alpha1 unreliable" mark (two not-monotonic runs or ramps in a row); `no_rr.json` entries are removed by editing the file.
+
+### `zones analyze`
+
+`zones analyze ACTIVITY_ID --test drift|time_trial|ramp [--treadmill] [--save] [--no-cache]` analyzes one test run.
+It reads `get_activity`, `get_activity_details` and `get_activity_splits` (cached), plus the FIT file for `ramp` unless it is cached; F1 uses cached FIT data only, for the temperature.
+`data` is the method's analysis (`status`, `reasons`, the result and its inputs) plus `test`, `activity_id`, `date`, `hr_source`, `calls`, `hr_max`, `h4`, `record` and `saved`.
+A strap run raises `hr_max`; a wrist run never does and is saved with confidence `low`.
+`--test ramp` records the alpha1 gate outcome in the H4 memory on every run, saved or not, once per activity.
+A FIT file that cannot be parsed or whose RR data is rejected is marked in `no_rr.json` and reported as a `rejected` ramp.
+`--save` also stores a `field_test` record (not current until accepted) and refuses with `bad_args`, storing nothing but `hr_max` and the alpha1 memory:
+- F1 (`drift`): anything but "at LT1" with even pace; the message carries the verdict, the drift and the HR for the next test.
+- F2 (`time_trial`): a rejected test.
+- F3 (`ramp`): `alpha1_unusable` or a ramp not bracketing alpha1 0.75.
+F1 confidence is `medium`, or `low` when the newest F3 record of the last 28 days disagrees by more than 5 bpm; F2 is `low` when the pace faded or stops occurred.
+
+### `zones test-workout`, `add`
+
+`zones test-workout drift|time_trial|ramp` returns `{"workout": DSL}` for `pace plan set --workout`, with targets from the current LT1 record or the newest estimate; it makes no Garmin call.
+`zones add --source S [--date D] [--lt1-hr] [--lt1-pace] [--lt2-hr] [--lt2-pace] [--max-hr] [--rest-hr] [--method] [--confidence] [--activity ID]... [--notes]` returns `{"record", "current"}`.
+`--source` is required; a record needs at least one threshold value; a higher `--max-hr` raises `hr_max`.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.

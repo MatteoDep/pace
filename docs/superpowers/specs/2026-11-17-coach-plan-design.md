@@ -432,6 +432,21 @@ Run reviews (section 5B) and workout DSL HR targets use pace's zones once both t
 Storage: `$PACE_HOME/zones.json`, same store rules as the diary and plan.
 This section is built as coach plan 5, after plan 2.
 
+### Post-hoc notes (plan 5, zones commands, implemented 2026-11-18)
+
+- `zones estimate` and `zones analyze` are `"local_write": true` (the estimates log, `hr_max` and the alpha1 memory are written on every run); `--save` on either also stores a record.
+  Neither makes a record current: `zones accept` does (a lab record is the one exception, on `zones add`).
+- A cold `zones estimate` takes up to about 4 minutes; callers use a 10-minute timeout.
+  `--max-calls` (default 40) caps every Garmin call; deferred reads make the estimate partial and the due rule skips it.
+- `zones show` reads the activity list from 56 days before the last complete estimate (84 days back without one), so `due` also sees the last run before that estimate.
+  An unreadable watch-zones read leaves `garmin` and `in_sync` null instead of failing the command.
+- An estimate runs on a snapshot of `zones.json` and merges its log entry, `hr_max` and alpha1 memory into the file under a short lock, because the reads outlast the lock timeout; records and `current` written meanwhile are kept.
+- `--save` refusals (`bad_args`) happen after the local writes (`hr_max`, alpha1 outcome, estimate log) are committed.
+- `pace.fit.FitUnreadable` (an `internal` PaceError) marks the parse failure; only it marks `fit_unreadable` in `no_rr.json`.
+  Any other `internal` error on a FIT download defers that read and marks nothing.
+- A wrist-HR run analyzed with `zones analyze --save` is saved with confidence `low`.
+- `zones push` is not part of this step (it waits for the live verification of the Garmin write).
+
 ## Implementation notes (post-hoc)
 
 Where the shipped plan (section 2) departs from, or pins down, the design above:

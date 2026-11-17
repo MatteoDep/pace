@@ -267,7 +267,15 @@ def test_get_fit_parse_error_caches_nothing(fake_api, _home) -> None:
     with pytest.raises(PaceError) as exc:
         asyncio.run(fit.get_fit(5, tracker=None))
     assert exc.value.code == "internal" and "5" in str(exc.value)
+    assert isinstance(exc.value, fit.FitUnreadable)
     assert not (_home / "fit" / "5.json").exists() and fit.no_rr(5) is None
+
+
+def test_get_fit_download_internal_error_is_not_unreadable(fake_api, _home) -> None:
+    fake_api["payload"] = ApiError("internal", "HTTP error: odd")
+    with pytest.raises(PaceError) as exc:
+        asyncio.run(fit.get_fit(5, tracker=None))
+    assert exc.value.code == "internal" and not isinstance(exc.value, fit.FitUnreadable)
 
 
 def test_get_fit_api_error(fake_api, _home) -> None:

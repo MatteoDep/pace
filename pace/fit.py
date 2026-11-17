@@ -42,6 +42,15 @@ class FitFileError(ValueError):
     """The downloaded file is not a readable FIT file (or zip with a single .fit member)."""
 
 
+class FitUnreadable(PaceError):
+    """`internal` error for a downloaded file that cannot be parsed; only this marks a run `fit_unreadable`
+    (any other `internal` error on a download is transient and marks nothing)."""
+
+    def __init__(self, activity_id: int, detail: object) -> None:
+        super().__init__("internal", f"FIT file of activity {activity_id} unreadable: {detail}",
+                         hint="Nothing was cached; the run is skipped for RR methods.")
+
+
 class RRRejected(ValueError):
     """The RR series fails the section 6 sanity check; the caller marks the run `rr_rejected`."""
 
@@ -251,7 +260,7 @@ async def get_fit(activity_id: int, *, tracker: CacheTracker | None) -> dict[str
 
     None, without a call, when the run is in no_rr.json and not cached. A file without `hrv` messages is cached
     (its records still serve temperature) and marked `no_hrv_messages`. A parse error raises `internal` and
-    caches nothing; download errors raise as `PaceError.from_api`.
+    caches nothing (`FitUnreadable`); download errors raise as `PaceError.from_api`.
     """
     path = fit_dir() / f"{activity_id}.json"
     if path.exists():
@@ -270,8 +279,7 @@ async def get_fit(activity_id: int, *, tracker: CacheTracker | None) -> dict[str
     try:
         data = read_fit_bytes(raw)
     except FitFileError as exc:
-        raise PaceError("internal", f"FIT file of activity {activity_id} unreadable: {exc}",
-                        hint="Nothing was cached; the run is skipped for RR methods.") from None
+        raise FitUnreadable(activity_id, exc) from None
     if not data["rr_s"]:
         mark_no_rr(activity_id, "no_hrv_messages")
     store.save_json(path, data)

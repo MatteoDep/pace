@@ -70,6 +70,8 @@ class FakeFetcher:
         self.calls += 1
         self.log.append(key)
         if key in self.errors:
+            if self.errors[key] == "fit_unreadable":
+                raise fit.FitUnreadable(key[1], "injected parse failure")
             raise PaceError(self.errors[key], f"injected {self.errors[key]}")
         self.cache[key] = value = make()
         return value
@@ -468,7 +470,7 @@ def test_auth_error_propagates(stubs):
 
 
 def test_unreadable_fit_is_skipped_and_marked(stubs):
-    f = worked_fetcher(errors={("fit", 101): "internal"})
+    f = worked_fetcher(errors={("fit", 101): "fit_unreadable"})
     res, data = run(f)
     assert fit.no_rr(101) == "fit_unreadable"
     assert any(x["id"] == 101 and x["reason"] == "fit_unreadable" for x in res["methods"]["H4"]["rejected"])
@@ -476,6 +478,20 @@ def test_unreadable_fit_is_skipped_and_marked(stubs):
     g = FakeFetcher(worked_rows(), cache=f.cache)
     run(g, data)
     assert ("fit", 101) not in g.log
+
+
+def test_internal_download_error_does_not_mark_the_run(stubs):
+    """A transient `internal` error on a FIT download is not a parse failure: nothing is marked, the read is
+    deferred with its error, and a rerun tries the download again."""
+    f = worked_fetcher(errors={("fit", 101): "internal"})
+    res, data = run(f)
+    assert fit.no_rr(101) is None
+    assert res["summary"]["partial"] is True
+    assert {"kind": "fit", "id": 101, "error": "internal"} in res["deferred"]
+    assert not any(x["id"] == 101 for x in res["methods"]["H4"]["rejected"])
+    g = worked_fetcher(cache=f.cache)
+    run(g, data)
+    assert ("fit", 101) in g.log
 
 
 def test_not_found_run_is_skipped(stubs):

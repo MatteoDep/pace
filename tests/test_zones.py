@@ -410,6 +410,18 @@ def test_due_field_test_worked_example() -> None:
     assert any("lt2" in x and "108" in x for x in r["reasons"])
 
 
+def test_due_old_field_test_without_a_current_record() -> None:
+    """The 84-day rule belongs to the latest field test, not to the current record: it holds with no current."""
+    d = zones.load()
+    add(d, source="field_test", on="2026-08-01", lt2=(160, 250))   # saved, never accepted: no current LT2
+    assert zones.current(d)["lt2"] is None
+    r = zones.due(d, today=TODAY, runs_since=[])
+    assert r["field_test"] == {"lt1": False, "lt2": True}
+    assert any("lt2" in x and "108" in x for x in r["reasons"])
+    add(d, source="field_test", on="2026-11-01", lt2=(161, 249))
+    assert zones.due(d, today=TODAY, runs_since=[])["field_test"]["lt2"] is False
+
+
 def test_due_field_test_estimate_drift_rule() -> None:
     d = zones.load()
     ft = add(d, source="field_test", on="2026-11-01", lt2=(160, 250))
