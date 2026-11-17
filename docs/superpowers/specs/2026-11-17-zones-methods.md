@@ -305,6 +305,12 @@ Sources:
 - Andriolo S, Rummel M, Gronwald T. 2024. Relationship of Cycling Power and Non-Linear Heart Rate Variability from Everyday Workout Data: Potential for Intensity Zone Estimation and Monitoring. Sensors 24(14):4468. https://doi.org/10.3390/s24144468 (full text)
 - Gronwald T et al. 2024. (as in section 8) (full text)
 
+Gate refinements (controller rulings during implementation, 2026-11-18):
+- `not_monotonic` (which counts toward the H4 streak) needs at least 6 qualifying points spanning at least 10 bpm and at least 2 points on each side of 0.75; otherwise the outcome is `one_sided` or `insufficient_data`, and neither touches the streak (their activity ids are still recorded as counted).
+  A steady easy run whose windows all sit above 0.75 therefore never marks H4 unreliable.
+- The same gate applies to F3 ramps; a ramp with fewer than 6 kept steps is `insufficient_data`.
+- When H4 and H5 agree within 5 bpm, their mutual agreement counts as "another method agrees" for medium confidence (H3 agreement not required).
+
 ## 7. Method H5: LT1 bounds from HR drift in normal runs
 
 Protocol: no test; `pace` looks in the strap runs of the last 12 weeks for long, steady, flat segments, computes decoupling as in F1 (section 8), and treats each run as evidence that LT1 HR lies above (low drift) or below (high drift) the HR of that run.
