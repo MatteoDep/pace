@@ -306,7 +306,7 @@ Sources:
 - Gronwald T et al. 2024. (as in section 8) (full text)
 
 Gate refinements (controller rulings during implementation, 2026-11-18):
-- `not_monotonic` (which counts toward the H4 streak) needs at least 6 qualifying points spanning at least 10 bpm and at least 2 points on each side of 0.75; otherwise the outcome is `one_sided` or `insufficient_data`, and neither touches the streak (their activity ids are still recorded as counted).
+- `not_monotonic` (which counts toward the H4 streak) needs at least 6 qualifying points spanning at least 10 bpm and at least max(2, ceil(10% of the points)) on each side of 0.75; otherwise the outcome is `one_sided` or `insufficient_data`, and neither touches the streak (their activity ids are still recorded as counted).
   A steady easy run whose windows all sit above 0.75 therefore never marks H4 unreliable.
 - The same gate applies to F3 ramps; a ramp with fewer than 6 kept steps is `insufficient_data`.
 - When H4 and H5 agree within 5 bpm, their mutual agreement counts as "another method agrees" for medium confidence (H3 agreement not required).
