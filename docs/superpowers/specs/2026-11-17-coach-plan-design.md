@@ -104,6 +104,8 @@ Changes:
 - Profile keys extended for intake (designer's call: fixed keys keep the profile predictable for the skill and later UIs; free text inside each key keeps it flexible):
   `goal`, `event.name`, `event.date`, `availability`, `background` (running history, current weekly volume, PBs), `other_sports`, `strength`, `preferences` (likes, dislikes, preferred long-run day, terrain, ...), `checkin.weight_days` (integer, default 7 when unset), `dashboard.url` (section 4).
 - Entry kinds extended: `note | plan | recommendation | feedback | constraint | injury | decision`.
+- Constraints and injuries can be resolved (user's call, 2026-11-17): `diary resolve ID [--date D]` sets a `resolved` date; a resolved entry leaves `active` but stays in the diary as history the coach learns from (for example how long an injury took to heal).
+  `--reopen` clears it.
   `decision` records a pushback outcome: what the coach advised, what the user chose, the user's reason, and what to check later.
   Text is free-form; the skill writes it in the shape `advised: ... / chose: ... / because: ... / check: ...`.
 - Entries may carry an optional `ref` naming what they are about: `session:<id>` or `activity:<id>`.
