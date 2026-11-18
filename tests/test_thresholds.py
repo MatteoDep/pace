@@ -1260,3 +1260,145 @@ def test_tie_key_newest_first_then_lowest_id():
             {"activityId": 2, "startTimeGMT": "2026-11-02 07:00:00"},
             {"activityId": 1, "startTimeGMT": "2026-11-01 07:00:00"}]
     assert [r["activityId"] for r in sorted(rows, key=th.tie_key)] == [2, 1, 3]
+
+
+# --- R: race efforts (methods doc 9b) ---
+
+H2R = {"a": 60.0, "b": 25.0, "v_min": 2.8, "v_max": 3.8}
+
+
+def race_tbl(secs, dist, *, warm=0, cool=0, hr=170):
+    v = dist / secs
+    return table(warm + secs + cool, lambda t: v if warm < t <= warm + secs else 2.5, hr_fn=lambda t: hr)
+
+
+def rlap(start, dur, dist):
+    return {**lap(start, dur), "distance": float(dist)}
+
+
+def analyse(tbl, laps=(), lap_range=None, **kw):
+    return th.race(tbl, th.race_effort(tbl, laps=list(laps), lap_range=lap_range), **kw)
+
+
+def raises_bad(fn, *a, **kw):
+    with pytest.raises(th.PaceError) as exc:
+        fn(*a, **kw)
+    assert exc.value.code == "bad_args"
+    return exc.value
+
+
+def test_race_single_5k_is_a_cs_range():
+    out = analyse(race_tbl(1165, 5042), activity=9001, day="2026-11-10", h2=H2R, h2_source="current records")
+    assert out["class"] == "cs" and out["status"] == "ok" and out["method"] == "race_cs" and out["fit"] == "single"
+    assert out["duration_s"] == 1165 and out["distance_m"] == pytest.approx(5042)
+    lo, hi = out["cs_range"]
+    assert 4.070 <= lo < 4.071 and 4.199 <= hi < 4.200 and out["d_prime_range"] == [150, 300]
+    assert out["cs_mps"] == pytest.approx((5042 - 225) / 1165) and out["d_prime_m"] is None
+    assert out["lt2"]["pace_s_per_km"] == 242 and out["lt2_pace_range"] == [246, 238]
+    assert out["confidence"] == "low" and out["saveable"] is True
+    assert out["points"] == [{"source": "effort", "activity": 9001, "date": "2026-11-10", "duration_s": 1165,
+                              "distance_m": pytest.approx(5042)}]
+    # CS 4.13 above H2's v_max 3.8 but within 1.1 x: extrapolated and flagged
+    assert out["lt2"]["hr"] == 163 and out["flags"] == ["extrapolated"] and out["h2_source"] == "current records"
+
+
+def test_race_hr_cap_and_missing_h2():
+    capped = analyse(race_tbl(1165, 5042), h2={**H2R, "v_max": 3.6})   # 1.1 x 3.6 = 3.96 < CS 4.13
+    assert capped["status"] == "ok" and capped["lt2"]["hr"] is None and capped["flags"] == []
+    assert any("1.1 x the H2 top speed" in r for r in capped["reasons"])
+    inside = analyse(race_tbl(1165, 5042), h2={**H2R, "v_max": 4.2})
+    assert inside["lt2"]["hr"] == 163 and inside["flags"] == []
+    none = analyse(race_tbl(1165, 5042))
+    assert none["lt2"]["hr"] is None and any("no H2" in r for r in none["reasons"])
+
+
+def test_race_short_single_effort_is_a_point_only():
+    out = analyse(race_tbl(300, 1500), activity=9001, h2=H2R)
+    assert out["status"] == "point_only" and out["lt2"] is None and out["saveable"] is False
+    assert out["cs_mps"] is None and "600 s" in out["reasons"][0]
+
+
+def test_race_two_effort_fit():
+    other = {"source": "effort", "activity": 9002, "date": "2026-10-01", "duration_s": 300, "distance_m": 1495.5}
+    out = analyse(race_tbl(1165, 5042), activity=9001, points=[other], h2=H2R)
+    assert out["status"] == "ok" and out["fit"] == "points" and len(out["points"]) == 2
+    assert out["cs_mps"] == pytest.approx(4.1) and out["d_prime_m"] == pytest.approx(265.5)
+    assert out["confidence"] == "medium" and out["cs_range"] is None and out["lt2"]["pace_s_per_km"] == 244
+    same = analyse(race_tbl(1165, 5042), activity=9001, points=[{**other, "activity": 9001}], h2=H2R)
+    assert same["confidence"] == "low"
+    # a 300 s effort with a point of another duration gets an estimate instead of a point only
+    assert analyse(race_tbl(300, 1495.5), activity=9002, points=[{**other, "activity": 9001, "duration_s": 1165,
+                                                                  "distance_m": 5042}])["status"] == "ok"
+
+
+def test_race_fit_needs_a_duration_span_and_passes_the_gates():
+    near = {"source": "pr", "activity": 9003, "date": "2026-10-01", "duration_s": 1000, "distance_m": 4350}
+    out = analyse(race_tbl(1165, 5042), activity=9001, points=[near])
+    assert out["fit"] == "single"                                       # 1165 / 1000 < 1.5
+    short = {**near, "duration_s": 100, "distance_m": 500}               # below 120 s: not a point
+    assert analyse(race_tbl(1165, 5042), points=[short])["fit"] == "single"
+    bad_fit = {**near, "duration_s": 300, "distance_m": 1100}            # D' negative
+    out = analyse(race_tbl(1165, 5042), activity=9001, points=[bad_fit])
+    assert out["status"] == "rejected" and out["lt2"] is None and out["saveable"] is False
+    assert "D'" in out["reasons"][0] and out["rejected_fit"]["d_prime_m"] < 0
+
+
+def test_race_laps_select_the_effort_and_a_warmup_is_refused():
+    tbl = race_tbl(1165, 5042, warm=900, cool=300)
+    laps = [rlap(0, 900, 2250), rlap(900, 1165, 5042), rlap(2065, 300, 750)]
+    err = raises_bad(analyse, tbl, laps)
+    assert "lap 1 and lap 3" in err.message and "--laps" in err.hint and "2: 4.33" in err.hint
+    out = analyse(tbl, laps, lap_range=(2, 2), h2=H2R)
+    assert out["laps"] == [2, 2] and out["bounds"] == [900, 2065] and out["duration_s"] == 1165
+    assert out["distance_m"] == pytest.approx(5042) and out["lt2"]["pace_s_per_km"] == 242
+    raises_bad(analyse, tbl, laps, lap_range=(3, 4))
+    raises_bad(analyse, tbl, [], lap_range=(1, 1))
+    # two laps (warm-up, effort): the median falls back to all laps
+    err = raises_bad(analyse, race_tbl(1165, 5042, warm=900), laps[:2])
+    assert err.message.startswith("lap 1 slower than 0.85 x")
+    # auto-laps of an evenly paced effort with a short last lap are not refused
+    v = 5042 / 1165
+    auto = [rlap(k * 1000 / v, 1000 / v, 1000) for k in range(5)] + [rlap(5000 / v, 42 / v, 42)]
+    assert analyse(race_tbl(1165, 5042), auto)["status"] == "ok"
+    # laps without distance (or evenly paced) are not refused
+    assert analyse(race_tbl(1165, 5042), [lap(0, 600), lap(600, 565)])["status"] == "ok"
+
+
+def test_race_moving_time_excludes_stops():
+    tbl = race_tbl(1165, 5042)
+    for r in tbl:
+        if 500 <= r["t"] < 530:
+            r["speed"] = 0.0
+    out = analyse(tbl)
+    assert out["excluded_s"] == 30 and out["duration_s"] == 1135
+
+
+def test_race_shorter_than_120_s_is_refused():
+    err = raises_bad(analyse, race_tbl(100, 500))
+    assert "120 s" in err.message
+
+
+def test_race_time_trial_class_uses_the_f2_rules():
+    tbl = table(1300, lambda t: 4.0, hr_fn=lambda t: 160 if t < 600 else 170)
+    out = analyse(tbl)                                  # no 1680 s minimum
+    assert out["class"] == "time_trial" and out["method"] == "race_tt" and out["status"] == "ok"
+    assert out["lt2"] == {"hr": 170, "pace_s_per_km": 250} and out["confidence"] == "medium" and out["saveable"]
+    fade = analyse(table(2400, lambda t: 4.4 if t <= 1200 else 3.6))
+    assert fade["fade"] is True and fade["confidence"] == "low"
+    stopped = table(2400, lambda t: 0.0 if 1000 < t <= 1030 else 4.0)
+    out = analyse(stopped)
+    assert out["status"] == "rejected" and "a stop longer than 10 s" in out["reasons"] and not out["saveable"]
+    hilly = table(2400, lambda t: 4.0)
+    for r in hilly:
+        r["alt"] = r["dist"] * 0.03
+    assert th.ASCENT_REASON in analyse(hilly)["reasons"]
+    assert analyse(table(1201, lambda t: 4.0))["class"] == "time_trial"
+    assert analyse(table(1200, lambda t: 4.0))["class"] == "cs"
+
+
+def test_race_longer_than_an_hour_is_a_check_only():
+    out = analyse(table(3700, lambda t: 3.5, hr_fn=lambda t: 150))
+    assert out["status"] == "check_only" and out["class"] == "check" and out["lt2"] is None
+    assert out["pace_s_per_km"] == 286 and out["hr"] == 150 and not out["saveable"]
+    assert out["reasons"] == ["longer than 60 min: below LT2, a check only"]
+    assert analyse(table(3600, lambda t: 3.5))["class"] == "time_trial"

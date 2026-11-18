@@ -408,7 +408,8 @@ def test_summary_appended_and_record_storable(stubs):
     s = data["estimates"][-1]
     assert s == res["summary"]
     assert s["date"] == TODAY.isoformat() and s["lt1_hr"] == 142 and s["lt2_hr"] == 160 and s["lt2_pace"] == 250
-    assert set(s) == {"date", "lt1_hr", "lt2_hr", "lt2_pace", "methods", "confidence", "partial"}
+    assert set(s) == {"date", "lt1_hr", "lt2_hr", "lt2_pace", "methods", "confidence", "partial", "h2"}
+    assert s["h2"] == {"a": 60.0, "b": 25.0, "v_min": 2.8, "v_max": 3.8}   # race efforts read LT2 HR from it (9b)
     rec = res["record"]
     assert rec["source"] == "estimate" and rec["details"]["h2"] == {"a": 60.0, "b": 25.0, "v_min": 2.8, "v_max": 3.8}
     stored = zones.add_record(data, rec, today=TODAY)
@@ -416,6 +417,22 @@ def test_summary_appended_and_record_storable(stubs):
     assert stored["rest_hr"] == 45 and stored["cs_mps"] == 4.0
     run(FakeFetcher(worked_rows(), cache=f.cache), data)
     assert len(data["estimates"]) == 2
+
+
+def test_h1_adds_stored_race_efforts_and_drops_their_prs(stubs):
+    """Methods doc 3 and 9b: stored efforts inside the history window are extra H1 points next to the PR points;
+    a PR set in a stored effort's activity is dropped."""
+    seen = []
+    stubs.setattr(thresholds, "critical_speed", lambda runs, *, prs: seen.append(prs) or copy.deepcopy(CS_OK))
+    f = worked_fetcher()
+    f.cache[("prs",)] = [
+        {"typeId": 3, "value": 1180, "activityId": 9001, "prStartTimeGmtFormatted": "2026-11-01T08:00:00.0"},
+        {"typeId": 1, "value": 220, "activityId": 9004, "prStartTimeGmtFormatted": "2026-10-20T08:00:00.0"}]
+    data = zones.load()
+    zones.add_effort(data, {"activity": 9001, "date": "2026-11-01", "duration_s": 1165, "distance_m": 5042.0})
+    zones.add_effort(data, {"activity": 9002, "date": "2026-08-01", "duration_s": 300, "distance_m": 1500.0})  # > 8 w
+    run(f, data)
+    assert [(p["source"], p["activity"]) for p in seen[0]] == [("effort", 9001), ("pr", 9004)]
 
 
 def test_current_lt1_record_is_the_drift_ref(stubs):

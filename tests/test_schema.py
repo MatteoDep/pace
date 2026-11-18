@@ -193,11 +193,13 @@ def test_zones_in_schema() -> None:
     assert entries["zones add"]["required_flags"] == ["--source"]
     assert entries["zones analyze"]["required_flags"] == ["--test"]
     assert "--save" in entries["zones analyze"]["help"] and "also stores a field-test record" in entries["zones analyze"]["help"]
+    assert "--laps" in entries["zones analyze"]["flags"] and "race" in entries["zones analyze"]["help"]
     assert "--save also stores a full record" in entries["zones estimate"]["help"]
     assert "10-minute" in entries["zones estimate"]["help"]
     assert {"--weeks", "--max-calls", "--include-wrist", "--retry-h4", "--save", "--no-cache"} <= set(entries["zones estimate"]["flags"])
     assert "zones" in data["groups"] and "zones" in data["writes"]["confirm"]
     z = data["zones"]
+    assert z["analyze_tests"] == [*z["tests"], "race"]
     assert z["rule"] == "lt-5z-v1" and z["lab_valid_days"] == 183 and z["sources"] == ["estimate", "field_test", "lab"]
     assert z["max_calls"]["default"] == 40 and "hard cap" in z["max_calls"]["rule"]
     assert z["due"]["estimate_every_days"] == zones.ESTIMATE_EVERY_DAYS and z["due"]["field_test_every_days"] == 84

@@ -30,10 +30,13 @@ H2_RANGE_SLACK = 0.10
 OUTCOMES = ("usable", "not_monotonic", "one_sided", "insufficient_data")  # the last two leave the streak alone
 PUSH_SPORTS = ("RUNNING", "DEFAULT")  # watch entries status() compares (first match) and push_body() writes (all)
 FLOOR_KEYS = ("zone1Floor", "zone2Floor", "zone3Floor", "zone4Floor", "zone5Floor")
+RACE_CS = "race_cs"   # record method of a race effort of 120..1200 s: an estimate, it does not reset the test clock
+RACE_TT = "race_tt"   # record method of a race effort of 1200..3600 s: counts as an LT2 field test (14.6)
+EFFORT_KEYS = ("activity", "date", "duration_s", "distance_m")
 
 EMPTY: dict[str, Any] = {
     "records": [], "current": {"lt1": None, "lt2": None}, "next_id": 1, "estimates": [], "hr_max": None,
-    "h4": {"streak": 0, "unreliable": False, "since": None, "counted": []},
+    "h4": {"streak": 0, "unreliable": False, "since": None, "counted": []}, "efforts": [],
 }
 _SHOW_HINT = "List ids with `pace zones show`."
 
@@ -66,17 +69,19 @@ def load() -> dict[str, Any]:
     data = store.load_json(path, EMPTY, "zones")
     records, current, estimates, h4 = (data.get("records"), data.get("current"),
                                        data.get("estimates"), data.get("h4"))
-    hr_max = data.get("hr_max")
+    hr_max, efforts = data.get("hr_max"), data.get("efforts", [])
     if (not isinstance(records, list) or not all(isinstance(r, dict) and _is_int(r.get("id")) for r in records)
             or not isinstance(current, dict) or not isinstance(estimates, list)
             or not all(isinstance(e, dict) for e in estimates)
             or not (hr_max is None or isinstance(hr_max, dict))
-            or not (h4 is None or isinstance(h4, dict))):
+            or not (h4 is None or isinstance(h4, dict))
+            or not isinstance(efforts, list) or not all(isinstance(e, dict) for e in efforts)):
         raise PaceError("internal", "zones has an unexpected shape",
                         hint=f"Inspect or move {path}; pace never overwrites it.")
     ids = {r["id"] for r in records}
     data["current"] = {t: (current.get(t) if current.get(t) in ids else None) for t in THRESHOLDS}
     data["hr_max"] = hr_max
+    data["efforts"] = efforts
     data["h4"] = {**copy.deepcopy(EMPTY["h4"]), **(h4 or {})}
     next_id = data.get("next_id")
     data["next_id"] = max(next_id if _is_int(next_id) else 1, max(ids, default=0) + 1)
@@ -306,6 +311,16 @@ def floor_errors(floors: dict[str, Any] | None, hr_max: int | None) -> list[str]
     return errors
 
 
+# --- race efforts (methods doc 9b) ---
+
+def add_effort(data: dict[str, Any], effort: dict[str, Any]) -> dict[str, Any]:
+    """Store a race effort of 120..1200 s as a critical-speed point; one per activity (a new analysis replaces it)."""
+    stored = {k: effort[k] for k in EFFORT_KEYS}
+    data["efforts"] = sorted([e for e in data["efforts"] if e.get("activity") != stored["activity"]] + [stored],
+                             key=lambda e: (str(e.get("date")), str(e.get("activity"))))
+    return stored
+
+
 # --- logs and memory ---
 
 def log_estimate(data: dict[str, Any], summary: dict[str, Any]) -> None:
@@ -392,7 +407,8 @@ def _estimate_reasons(data: dict[str, Any], today: date, runs_since: list[dict[s
 
 
 def _field_tests(data: dict[str, Any], t: str) -> list[dict[str, Any]]:
-    return [r for r in data["records"] if r.get("source") == "field_test" and _has(r, t)]
+    """Field-test records with a value for t; a race_cs record is an estimate from a short effort, not a test."""
+    return [r for r in data["records"] if r.get("source") == "field_test" and r.get("method") != RACE_CS and _has(r, t)]
 
 
 def _differs(t: str, est: dict[str, Any], cur: dict[str, Any]) -> bool:
@@ -412,8 +428,9 @@ def _field_test_reasons(data: dict[str, Any], t: str, today: date) -> list[str]:
     cur = _current_record(data, t)
     reasons = []
     tests = _field_tests(data, t)
-    if cur is not None and cur.get("source") == "estimate" and not tests:
-        reasons.append(f"{t}: current record is a history estimate and no field test exists")
+    if cur is not None and not tests and (cur.get("source") == "estimate" or cur.get("method") == RACE_CS):
+        kind = "a history estimate" if cur.get("source") == "estimate" else f"a {RACE_CS} estimate"
+        reasons.append(f"{t}: current record is {kind} and no field test exists")
     if tests:
         latest = max(d for d in (_day(r["date"]) for r in tests) if d)
         age = (today - latest).days
@@ -520,4 +537,4 @@ def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, An
 
 
 __all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "floor_errors", "h2_of", "push_body",
-           "provenance", "last_complete_estimate_day", "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]
+           "provenance", "add_effort", "last_complete_estimate_day", "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]

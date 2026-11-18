@@ -12,6 +12,7 @@ Methods: docs/superpowers/specs/2026-11-17-zones-methods.md sections 1, 6, 7 and
 
 import copy
 import math
+import re
 import statistics
 from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
@@ -50,7 +51,8 @@ GARMIN_ZONES_KEY = f"connectapi:{GARMIN_ZONES_PATH}"
 DUE_LOOKBACK_DAYS = 56          # `zones show` reads the list this far before the last estimate (the run before it)
 NO_ESTIMATE_LOOKBACK_DAYS = 84
 F3_RECENT_DAYS = 28             # F1 compares with the newest F3 of this many days (methods doc 9a)
-TESTS = ("drift", "time_trial", "ramp")
+TESTS = ("drift", "time_trial", "ramp")                    # field tests (`test-workout`)
+ANALYZE_TESTS = (*TESTS, "race")                          # `analyze`: the field tests and race efforts (9b)
 ALL_WRIST = "no chest-strap run to examine: wrist HR runs were skipped (use --include-wrist)"
 
 
@@ -211,8 +213,31 @@ def _pr_points(prs: list[dict] | None, since: date) -> list[dict]:
         except ValueError:
             continue
         if dist and isinstance(secs, (int, float)) and day >= since:
-            out.append({"duration_s": secs, "distance_m": dist, "date": day.isoformat()})
+            out.append({"source": "pr", "activity": p.get("activityId"), "date": day.isoformat(),
+                        "duration_s": secs, "distance_m": dist})
     return out
+
+
+def _on_or_after(value: Any, since: date) -> bool:
+    try:
+        return date.fromisoformat(str(value)[:10]) >= since
+    except ValueError:
+        return False
+
+
+def _maximal_points(prs: list[dict] | None, efforts: list[dict], since: date, *, exclude: int | None = None) -> list[dict]:
+    """Maximal points on or after `since` (methods doc 3, 9b): stored race efforts and Garmin PR points. A PR set in
+    an activity that is a stored effort, or in `exclude` (the effort being analysed), is dropped, as is that
+    effort itself."""
+    taken = {e.get("activity") for e in efforts} | {exclude}
+    out = [{"source": "effort", **{k: e.get(k) for k in zones.EFFORT_KEYS}} for e in efforts
+           if e.get("activity") != exclude and _on_or_after(e.get("date"), since)]
+    return out + [p for p in _pr_points(prs, since) if p["activity"] is None or p["activity"] not in taken]
+
+
+def _h2_params(h2: dict) -> dict | None:
+    """The H2 regression as records and the estimates log keep it (methods doc 14.5), or None."""
+    return {k: h2[k] for k in ("a", "b", "v_min", "v_max")} if h2.get("status") == "ok" else None
 
 
 def _rest_hr(sleep: list[dict] | None) -> int | None:
@@ -365,10 +390,10 @@ class _Reads:
 
 # --- the estimate ---
 
-def _history_methods(reads: _Reads, prs: list[dict] | None, since: date) -> tuple[dict, dict]:
+def _history_methods(reads: _Reads, prs: list[dict] | None, since: date, efforts: list[dict]) -> tuple[dict, dict]:
     runs = [{"id": r["id"], "hr_source": r["hr_source"], "table": r["table"]}
             for r in reads.runs.values() if {"effort", "steady"} & set(r["groups"])]
-    cs = thresholds.critical_speed(runs, prs=_pr_points(prs, since))
+    cs = thresholds.critical_speed(runs, prs=_maximal_points(prs, efforts, since))
     h2 = thresholds.hr_speed(runs, include_wrist=reads.include_wrist)
     return cs, h2
 
@@ -477,7 +502,7 @@ def _record(today: date, lt1: dict, lt2: dict, methods: dict, *, data: dict, res
         "activities": sorted(reads.runs), "confidence": min(confs, key=["low", "medium", "high"].index) if confs else None,
         "notes": "; ".join(notes) or None,
         "details": {
-            "h2": ({k: h2[k] for k in ("a", "b", "v_min", "v_max")} if h2.get("status") == "ok" else None),
+            "h2": _h2_params(h2),
             "h3": {"hr": methods["H3"].get("hr"), "pace_s_per_km": methods["H3"].get("pace_s_per_km")},
             "h4": {"hr": methods["H4"].get("hr"), "status": methods["H4"]["status"],
                    "flags": methods["H4"].get("flags") or []},
@@ -523,12 +548,12 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
         sleep += got or []
 
     await reads.history([r for r in rows if history_from <= _row_day(r) <= today], exclude=set(), group="history")
-    cs, h2 = _history_methods(reads, prs, history_from)
+    cs, h2 = _history_methods(reads, prs, history_from, data.get("efforts") or [])
     extended = cs.get("status") != "ok" or h2.get("status") != "ok"   # a rejected H1 fit fails H1 too
     if extended:
         await reads.history([r for r in rows if ext_from <= _row_day(r) < history_from], exclude=set(reads.runs),
                             group="extension")
-        cs, h2 = _history_methods(reads, prs, ext_from)
+        cs, h2 = _history_methods(reads, prs, ext_from, data.get("efforts") or [])
     history_ids = [i for i, r in reads.runs.items() if {"effort", "steady"} & set(r["groups"])]
     _no_strap(reads, h2, history_ids,
               {i for i in history_ids if reads.sources.get(i) != "strap"} | reads.dropped.get("steady", set()))
@@ -568,7 +593,8 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
     partial = bool(reads.deferred)
     summary = {"date": today.isoformat(), "lt1_hr": lt1.get("hr"), "lt2_hr": lt2.get("hr"),
                "lt2_pace": lt2.get("pace_s_per_km"), "methods": {"lt1": lt1.get("method"), "lt2": lt2_method},
-               "confidence": {"lt1": lt1.get("confidence"), "lt2": lt2.get("confidence")}, "partial": partial}
+               "confidence": {"lt1": lt1.get("confidence"), "lt2": lt2.get("confidence")}, "partial": partial,
+               "h2": _h2_params(h2)}
     zones.log_estimate(data, summary)
     rest_hr = _rest_hr(sleep)
     calls = fetcher.calls - start_calls
@@ -763,7 +789,7 @@ async def _ramp_analysis(fetcher: GarminFetcher, activity_id: int, *, laps: list
 def _field_record(test: str, a: dict, *, activity_id: int, day: date, treadmill: bool, f3_hr: int | None,
                   wrist: bool) -> tuple[dict | None, str | None]:
     """(record --save would store, why --save refuses): methods doc 14.3, 14.4, 14.8."""
-    tag = {"drift": "F1", "time_trial": "F2", "ramp": "F3"}[test]
+    tag = {"drift": "F1", "time_trial": "F2", "ramp": "F3", "race": "R"}[test]
     if a["status"] != "ok" or not a.get("saveable", test == "time_trial"):
         why = "; ".join(a.get("reasons") or []) or "no reason given"
         if test == "drift" and a["status"] == "ok":
@@ -774,12 +800,12 @@ def _field_record(test: str, a: dict, *, activity_id: int, day: date, treadmill:
         return None, f"{tag} not saved, {'status ' + a['status'] + ': ' if a['status'] != 'ok' else 'verdict '}{why}"
     notes = list(a.get("reasons") or []) + list(a.get("notes") or [])
     conf = a.get("confidence")
-    if wrist:
+    if wrist and not (test == "race" and a["class"] == "cs"):   # a race CS takes its LT2 HR from H2, not this run
         conf = "low"
         notes.append("wrist HR: confidence low")
     if test == "drift" and f3_hr is not None and abs(f3_hr - a["lt1"]["hr"]) <= thresholds.F3_DISAGREE:
         notes.append(f"agrees with the newest F3 LT1 HR {f3_hr} (within {thresholds.F3_DISAGREE} bpm)")
-    kind = {"drift": "lt1", "time_trial": "lt2", "ramp": "lt1"}[test]
+    kind = {"drift": "lt1", "time_trial": "lt2", "ramp": "lt1", "race": "lt2"}[test]
     details: dict[str, Any] = {"test": tag, "treadmill": treadmill, "bounds": a.get("bounds")}
     if test == "drift":
         details.update(drift_pct=a["drift_pct"], halves=a["halves"], excluded_s=a["excluded_s"],
@@ -787,24 +813,79 @@ def _field_record(test: str, a: dict, *, activity_id: int, day: date, treadmill:
     elif test == "time_trial":
         details.update(distance_m=a["distance_m"], speed_ratio=a["speed_ratio"], fade=a["fade"],
                        excluded_s=a["excluded_s"])
+    elif test == "race":
+        details.update({k: a.get(k) for k in ("class", "laps", "duration_s", "distance_m", "excluded_s", "flags")})
+        if a["class"] == "cs":
+            details.update({k: a.get(k) for k in ("fit", "points", "cs_range", "d_prime_range", "h2", "h2_source")})
+        else:
+            details.update(speed_ratio=a["speed_ratio"], fade=a["fade"])
     else:
         details.update(fit=a["fit"], steps=a["steps"], gate=a["gate"])
-    method = {"drift": "F1 drift test", "time_trial": "F2 30-minute time trial", "ramp": "F3 alpha1 ramp"}[test]
-    return {"date": day.isoformat(), "source": "field_test", "method": method + (" (treadmill)" if treadmill else ""),
-            kind: a[kind], "confidence": conf, "activities": [activity_id], "notes": "; ".join(notes) or None,
-            "details": details}, None
+    method = {"drift": "F1 drift test", "time_trial": "F2 30-minute time trial", "ramp": "F3 alpha1 ramp",
+              "race": a.get("method")}[test]
+    out = {"date": day.isoformat(), "source": "field_test", "method": method + (" (treadmill)" if treadmill else ""),
+           kind: a[kind], "confidence": conf, "activities": [activity_id], "notes": "; ".join(notes) or None,
+           "details": details}
+    if test == "race" and a["class"] == "cs":
+        out.update(cs_mps=a["cs_mps"], d_prime_m=a["d_prime_m"])
+    return out, None
+
+
+def _lap_range(text: str | None) -> tuple[int, int] | None:
+    """--laps A-B (or A): 1-based, inclusive."""
+    if text is None:
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?", text)
+    if not m or int(m[1]) < 1 or int(m[2] or m[1]) < int(m[1]):
+        raise _bad(f"--laps must be A-B with 1 <= A <= B (1-based, inclusive), got {text!r}")
+    return int(m[1]), int(m[2] or m[1])
+
+
+def _race_h2(data: dict) -> tuple[dict | None, str | None]:
+    """H2 for a race LT2 HR: the current records' (zones.h2_of), else the newest logged estimate's (9b)."""
+    cur = zones.current(data)
+    h2 = zones.h2_of(cur["lt1"], cur["lt2"])
+    if h2:
+        return h2, "current records"
+    for e in reversed(data["estimates"]):
+        if e.get("h2"):
+            return e["h2"], f"estimate of {e.get('date')}"
+    return None, None
+
+
+async def _race_analysis(fetcher: GarminFetcher, data: dict, table: list[dict], *, activity_id: int, day: date,
+                         today: date, laps: list[dict], lap_range: tuple[int, int] | None) -> dict:
+    """R (methods doc 9b): the effort, then, for a critical-speed effort, the other maximal points (stored efforts
+    and Garmin PRs, one cached read) and H2."""
+    effort = thresholds.race_effort(table, laps=laps, lap_range=lap_range)
+    if effort["class"] != "cs":
+        return thresholds.race(table, effort)
+    prs = await fetcher.prs()
+    points = _maximal_points(prs, data.get("efforts") or [], today - timedelta(weeks=thresholds.RACE_POINT_WEEKS),
+                             exclude=activity_id)
+    h2, source = _race_h2(data)
+    return thresholds.race(table, effort, activity=activity_id, day=day.isoformat(), points=points, h2=h2,
+                           h2_source=source)
 
 
 @app.command("analyze")
 def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
-            test: str = typer.Option(..., "--test", help=f"One of {', '.join(TESTS)}."),
+            test: str = typer.Option(..., "--test", help=f"One of {', '.join(ANALYZE_TESTS)}."),
+            laps_opt: str | None = typer.Option(None, "--laps", help="race only: the effort laps A-B (1-based, "
+                                                "inclusive); default the whole activity."),
             treadmill: bool = typer.Option(False, "--treadmill", help="Treadmill run: HR only, device speed ignored."),
             save: bool = typer.Option(False, "--save", help="Also store a field-test record (when the test allows it)."),
             no_cache: bool = NO_CACHE_OPT) -> None:
-    """Analyze a test run (drift F1, time_trial F2, ramp F3); raises hr_max, ramp records its alpha1 gate outcome."""
+    """Analyze a test run (drift F1, time_trial F2, ramp F3) or an all-out race effort (race, R); raises hr_max,
+    ramp records its alpha1 gate outcome, race --save stores a 120..1200 s effort as a critical-speed point."""
     async def work() -> Result:
-        if test not in TESTS:
-            raise _bad(f"--test must be one of {', '.join(TESTS)}, got {test!r}")
+        if test not in ANALYZE_TESTS:
+            raise _bad(f"--test must be one of {', '.join(ANALYZE_TESTS)}, got {test!r}")
+        if laps_opt is not None and test != "race":
+            raise _bad("--laps applies to --test race only")
+        if treadmill and test == "race":
+            raise _bad("--treadmill does not apply to --test race: a race effort needs the distance")
+        lap_range = _lap_range(laps_opt)
         today = date.today()
         snap = zones.load()
         cache, tracker = Cache(), CacheTracker()
@@ -821,6 +902,9 @@ def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
             f3_hr = _newest_f3_hr(snap, today)
             if test == "ramp":
                 analysis = await _ramp_analysis(fetcher, activity_id, laps=laps, treadmill=treadmill)
+            elif test == "race":
+                analysis = await _race_analysis(fetcher, snap, table, activity_id=activity_id, day=day, today=today,
+                                                laps=laps, lap_range=lap_range)
             elif test == "time_trial":
                 analysis = thresholds.time_trial(table, laps=laps)
             else:
@@ -834,7 +918,7 @@ def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
         candidate, refusal = _field_record(test, analysis, activity_id=activity_id, day=day, treadmill=treadmill,
                                            f3_hr=f3_hr, wrist=not strap)
         top = thresholds.max_hr(table) if strap else None
-        saved = None
+        saved = effort_saved = None
         with zones.transaction() as data:
             if top is not None:
                 zones.update_hr_max(data, top, activity=activity_id, day=day)
@@ -845,16 +929,25 @@ def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                     saved = zones.add_record(data, candidate, today=today)
                 except PaceError as err:
                     refusal = f"not saved: {err.message}"
+            if save and test == "race" and analysis["class"] == "cs":   # the point is stored whatever the fit says
+                effort_saved = zones.add_effort(data, {"activity": activity_id, "date": day.isoformat(),
+                                                       "duration_s": analysis["duration_s"],
+                                                       "distance_m": round(analysis["distance_m"], 1)})
             hr_max, h4 = data["hr_max"], copy.deepcopy(data["h4"])
         refused = None
         if save and saved is None:
-            refused = f"{refusal or 'not saved'}; nothing was stored except hr_max and the alpha1 memory"
+            kept = "hr_max, the alpha1 memory and the effort as a critical-speed point" if effort_saved \
+                else "hr_max and the alpha1 memory"
+            refused = f"{refusal or 'not saved'}; nothing was stored except {kept}"
         out = {**analysis, "test": test, "activity_id": activity_id, "date": day.isoformat(),
                "hr_source": "strap" if strap else "wrist", "calls": calls, "hr_max": hr_max, "h4": h4,
                "record": saved or candidate, "saved": saved, "save_refused": refused}
+        if test == "race":
+            out["effort_saved"] = effort_saved
         return Result(out, tracker.report())
 
-    run_command("zones analyze", {"activity_id": activity_id, "test": test, "treadmill": treadmill, "save": save}, work)
+    run_command("zones analyze", {"activity_id": activity_id, "test": test, "laps": laps_opt, "treadmill": treadmill,
+                                  "save": save}, work)
 
 
 # --- local commands ---

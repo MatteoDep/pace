@@ -496,6 +496,38 @@ def test_due_lt1_computed_separately_and_estimate_record_rule() -> None:
     assert zones.due(d, today=TODAY, runs_since=[])["field_test"]["lt1"] is True
 
 
+def test_due_race_cs_is_not_a_field_test_but_race_tt_is() -> None:
+    """14.6: a race_tt record counts as an LT2 field test; a race_cs record does not reset the field-test clock."""
+    d = zones.load()
+    add(d, source="field_test", on="2026-08-01", lt2=(160, 250))
+    cs = add(d, source="field_test", on="2026-11-10", lt2=(163, 242), method=zones.RACE_CS)
+    r = zones.due(d, today=TODAY, runs_since=[])
+    assert r["field_test"]["lt2"] is True and any("108" in x for x in r["reasons"])
+    tt = add(d, source="field_test", on="2026-11-11", lt2=(165, 246), method=zones.RACE_TT)
+    assert zones.due(d, today=TODAY, runs_since=[])["field_test"]["lt2"] is False
+    # a current race_cs record with no field test at all is treated like a history estimate
+    d2 = zones.load()
+    only = add(d2, source="field_test", on="2026-11-10", lt2=(163, 242), method=zones.RACE_CS)
+    zones.accept(d2, only["id"])
+    r = zones.due(d2, today=TODAY, runs_since=[])
+    assert r["field_test"]["lt2"] is True and any("race_cs estimate" in x for x in r["reasons"])
+    assert cs["id"] != tt["id"]
+
+
+def test_efforts_store_deduplicates_by_activity(tmp_path) -> None:
+    d = zones.load()
+    assert d["efforts"] == []
+    zones.add_effort(d, {"activity": 9002, "date": "2026-11-10", "duration_s": 1165, "distance_m": 5042.0})
+    zones.add_effort(d, {"activity": 9001, "date": "2026-10-01", "duration_s": 300, "distance_m": 1495.5, "x": 1})
+    again = zones.add_effort(d, {"activity": 9002, "date": "2026-11-10", "duration_s": 1160, "distance_m": 5040.0})
+    assert again == {"activity": 9002, "date": "2026-11-10", "duration_s": 1160, "distance_m": 5040.0}
+    assert [e["activity"] for e in d["efforts"]] == [9001, 9002] and "x" not in d["efforts"][0]
+    (tmp_path / "zones.json").write_text(json.dumps({**zones.EMPTY, "efforts": {"no": 1}}))
+    with pytest.raises(PaceError) as exc:
+        zones.load()
+    assert exc.value.code == "internal"
+
+
 # --- status ---
 
 def test_status_records_order_current_for_and_sync() -> None:

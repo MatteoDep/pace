@@ -75,6 +75,8 @@ def garmin(monkeypatch):
             return state["details"]
         if method == "get_activity_splits":
             return state["splits"]
+        if method == "get_personal_record":
+            return state.get("prs", [])
         return []
 
     async def safe_call(method_name, *args, **kwargs):    # `method` is a connectapi kwarg (PUT)
@@ -640,6 +642,132 @@ def test_analyze_arguments(garmin) -> None:
     garmin["errors"]["get_activity"] = ApiError("not_found", "gone", 404)
     drift_garmin(garmin)
     fails("analyze", "77", "--test", "drift", code="not_found")
+
+
+# --- analyze race (methods doc 9b) ---
+
+H2 = {"a": 60.0, "b": 25.0, "v_min": 2.8, "v_max": 3.8}
+
+
+def race_garmin(g, secs=1165, dist=5042.0, *, laps=None):
+    g["details"] = details_for(secs + 1, lambda t: 175, lambda t: dist / secs)
+    g["splits"] = {"lapDTOs": laps or []}
+
+
+def with_h2():
+    with zones.transaction() as data:
+        data["estimates"].append({"date": day(20), "lt1_hr": 141, "lt2_hr": None, "lt2_pace": None, "methods": {},
+                                  "confidence": {}, "partial": False, "h2": H2})
+
+
+def pr(type_id, secs, activity, n_days=30):
+    return {"typeId": type_id, "value": secs, "activityId": activity,
+            "prStartTimeGmtFormatted": f"{day(n_days)}T08:00:00.0"}
+
+
+def test_analyze_race_single_5k_save_stores_record_and_point(garmin) -> None:
+    race_garmin(garmin)
+    with_h2()
+    out = run("analyze", "9001", "--test", "race", "--save")
+    assert out["test"] == "race" and out["class"] == "cs" and out["fit"] == "single" and out["status"] == "ok"
+    assert out["lt2"] == {"hr": 163, "pace_s_per_km": 242} and out["flags"] == ["extrapolated"]
+    assert out["h2_source"] == f"estimate of {day(20)}" and out["save_refused"] is None
+    rec = out["saved"]
+    assert rec["method"] == "race_cs" and rec["source"] == "field_test" and rec["confidence"] == "low"
+    assert rec["cs_mps"] == pytest.approx(4.1348, abs=1e-4) and rec["d_prime_m"] is None
+    assert rec["details"]["test"] == "R" and rec["details"]["cs_range"][0] == pytest.approx(4.0704, abs=1e-4)
+    assert out["effort_saved"] == {"activity": 9001, "date": day(3), "duration_s": 1165, "distance_m": 5042.0}
+    d = stored()
+    assert d["efforts"] == [out["effort_saved"]] and d["current"]["lt2"] is None
+    assert "get_personal_record" in methods(garmin)
+    # a second analysis of the same activity replaces the point and never counts it as another point
+    again = run("analyze", "9001", "--test", "race", "--save")
+    assert again["fit"] == "single" and len(stored()["efforts"]) == 1 and len(stored()["records"]) == 2
+
+
+def test_analyze_race_h2_from_the_current_records(garmin) -> None:
+    rec = ze_record(date_=day(10), lt1=(140, 330), lt2=(160, 250))
+    with zones.transaction() as data:
+        data["records"][0]["details"] = {"h2": {**H2, "v_max": 4.2}}
+        zones.accept(data, rec)
+    race_garmin(garmin)
+    out = run("analyze", "9001", "--test", "race")
+    assert out["h2_source"] == "current records" and out["flags"] == [] and out["lt2"]["hr"] == 163
+
+
+def test_analyze_race_short_effort_is_a_point_only(garmin) -> None:
+    race_garmin(garmin, 300, 1500.0)
+    out = run("analyze", "9001", "--test", "race")
+    assert out["status"] == "point_only" and out["record"] is None and out["effort_saved"] is None
+    assert stored()["efforts"] == []
+    out = run("analyze", "9001", "--test", "race", "--save")
+    assert out["saved"] is None and "point_only" in out["save_refused"]
+    assert "the effort as a critical-speed point" in out["save_refused"]
+    assert stored()["efforts"] == [{"activity": 9001, "date": day(3), "duration_s": 300, "distance_m": 1500.0}]
+
+
+def test_analyze_race_fits_two_efforts_and_drops_prs_of_stored_efforts(garmin) -> None:
+    race_garmin(garmin, 300, 1495.5)
+    run("analyze", "9002", "--test", "race", "--save")              # a point only
+    race_garmin(garmin)
+    garmin["prs"] = [pr(3, 1150, 9002), pr(3, 1180, 9001), pr(1, 230, 9003, n_days=200)]   # same runs, or too old
+    with_h2()
+    out = run("analyze", "9001", "--test", "race", "--save")
+    assert out["fit"] == "points" and [p["activity"] for p in out["points"]] == [9001, 9002]
+    assert out["cs_mps"] == pytest.approx(4.1) and out["d_prime_m"] == pytest.approx(265.5)
+    assert out["confidence"] == "medium" and out["saved"]["d_prime_m"] == pytest.approx(265.5)
+    assert [e["activity"] for e in stored()["efforts"]] == [9001, 9002]
+
+
+def test_maximal_points_window_and_dedupe() -> None:
+    efforts = [{"activity": 9001, "date": "2026-11-01", "duration_s": 300, "distance_m": 1500.0},
+               {"activity": 9002, "date": "2026-06-01", "duration_s": 600, "distance_m": 2700.0}]
+    prs = [{"typeId": 1, "value": 220, "activityId": 9001, "prStartTimeGmtFormatted": "2026-11-01T08:00:00.0"},
+           {"typeId": 3, "value": 1180, "activityId": 9004, "prStartTimeGmtFormatted": "2026-10-01T08:00:00.0"},
+           {"typeId": 2, "value": 370, "activityId": 9005, "prStartTimeGmtFormatted": "2026-10-02T08:00:00.0"}]
+    pts = ze._maximal_points(prs, efforts, date(2026, 8, 1))
+    assert [(p["source"], p["activity"]) for p in pts] == [("effort", 9001), ("pr", 9004), ("pr", 9005)]
+    pts = ze._maximal_points(prs, efforts, date(2026, 8, 1), exclude=9005)
+    assert [p["activity"] for p in pts] == [9001, 9004]
+
+
+def test_analyze_race_laps_and_warmup_refusal(garmin) -> None:
+    v = 5042 / 1165
+    garmin["details"] = details_for(2366, lambda t: 175, lambda t: v if 900 < t <= 2065 else 2.5)
+    lap_rows = laps_for(900, 1165, 300)["lapDTOs"]
+    for lp, dist in zip(lap_rows, (2250.0, 5042.0, 750.0)):
+        lp["distance"] = dist
+    garmin["splits"] = {"lapDTOs": lap_rows}
+    err = fails("analyze", "9001", "--test", "race")
+    assert "warm-up" in err["message"] and "--laps" in err["hint"]
+    out = run("analyze", "9001", "--test", "race", "--laps", "2-2")
+    assert out["laps"] == [2, 2] and out["duration_s"] == 1165 and out["lt2"]["pace_s_per_km"] == 242
+    fails("analyze", "9001", "--test", "race", "--laps", "2-4")
+    fails("analyze", "9001", "--test", "race", "--laps", "3-2")
+    fails("analyze", "9001", "--test", "drift", "--laps", "2-2")
+    fails("analyze", "9001", "--test", "race", "--treadmill")
+
+
+def test_analyze_race_long_effort_is_check_only_and_save_refused(garmin) -> None:
+    race_garmin(garmin, 3700, 12950.0)
+    out = run("analyze", "9001", "--test", "race", "--save")
+    assert out["status"] == "check_only" and out["pace_s_per_km"] == 286 and out["hr"] == 175
+    assert out["saved"] is None and "check_only" in out["save_refused"] and "longer than 60 min" in out["save_refused"]
+    assert stored()["records"] == [] and stored()["efforts"] == [] and "get_personal_record" not in methods(garmin)
+
+
+def test_analyze_race_time_trial_class_saves_race_tt(garmin) -> None:
+    garmin["details"] = details_for(2401, lambda t: 165 if t < 600 else 172, lambda t: 4.0)
+    garmin["splits"] = {"lapDTOs": []}
+    rec = run("analyze", "9001", "--test", "race", "--save")["saved"]
+    assert rec["method"] == "race_tt" and rec["lt2"] == {"hr": 172, "pace_s_per_km": 250}
+    assert rec["details"]["class"] == "time_trial" and rec["confidence"] == "medium"
+    assert stored()["efforts"] == []
+
+
+def test_analyze_race_below_120_s_is_refused(garmin) -> None:
+    race_garmin(garmin, 100, 500.0)
+    assert "120 s" in fails("analyze", "9001", "--test", "race")["message"]
 
 
 # --- push ---

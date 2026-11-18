@@ -91,6 +91,7 @@ CS  in m/s (slope), D' in m (intercept)
 LT2 pace (s/km) = 1000 / CS
 ```
 Optional extra points: Garmin personal records (1 km, 1 mile, 5 km) whose record date is inside the analysis window and whose duration is between 120 s and 1200 s may be added as (duration, distance) points (pace heuristic; Anderson et al. 2026 advise excluding race efforts of 800 m or less and 10 km or more).
+Race efforts stored by section 9b inside the window are added the same way; a record set in a stored effort's activity is dropped (user decision 2026-11-18).
 Inputs: per-sample distance, time, elevation, cadence; Garmin PR list (one call); run dates.
 Window: the last 8 weeks (`--weeks 8`); Hunter et al. used 6 weeks, Smyth and Muniz-Pumares 16 weeks.
 Validity gates (pace heuristic):
@@ -536,6 +537,58 @@ Sources:
 - Van Hooren B et al. 2025. (as in section 6) (abstract)
 - Rogers B, Gronwald T. 2022. (as in section 6) (full text)
 
+## 9b. Method R: race efforts (LT2)
+
+Numbered 9b for the same reason as 9a.
+Rules in this section are user decisions of 2026-11-18 unless marked otherwise.
+Protocol: none; the user or the coach marks a run as an all-out effort with `zones analyze ID --test race [--laps A-B]` (Garmin rarely tags races, so the list-row event type is not used).
+The effort is laps A to B (1-based, inclusive), else the whole activity.
+Without `--laps`, the analysis is refused when the first or last lap is slower than 0.85 x the median lap speed, with a hint to pass `--laps`.
+The median is taken over the laps between the first and the last, or over all laps when there are only two (pace heuristic: with three laps, warm-up, effort and cool-down, a plain median is a slow lap and would let the warm-up through).
+Duration = the moving time of the effort (section 1 stop rules); distance = the distance covered over the effort.
+Classes by duration:
+```
+duration < 120 s          refused (bad_args)
+120 s .. 1200 s           a critical-speed point (class "cs")
+1200 s < duration <= 3600 the F2 rules (class "time_trial")
+duration > 3600 s         a check only (status "check_only"): average pace and HR, never an LT2 value
+```
+Critical-speed point (120..1200 s):
+```
+points = this effort + stored efforts + Garmin 1 km, 1 mile and 5 km records (section 3), within the last 16 weeks,
+         durations 120..1200 s; a record set in a stored effort's activity, or in this activity, is dropped
+if the point durations span at least 1.5 x (max / min):
+    fit d = CS * T + D' by OLS on the points (as H1)
+    reject if D' is outside 50..500 m or CS is not below the speed of the longest point (the H1 gates)
+    confidence medium if the points come from >= 2 activities, else low
+elif duration >= 600 s:
+    single-effort range: CS = (distance - D') / duration for D' in 150..300 m; central value at D' = 225 m
+    confidence low; D' is not stored (it was assumed)
+else:
+    status "point_only": stored as a point, no estimate
+LT2 pace = R(1000 / CS)
+LT2 HR   = R(a + b * CS) with H2 from the current records (14.5), else from the newest estimate that logged one,
+           else null with a reason; flagged "extrapolated" when CS > v_max; null when CS > 1.1 x v_max (the 14.5 cap)
+```
+`--save` stores the effort as `{"activity", "date", "duration_s", "distance_m"}` in `zones.json` `efforts` (one per activity) whatever the status, and, for an `ok` result, a `field_test` record with method `race_cs`.
+Stored efforts inside the history window are also extra H1 points of `zones estimate` (section 3, 14.1).
+Time-trial class (1200..3600 s): the F2 analysis (section 9) on the effort, without the 1680 s minimum; LT2 pace = the whole effort (moving time / distance); LT2 HR = mean HR from 600 s to the end; the same stop and terrain rejections and pacing check; `--save` stores a `field_test` record with method `race_tt`.
+Check-only class (above 3600 s): "longer than 60 min: below LT2, a check only"; `--save` is refused.
+Why these limits:
+- The CS model describes efforts of about 2 to 20 min, and its D' is poorly determined (error 5-28%) (Anderson et al. 2026); the training-data methods used 3-12 min (Hunter et al. 2023) and 400 m to 5 km (Smyth and Muniz-Pumares 2020).
+- One effort cannot separate CS from D'; the 150..300 m D' range is a pace heuristic for a trained recreational runner, so the single-effort result is a range with confidence low, and it needs at least 600 s so that the D' term is a small share of the distance.
+- Worked check (unit test): 1165 s for 5042 m gives CS 4.070 m/s (D' 300 m) to 4.199 m/s (D' 150 m), central 4.135 m/s, LT2 pace 242 s/km (range 246..238).
+- An all-out effort of 25-60 min sits near LT2: the 30-min time trial validated against the lab LT (McGehee et al. 2005) is in this class.
+  On 50-60 min efforts the mean HR from 600 s reads high because HR keeps drifting (section 8); the result is still a field test, read with that bias in mind.
+- Above 60 min the effort is below LT2 (pace heuristic): a pace and HR check only.
+Evidence grade: moderate for CS from maximal efforts of 2-20 min; weak for the single-effort range (assumed D'); as section 9 for the time-trial class.
+
+Sources:
+- Anderson M et al. 2026. (as in section 3) (full text)
+- Hunter B et al. 2023. (as in section 3) (abstract)
+- Smyth B, Muniz-Pumares D. 2020. (as in section 3) (full text)
+- McGehee JC et al. 2005. (as in section 9) (abstract)
+
 ## 10. Lab tests (source "lab")
 
 Protocol: the user enters LT1 and LT2 HR and/or pace from a lab report with `zones add --source lab`; the record becomes current for each threshold it has, if its date is on or after the date of that threshold's current record (plan 5).
@@ -591,6 +644,8 @@ Garmin lactate threshold detection: not available on the Forerunner 55.
 ### 14.1 LT2 from history: H1 + H2
 
 LT2 pace = 1000 / CS, with CS from the linear distance-time fit of the best 180 s, 420 s and 720 s flat stop-free windows in the examined runs of the last 8 weeks.
+Extra points: the Garmin records of section 3 and the stored race efforts of section 9b inside the same window (120..1200 s); a record set in a stored effort's activity is dropped, so one effort counts once (user decision 2026-11-18).
+A race effort analysed with `zones analyze --test race` gives its own LT2 (method R, section 9b); its record (`race_cs` or `race_tt`) is a `field_test` record and becomes current only through `zones accept`, as any other.
 LT2 HR = HR-speed regression (H2) evaluated at CS, only if the fastest steady segment reaches 0.90 x CS; otherwise LT2 HR is null and the coach suggests the 30-min test.
 Confidence: medium or low by the H1 gates; low if H2 SEE > 5 bpm.
 Worked example (unit test):
@@ -692,6 +747,7 @@ Intensity guidance: race effort for 30 min, start controlled (first 5 min should
 Analysis: LT2 HR = mean HR from 600 s to 1800 s; LT2 pace = 1800 / distance_km; fade flag if second-half speed < 0.95 x first-half speed.
 Confidence: medium; low if faded or if stops occurred.
 `zones analyze --save` stores a record for every test that is not rejected, with that confidence; a rejected test is not saved.
+A race effort of 1200..3600 s is analysed with these rules, without the 1680 s minimum, and saved as a `race_tt` record (section 9b, user decision 2026-11-18).
 Workout DSL (`zones test-workout time_trial`): the steps of the workout line above (warm-up, strides, recovery, 30 min at maximal sustainable effort with no target, cool-down).
 Worked example (unit test):
 - 30 min, distance 7200 m, mean HR 0-600 s = 158, mean HR 600-1800 s = 168; first 15 min 3600 m, second 15 min 3600 m.
@@ -736,8 +792,8 @@ Run the history estimate (`zones estimate`) when any of these holds (pace heuris
 - a race (list-row `eventType` race) or a run with list-row `aerobicTrainingEffect` >= 4.0 since the last estimate (new best-effort data; list rows carry no RPE, controller ruling);
 - 14 or more days without runs, then 2 weeks of training after the break (detraining).
 A field test is due per threshold (LT1 and LT2 separately, each against its own current record) when any of these holds:
-- the current record for that threshold is a history estimate (confidence low) and no field test exists for that threshold (for LT1, F1 or F3; for LT2, F2);
-- the latest field test for that threshold is 84 days (12 weeks) old or older;
+- the current record for that threshold is a history estimate (confidence low) and no field test exists for that threshold (for LT1, F1 or F3; for LT2, F2 or a `race_tt` race effort); a current `race_cs` record counts as an estimate here;
+- the latest field test for that threshold is 84 days (12 weeks) old or older; a `race_tt` record counts as an LT2 field test, a `race_cs` record does not reset this clock (it is an estimate from a short effort; user decision 2026-11-18);
 - the last two entries in `estimates` both differ from the current record for that threshold by >= 4 bpm in HR (above the 3-4 bpm daily noise), or, for LT2, by >= 3% in pace.
 A lab record stays current for its thresholds until another is accepted, and is flagged `expired` per threshold after 183 days (plan 5).
 Worked example (unit test): today 2026-11-17, current LT2 record field_test dated 2026-08-01 -> 108 days >= 84 -> LT2 "retest due"; current LT2 HR 160, last two estimates 165 and 164 -> both differ by >= 4 -> LT2 "retest due"; estimates 163 and 165 -> the first differs by 3 only -> not due on that rule; the LT1 result is computed separately from the current LT1 record.

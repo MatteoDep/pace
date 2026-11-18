@@ -491,7 +491,9 @@ Commands: `zones show`, `estimate`, `analyze`, `test-workout`, `add`, `accept`, 
 `pace schema` marks `estimate`, `analyze`, `add`, `accept` and `remove` `"local_write": true`, `push` `"write": true`, and describes the rules under the top-level `zones` key (`rule`, `sources`, `lab_valid_days`, `due`, `max_calls`, `no_rr_reasons`).
 The methods, formulas and evidence are in `docs/superpowers/specs/2026-11-17-zones-methods.md`.
 
-File shape: `{"records": [...], "current": {"lt1": id|null, "lt2": id|null}, "next_id": N, "estimates": [...], "hr_max": {"bpm", "activity", "date"}|null, "h4": {"streak", "unreliable", "since", "counted"}}`.
+File shape: `{"records": [...], "current": {"lt1": id|null, "lt2": id|null}, "next_id": N, "estimates": [...], "hr_max": {"bpm", "activity", "date"}|null, "h4": {"streak", "unreliable", "since", "counted"}, "efforts": [...]}`.
+An `estimates` entry is `{"date", "lt1_hr", "lt2_hr", "lt2_pace", "methods", "confidence", "partial", "h2"}`; `h2` is the HR-speed regression `{"a", "b", "v_min", "v_max"}` or null (entries written before it was added lack the key).
+An `efforts` entry is a race effort of 120 to 1200 s stored by `zones analyze --test race --save`: `{"activity", "date", "duration_s", "distance_m"}` (moving time, distance covered), one per activity.
 A record is `{"id", "date", "source": "estimate"|"field_test"|"lab", "method", "lt1": {"hr", "pace_s_per_km"}|null, "lt2": {...}|null, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities", "confidence": "low"|"medium"|"high"|null, "notes", "details"}`.
 Paces on the command line are `m:ss` per km and are stored as whole seconds per km.
 
@@ -561,8 +563,8 @@ An alpha1 outcome of `insufficient_data` changes nothing and does not count the 
 
 ### `zones analyze`
 
-`zones analyze ACTIVITY_ID --test drift|time_trial|ramp [--treadmill] [--save] [--no-cache]` analyzes one test run.
-It reads `get_activity`, `get_activity_details` and `get_activity_splits` (cached), plus the FIT file for `ramp` unless it is cached; F1 uses cached FIT data only, for the temperature.
+`zones analyze ACTIVITY_ID --test drift|time_trial|ramp|race [--laps A-B] [--treadmill] [--save] [--no-cache]` analyzes one test run or race effort.
+It reads `get_activity`, `get_activity_details` and `get_activity_splits` (cached), plus the FIT file for `ramp` unless it is cached; F1 uses cached FIT data only, for the temperature; `race` reads the personal records (`get_personal_record`, cached) for an effort of 120 to 1200 s.
 `data` is the method's analysis (`status`, `reasons`, the result and its inputs) plus `test`, `activity_id`, `date`, `hr_source`, `calls`, `hr_max`, `h4`, `record`, `saved` and `save_refused`.
 A strap run raises `hr_max`; a wrist run never does and is saved with confidence `low`.
 `--test ramp` records the alpha1 gate outcome in the H4 memory on every run, saved or not, once per activity.
@@ -577,6 +579,20 @@ F1 confidence is `medium`, or `low` when the newest F3 record of the last 28 day
 F2 without laps takes the fastest 1800 s window that spans no stop longer than 10 s; shorter stops are allowed and reported, as with laps.
 F3 takes its steps from lap presses: laps that look automatic (every lap 1100 m or 8 min or shorter, as for F1) or fewer than 3 step laps reject the ramp before the gate.
 Each F3 step row carries `step_share` (the RR power share at the step frequency, null when not computable); a step above 0.25 is dropped with reason "step interference", counted in `dropped_step` as coupled steps are in `dropped_coupling`.
+
+`--test race` (method R, methods doc 9b) analyzes a run the user or the coach marks as an all-out effort (Garmin rarely tags races); `--laps` and `--treadmill` are refused for the other tests and for race respectively (`bad_args`).
+The effort is laps A to B of `--laps A-B` (1-based, inclusive; `--laps A` is one lap), else the whole activity.
+Without `--laps`, an activity whose first or last lap is slower than 0.85 x the median speed of the laps between them (of all laps when there are only two) is refused with `bad_args` and a hint listing the lap speeds.
+The effort's moving time (stops removed by the section 1 rules) picks the class, reported in `class`:
+- below 120 s: `bad_args`;
+- 120 to 1200 s (`cs`): a critical-speed point; with another maximal point (a stored effort or a Garmin 1 km, 1 mile or 5 km record, within the last 16 weeks, a record set in a stored effort's activity or in this one dropped) whose duration is at least 1.5 x apart, `fit: "points"` fits CS and D' on the points (`rejected` when D' is outside 50..500 m or CS is not below the longest point's speed; confidence `medium` with points from 2 or more activities, else `low`); otherwise, from 600 s, `fit: "single"` gives CS for an assumed D' of 150..300 m (`cs_range`, `lt2_pace_range`, central `cs_mps` at 225 m, `d_prime_m` null, confidence `low`); a shorter single effort is `status: "point_only"` with no estimate;
+- above 1200 s up to 3600 s (`time_trial`): the F2 rules without the 1680 s minimum (LT2 HR = mean HR from 600 s to the end, pace over the moving time of the whole effort, stops above 10 s and ascent rejected, fade check);
+- above 3600 s: `status: "check_only"` with `pace_s_per_km` and `hr` (mean), never an LT2 value.
+A `cs` result carries `points`, `fit`, `cs_mps`, `d_prime_m`, `lt2` and `h2_source`: its LT2 HR is H2 at CS, H2 taken from the current records (as `zones show`), else from the newest `estimates` entry with `h2`, else null with a reason; `flags: ["extrapolated"]` when CS is above H2's `v_max`, and LT2 HR null (reason) above 1.1 x `v_max`.
+`--save` stores a `field_test` record with `method` `race_cs` (with `cs_mps` and `d_prime_m`) or `race_tt` for an `ok` result, and, for every `cs` effort whatever its status, the effort in `efforts` (`effort_saved`; a new analysis of the same activity replaces it).
+`point_only`, `rejected` and `check_only` results refuse the record with `save_refused`, as for the field tests.
+The due rule counts a `race_tt` record as an LT2 field test; a `race_cs` record does not reset the field-test clock and, when current with no field test, makes an LT2 test due like a history estimate.
+`zones estimate` adds the stored efforts inside its history window to the H1 points, next to the personal records (dropping a record set in a stored effort's activity).
 
 ### `zones test-workout`, `add`
 

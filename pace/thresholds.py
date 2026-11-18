@@ -33,7 +33,7 @@ from pace.rules import (
     ascent_profile,
     smooth_altitude,
 )
-from pace.zones import R
+from pace.zones import H2_RANGE_SLACK, RACE_CS, RACE_TT, R
 
 MAX_HR_WINDOW = 5
 ASCENT_REASON = f"ascent above {MAX_ASCENT_M_PER_KM:g} m per km"
@@ -83,6 +83,16 @@ F2_MIN_S = 1680
 F2_S = 1800
 F2_MAX_LAP_S = 1920
 F2_FADE = 0.95
+F2_HR_FROM_S = 600         # F2 and race efforts: LT2 HR is the mean from this offset to the end
+RACE_CS_S = (120, 1200)    # R (methods doc 9b): a critical-speed point (the 2-20 min domain of the CS model)
+RACE_TT_S = (1200, 3600)   # lower bound exclusive: the F2 rules; above: a check only
+RACE_D_PRIME_M = (150, 300)  # single-effort D' range (pace heuristic)
+RACE_SINGLE_MIN_S = 600    # a single effort shorter than this is a critical-speed point only
+RACE_LAP_FRACTION = 0.85   # without --laps: a first or last lap below this x the median lap speed is refused
+RACE_MIN_SPAN = 1.5        # the maximal-point fit needs durations at least this factor apart
+RACE_POINT_WEEKS = 16      # maximal points (stored efforts, Garmin PRs) from this many weeks before today
+RACE_HR_CAP = 1 + H2_RANGE_SLACK   # 14.5: H2 is never read above 1.1 x its fitted top speed
+RACE_EXTRAPOLATED = "extrapolated"  # flag: CS above H2's top speed, LT2 HR extrapolated
 HR_COVERAGE = 0.9
 
 
@@ -288,7 +298,8 @@ def _insufficient(reasons: list[str], runs: list[dict], **extra: Any) -> dict:
 def critical_speed(runs: list[dict], *, prs: list[dict] | None) -> dict:
     """H1: critical speed from the best flat stop-free 180/420/720 s windows (linear distance-time fit).
 
-    prs: optional [{"duration_s", "distance_m"}] points; only durations 120..1200 s are used.
+    prs: optional extra maximal points [{"duration_s", "distance_m", ...}] (Garmin PRs and stored race efforts,
+    methods doc 3 and 9b); only durations 120..1200 s are used.
     """
     best: dict[int, dict] = {}
     report = []
@@ -811,14 +822,19 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     if win is None:
         return {"status": "rejected", "reasons": [f"no lap or window of about {F2_S} s (shorter than {F2_MIN_S} s)"],
                 "excluded_s": 0}
-    a, b = win
+    return _trial(table, *win, min_s=F2_MIN_S)
+
+
+def _trial(table: list[dict], a: float, b: float, *, min_s: float | None) -> dict:
+    """The F2 analysis of the effort a..b: stop and terrain rejections, HR from 600 s, pace, pacing check.
+    `min_s` None: no minimum length (race efforts, methods doc 9b)."""
     rows = [r for r in table if a <= r["t"] <= b]
     blocks, excluded = _blocks(rows)
     stops = _stop_lengths(rows, a, b)
     base: dict[str, Any] = {"bounds": [a, b], "duration_s": b - a, "excluded_s": excluded}
     reasons = []
-    if b - a < F2_MIN_S:
-        reasons.append(f"trial shorter than {F2_MIN_S} s")
+    if min_s is not None and b - a < min_s:
+        reasons.append(f"trial shorter than {min_s} s")
     if stops and max(stops) > STOP_SLOW_S:
         reasons.append(f"a stop longer than {STOP_SLOW_S} s")
     if blocks and _ascent_per_km(_blocks(table)[0], a, b) > MAX_ASCENT_M_PER_KM:   # whole-run smoothing
@@ -829,7 +845,7 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     if reasons:
         return {"status": "rejected", "reasons": reasons, **base}
     dist = dists[-1] - dists[0]
-    last = _half_stats(blocks, a + 600, b)           # offsets 600 s.. of the trial, from the trial start
+    last = _half_stats(blocks, a + F2_HR_FROM_S, b)  # offsets 600 s.. of the trial, from the trial start
     mid = a + (b - a) / 2
     first, second = _half_stats(blocks, a, mid), _half_stats(blocks, mid, b)
     if dist <= 0 or last["hr"] is None or not first["speed"] or not second["speed"]:
@@ -844,6 +860,153 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
     return {"status": "ok", "lt2": {"hr": R(last["hr"]), "pace_s_per_km": R((b - a) / (dist / 1000))},
             "distance_m": dist, "speed_ratio": ratio, "fade": fade,
             "confidence": "low" if fade or stops else "medium", "reasons": notes, **base}
+
+
+# --- R: race efforts (methods doc 9b) ---
+
+def _lap_speed(lap: dict) -> float | None:
+    d, t = lap.get("distance"), lap.get("duration")
+    ok = isinstance(d, (int, float)) and isinstance(t, (int, float)) and d > 0 and t > 0
+    return d / t if ok else None
+
+
+def _warmup_check(laps: list[dict]) -> None:
+    """Without --laps the whole activity is the effort: refused when its first or last lap is slower than
+    RACE_LAP_FRACTION x the median lap speed (a warm-up or cool-down). The median is over the laps between the
+    first and the last when there are any (a plain median of warm-up, effort and cool-down laps is a slow lap)."""
+    speeds = [_lap_speed(lp) for lp in laps]
+    inner = [v for v in speeds[1:-1] if v is not None] or [v for v in speeds if v is not None]
+    if len(laps) < 2 or not inner:
+        return
+    med = statistics.median(inner)
+    slow = [k for k in sorted({0, len(laps) - 1}) if speeds[k] is not None and speeds[k] < RACE_LAP_FRACTION * med]
+    if slow:
+        listing = ", ".join(f"{k + 1}: {'?' if v is None else f'{v:.2f}'}" for k, v in enumerate(speeds))
+        raise PaceError("bad_args", f"{' and '.join(f'lap {k + 1}' for k in slow)} slower than {RACE_LAP_FRACTION:g} x "
+                        "the median lap speed: the activity holds a warm-up or cool-down besides the effort",
+                        hint=f"Pass --laps A-B (1-based, inclusive) to select the effort laps; lap speeds m/s: {listing}.")
+
+
+def race_effort(table: list[dict], *, laps: list[dict], lap_range: tuple[int, int] | None) -> dict:
+    """The effort of `zones analyze --test race`: laps A..B of `lap_range` (1-based, inclusive), else the whole
+    activity. Duration is the moving time (section 1 stop rules), distance the distance covered.
+
+    Returns {"class": "cs"|"time_trial"|"check", "bounds", "laps", "duration_s", "distance_m", "excluded_s"}.
+    Raises bad_args for a lap range outside the laps, a warm-up or cool-down lap without --laps, an effort without
+    distance samples or shorter than RACE_CS_S[0].
+    """
+    if lap_range is not None:
+        first, last = lap_range
+        if not 1 <= first <= last <= len(laps):
+            raise PaceError("bad_args", f"--laps {first}-{last} is outside the activity's laps "
+                            + (f"1-{len(laps)}" if laps else "(it has none)"))
+        spans = _lap_spans(laps)
+        a, b = spans[first - 1][0], spans[last - 1][1]
+    else:
+        _warmup_check(laps)
+        ts = [r["t"] for r in table if isinstance(r.get("dist"), (int, float))]
+        a, b = (min(ts), max(ts)) if ts else (0, 0)
+    rows = sorted((r for r in table if a <= r["t"] <= b and isinstance(r.get("dist"), (int, float))),
+                  key=lambda r: r["t"])
+    if len(rows) < 2 or rows[-1]["dist"] <= rows[0]["dist"]:
+        raise PaceError("bad_args", "no distance covered in the effort", hint="Check --laps and the activity id.")
+    _, excluded = moving_samples(rows)
+    duration = rows[-1]["t"] - rows[0]["t"] - excluded
+    if duration < RACE_CS_S[0]:
+        raise PaceError("bad_args", f"effort of {duration:.0f} s moving time is shorter than {RACE_CS_S[0]} s: "
+                        "too short for a race effort", hint="Check --laps: the effort is laps A-B, 1-based, inclusive.")
+    klass = "cs" if duration <= RACE_CS_S[1] else "time_trial" if duration <= RACE_TT_S[1] else "check"
+    return {"class": klass, "bounds": [a, b], "laps": list(lap_range) if lap_range else None,
+            "duration_s": duration, "distance_m": rows[-1]["dist"] - rows[0]["dist"], "excluded_s": excluded}
+
+
+def _race_hr(cs: float, h2: dict | None) -> tuple[int | None, list[str], list[str]]:
+    """LT2 HR = H2 at CS: (hr, flags, reasons). Flagged extrapolated above H2's v_max, null above RACE_HR_CAP x v_max."""
+    if not h2:
+        return None, [], ["no H2 regression (current records or a logged estimate): LT2 HR unknown"]
+    top = h2["v_max"]
+    if cs > RACE_HR_CAP * top:
+        return None, [], [f"CS {cs:.2f} m/s above {RACE_HR_CAP:g} x the H2 top speed {top:.2f} m/s: "
+                          "LT2 HR not extrapolated"]
+    if cs > top:
+        return hr_at(h2, cs), [RACE_EXTRAPOLATED], [f"CS {cs:.2f} m/s above the H2 top speed {top:.2f} m/s: "
+                                                    "LT2 HR extrapolated"]
+    return hr_at(h2, cs), [], []
+
+
+def _race_cs(effort: dict, out: dict, *, activity: int | None, day: str | None, points: list[dict],
+             h2: dict | None) -> dict:
+    """120..1200 s: the maximal-point fit when another point is RACE_MIN_SPAN x apart in duration, else the
+    single-effort range (from RACE_SINGLE_MIN_S), else a point only."""
+    dur, dist = effort["duration_s"], effort["distance_m"]
+    this = {"source": "effort", "activity": activity, "date": day, "duration_s": dur, "distance_m": dist}
+    pts = [this] + [p for p in points if RACE_CS_S[0] <= p["duration_s"] <= RACE_CS_S[1]]
+    durs = [p["duration_s"] for p in pts]
+    out.update(method=RACE_CS, points=pts, fit=None, cs_mps=None, d_prime_m=None, cs_range=None, d_prime_range=None)
+    if max(durs) >= RACE_MIN_SPAN * min(durs):
+        dprime, cs = _ols(durs, [p["distance_m"] for p in pts])
+        longest = max(pts, key=lambda p: p["duration_s"])
+        reasons = []
+        if not D_PRIME_RANGE[0] <= dprime <= D_PRIME_RANGE[1]:
+            reasons.append(f"D' {dprime:.0f} m outside {D_PRIME_RANGE[0]}..{D_PRIME_RANGE[1]} m")
+        if cs <= 0:
+            reasons.append("CS not above 0")
+        elif cs >= longest["distance_m"] / longest["duration_s"]:
+            reasons.append("CS not below the speed of the longest point")
+        out["fit"] = "points"
+        if reasons:
+            return {**out, "status": "rejected", "rejected_fit": {"cs_mps": cs, "d_prime_m": dprime},
+                    "reasons": reasons}
+        conf = "medium" if len({p["activity"] for p in pts if p.get("activity") is not None}) >= 2 else "low"
+        if conf == "low":
+            out["notes"].append("the points come from fewer than 2 activities: confidence low")
+        out.update(d_prime_m=dprime)
+    elif dur >= RACE_SINGLE_MIN_S:
+        lo, hi = RACE_D_PRIME_M
+        cs = (dist - (lo + hi) / 2) / dur
+        conf = "low"
+        out.update(fit="single", cs_range=[(dist - hi) / dur, (dist - lo) / dur], d_prime_range=[lo, hi])
+        out["notes"].append(f"single effort: CS for an assumed D' of {lo}..{hi} m (pace heuristic), central value at "
+                            f"{(lo + hi) / 2:g} m")
+    else:
+        return {**out, "status": "point_only",
+                "reasons": [f"a single effort shorter than {RACE_SINGLE_MIN_S} s and no other maximal point "
+                            f"{RACE_MIN_SPAN:g} x apart in duration in the last {RACE_POINT_WEEKS} weeks: "
+                            "a critical-speed point only, no estimate"]}
+    hr, flags, reasons = _race_hr(cs, h2)
+    out.update(status="ok", cs_mps=cs, lt2={"hr": hr, "pace_s_per_km": R(1000 / cs)}, confidence=conf,
+               flags=flags, saveable=True)
+    out["reasons"] += reasons
+    if out["cs_range"]:
+        out["lt2_pace_range"] = [R(1000 / v) for v in out["cs_range"]]
+    return out
+
+
+def race(table: list[dict], effort: dict, *, activity: int | None = None, day: str | None = None,
+         points: list[dict] | None = None, h2: dict | None = None, h2_source: str | None = None) -> dict:
+    """Method R (methods doc 9b): an all-out effort marked by the user or the coach, by moving duration.
+
+    120..1200 s ("cs"): a critical-speed point; `points` are the other maximal points (stored efforts and Garmin
+    PRs within RACE_POINT_WEEKS, deduplicated by the caller); LT2 pace = 1000 / CS, LT2 HR = H2 at CS (`h2` and
+    where it came from, `h2_source`). Statuses ok, rejected (the fit failed its gates) or point_only.
+    1200..3600 s ("time_trial"): the F2 rules without the 1680 s minimum; LT2 pace over the whole effort.
+    Above 3600 s ("check"): status check_only, average pace and HR, never an LT2 value.
+    """
+    a, b = effort["bounds"]
+    out: dict[str, Any] = {**effort, "status": None, "method": None, "lt2": None, "confidence": None, "flags": [],
+                           "reasons": [], "notes": [], "saveable": False, "h2": h2, "h2_source": h2_source}
+    if effort["class"] == "check":
+        hr = _half_stats(_blocks(table)[0], a, b)["hr"]
+        return {**out, "status": "check_only", "hr": None if hr is None else R(hr),
+                "pace_s_per_km": R(effort["duration_s"] / (effort["distance_m"] / 1000)),
+                "reasons": [f"longer than {RACE_TT_S[1] // 60} min: below LT2, a check only"]}
+    if effort["class"] == "time_trial":
+        res = _trial(table, a, b, min_s=None)
+        out = {**out, **res, **effort, "method": RACE_TT, "saveable": res["status"] == "ok"}
+        if res["status"] == "ok":   # pace over the moving time of the whole effort
+            out["lt2"] = {**res["lt2"], "pace_s_per_km": R(effort["duration_s"] / (effort["distance_m"] / 1000))}
+        return out
+    return _race_cs(effort, out, activity=activity, day=day, points=points or [], h2=h2)
 
 
 # --- test workouts ---
