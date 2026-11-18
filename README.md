@@ -86,7 +86,14 @@ ln -s "$PWD/.claude/skills/pace" ~/.claude/skills/pace
 ```
 
 The skill loads in any Claude Code session when you talk about training or your Garmin data.
-`pace` must be on PATH (it is when this repo's `.venv/bin` is on PATH, or after `uv tool install -e .`).
+`pace` must be on PATH: this repo's `.venv/bin`, or a user-wide editable install pinned to the lock file:
+
+```bash
+uv export --format requirements-txt --no-hashes --no-emit-project > /tmp/pace-constraints.txt
+uv tool install --python 3.14 --editable . -c /tmp/pace-constraints.txt
+```
+
+Without `--python 3.14` uv may pick a newer interpreter that some locked wheels do not support yet.
 It lives in `.claude/skills/pace/`: `SKILL.md` (always loaded) plus `reference.md`, `coaching.md` and `dashboard.md`, read when needed; `tests/test_skill.py` keeps every `pace ...` command and flag in it in sync with `pace schema`.
 
 ## Cache and config
