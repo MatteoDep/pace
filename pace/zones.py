@@ -489,10 +489,11 @@ def _garmin_entry(garmin_zones: list[dict[str, Any]] | None) -> dict[str, Any] |
 
 def push_body(garmin_zones: Any, floors: dict[str, Any], *, hr_max: int | None) -> dict[str, Any]:
     """The Garmin zones write (plan 5 Task 0): every DEFAULT or RUNNING entry gets the five floors, `maxHeartRateUsed`
-    = HRmax when known (else Garmin's is kept and zone5Floor must be below it) and `changeState` CHANGED; every other
+    = HRmax only when it is higher than Garmin's (HRmax is the highest strap HR seen, a lower bound; else Garmin's is
+    kept), zone5Floor must be below the value sent and `changeState` CHANGED; every other
     field and entry is kept as read. Returns {"before", "after", "body"}: the target entries as read and as sent,
     and the full list to PUT. Raises endpoint_unavailable without a target entry, bad_args when zone5Floor is not
-    below Garmin's max HR."""
+    below the max HR sent."""
     entries = garmin_zones if isinstance(garmin_zones, list) else []
     body = copy.deepcopy(entries)
     before, after = [], []
@@ -501,15 +502,16 @@ def push_body(garmin_zones: Any, floors: dict[str, Any], *, hr_max: int | None) 
             continue
         before.append(copy.deepcopy(entries[i]))
         entry.update({k: floors[k] for k in FLOOR_KEYS})
-        if hr_max is not None:
+        kept = entry.get("maxHeartRateUsed")
+        kept = kept if isinstance(kept, (int, float)) else None
+        if hr_max is not None and (kept is None or hr_max > kept):
             entry["maxHeartRateUsed"] = hr_max
-        else:
-            kept = entry.get("maxHeartRateUsed")
-            if not isinstance(kept, (int, float)) or floors["zone5Floor"] >= kept:
-                raise PaceError("bad_args", f"zone5Floor {floors['zone5Floor']} is not below the watch's max HR {kept}"
-                                f" ({entry['sport']} entry) and pace knows no max HR",
-                                hint="pace learns max HR from strap runs (`zones estimate`, `zones analyze`) and from "
-                                     "lab records with --max-hr; push again once it is known.")
+            kept = hr_max
+        if kept is None or floors["zone5Floor"] >= kept:
+            raise PaceError("bad_args", f"zone5Floor {floors['zone5Floor']} is not below the max HR to send {kept}"
+                            f" ({entry['sport']} entry)",
+                            hint="pace learns max HR from strap runs (`zones estimate`, `zones analyze`) and from "
+                                 "lab records with --max-hr; push again once it is known.")
         entry["changeState"] = "CHANGED"
         after.append(entry)
     if not after:

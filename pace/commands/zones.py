@@ -1041,7 +1041,7 @@ PUSH_DRY_RUN_OPT = typer.Option(False, "--dry-run", help="Show before, after and
 
 @app.command("push")
 def push(dry_run: bool = PUSH_DRY_RUN_OPT) -> None:
-    """Write the current zones (five floors, max HR when known) to the watch's DEFAULT and RUNNING HR zones."""
+    """Write the current zones (five floors; max HR only when higher than the watch's) to the watch's DEFAULT and RUNNING HR zones."""
     async def work() -> Result:
         data = zones.load()
         cur = zones.current(data)
@@ -1056,10 +1056,12 @@ def push(dry_run: bool = PUSH_DRY_RUN_OPT) -> None:
                        hint="See `pace zones show`; fix the current records before pushing.")
         live = await cached_call("connectapi", GARMIN_ZONES_PATH, cache=None, ttl=0)   # live: the body is built on it
         plan = zones.push_body(live, floors, hr_max=hr_max)
+        sent_max = hr_max is not None and any(a.get("maxHeartRateUsed") == hr_max and b.get("maxHeartRateUsed") != hr_max
+                                              for a, b in zip(plan["after"], plan["before"]))
         spec = WriteSpec(resource="hr_zones", action="update", method="connectapi", args=(GARMIN_ZONES_PATH,),
                          kwargs={"method": "PUT", "json": plan["body"]}, payload=plan,
                          echo={"sports": [e["sport"] for e in plan["after"]],
-                               "floors": {k: floors[k] for k in zones.FLOOR_KEYS}, "max_hr": hr_max},
+                               "floors": {k: floors[k] for k in zones.FLOOR_KEYS}, "max_hr": hr_max if sent_max else None},
                          invalidate=(GARMIN_ZONES_KEY,))
         return await run_write(spec, dry_run=dry_run)
 

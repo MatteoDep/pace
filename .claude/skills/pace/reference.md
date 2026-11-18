@@ -97,7 +97,7 @@ Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (d
 | zones | `pace zones add` | none | (L) Record a threshold record (lab values as reported). |
 | zones | `pace zones accept` | none | (L) Make a record current (all thresholds, or `--only lt1` or `lt2`). |
 | zones | `pace zones remove` | none | (L) Delete a record. |
-| zones | `pace zones push` | none | (G) Write the current zones (five floors, max HR when known) to the watch's DEFAULT and RUNNING HR zones; `--dry-run` reads the watch zones live and shows `before`, `after` and the body. |
+| zones | `pace zones push` | none | (G) Write the current zones (five floors; max HR only when higher than the watch's) to the watch's DEFAULT and RUNNING HR zones; `--dry-run` reads the watch zones live and shows `before`, `after` and the body. |
 
 ## Workout DSL
 

@@ -575,7 +575,7 @@ LT2 pace = R(1000 / CS)
 LT2 HR   = R(a + b * CS) with H2 from the current records (14.5), else from the newest estimate that logged one,
            else null with a reason; flagged "extrapolated" when CS > v_max; null when CS > 1.1 x v_max (the 14.5 cap)
 ```
-`--save` stores the effort as `{"activity", "date", "duration_s", "distance_m"}` in `zones.json` `efforts` (one per activity) whatever the status, and, for an `ok` result, a `field_test` record with method `race_cs`.
+`--save` stores the effort as `{"activity", "date", "duration_s", "distance_m"}` in `zones.json` `efforts` (one per activity) for every flat 120..1200 s effort, whatever the fit says (a hill effort is rejected and not stored), and, for an `ok` result, a `field_test` record with method `race_cs`.
 Stored efforts inside the history window are also extra H1 points of `zones estimate` (section 3, 14.1).
 The run of a stored effort is left out of the H1 training windows: it counts through its effort point, so its own 180/420/720 s sub-windows do not enter the fit next to it (controller ruling).
 Time-trial class (1200..3600 s): the F2 analysis (section 9) on the effort, without the 1680 s minimum; LT2 pace = the whole effort (moving time / distance); LT2 HR = mean HR from 600 s to the end; the same stop and terrain rejections and pacing check; `--save` stores a `field_test` record with method `race_tt`.
@@ -651,6 +651,7 @@ Garmin lactate threshold detection: not available on the Forerunner 55.
 
 LT2 pace = 1000 / CS, with CS from the linear distance-time fit of the best 180 s, 420 s and 720 s flat stop-free windows in the examined runs of the last 8 weeks.
 Extra points: the Garmin records of section 3 and the stored race efforts of section 9b inside the same window (120..1200 s); a record set in a stored effort's activity is dropped, so one effort counts once (user decision 2026-11-18).
+`zones analyze --test race` uses maximal points from the last 16 weeks, while `zones estimate` H1 adds stored efforts only inside its history window (8 weeks, 16 on extension), so the two can disagree.
 A race effort analysed with `zones analyze --test race` gives its own LT2 (method R, section 9b); its record (`race_cs` or `race_tt`) is a `field_test` record and becomes current only through `zones accept`, as any other.
 LT2 HR = HR-speed regression (H2) evaluated at CS, only if the fastest steady segment reaches 0.90 x CS; otherwise LT2 HR is null and the coach suggests the 30-min test.
 Confidence: medium or low by the H1 gates; low if H2 SEE > 5 bpm.
@@ -776,12 +777,12 @@ zone3Floor = LT1                           # Tonnessen Z2/Z3 ~ 2 mmol/L
 zone4Floor = LT2                           # Tonnessen Z3/Z4 ~ 4 mmol/L
 zone5Floor = LT2 + R(0.5 * (HRmax - LT2))  # Tonnessen Z5 ~ midway LT2..HRmax
              if HRmax unknown: LT2 + R(0.5 * (LT2 - LT1))
-maxHeartRateUsed = HRmax (if known)
-                   if HRmax unknown: the push keeps Garmin's current maxHeartRateUsed
+maxHeartRateUsed = HRmax only when it is higher than Garmin's current maxHeartRateUsed (or Garmin has none)
+                   otherwise the push keeps Garmin's value (pace's HRmax is the highest strap HR seen, a lower bound)
 ```
 Watch zones sum to the three-zone model as Z1+Z2 | Z3 | Z4+Z5.
 Five pace floors (s/km): z1, z2 = 1000 / v(floor HR) from the H2 regression (null if no regression, or if v is outside the fitted speed range by more than 10%, that is v < 0.9 x v_min or v > 1.1 x v_max); z3 = LT1 pace; z4 = LT2 pace; z5 = 1000 / (CS + D'/720) when D' is known (speed for a 12-min maximal effort), else null.
-Validation: floors must be strictly increasing and zone5Floor < HRmax; with HRmax unknown, `zones push` checks zone5Floor < Garmin's current `maxHeartRateUsed` instead; otherwise `bad_args` and no push.
+Validation: floors must be strictly increasing and zone5Floor < HRmax; `zones push` checks zone5Floor < the `maxHeartRateUsed` it actually sends (the higher of pace's HRmax and Garmin's); otherwise `bad_args` and no push.
 The 0.80 and 0.90 factors and the zone 5 midpoint are conventions (weak/expert opinion); only zone3Floor and zone4Floor carry physiological meaning.
 Worked example (unit test), LT1 = 142, LT2 = 160, HRmax = 186, H2 a = 60, b = 25 fitted on speeds 2.0..4.0 m/s, CS = 4.0, D' = 180.
 The H2 speed range here (2.0..4.0) is wider than the 14.1 example's (2.8..3.8) on purpose: with 2.8..3.8, z1 would be null because 2.16 < 0.9 x 2.8 = 2.52.

@@ -605,12 +605,12 @@ The due rule counts a `race_tt` record as an LT2 field test; a `race_cs` record 
 ### `zones push`
 
 `zones push [--dry-run]` writes the current zones to the watch (a Garmin write: show it and get the user's yes first).
-It reads the watch zones live (`GET connectapi /biometric-service/heartRateZones`, never the cache), then sends `PUT` to the same path with the full list as read, in which every entry with `sport` `DEFAULT` or `RUNNING` gets the five floors `zone1Floor`..`zone5Floor` of `zones show`, `maxHeartRateUsed` = `hr_max` when pace knows it, and `changeState: "CHANGED"`.
+It reads the watch zones live (`GET connectapi /biometric-service/heartRateZones`, never the cache), then sends `PUT` to the same path with the full list as read, in which every entry with `sport` `DEFAULT` or `RUNNING` gets the five floors `zone1Floor`..`zone5Floor` of `zones show`, `maxHeartRateUsed` = `hr_max` only when it is higher than the entry's current `maxHeartRateUsed` (or the entry has none), and `changeState: "CHANGED"`.
 Every other entry and field (`trainingMethod`, resting HR, the profile id) is sent as read.
-With `hr_max` unknown, the watch's `maxHeartRateUsed` is kept and `zone5Floor` must be below it.
-Success returns `{"action": "update", "resource": "hr_zones", "id": null, "echo": {"sports", "floors", "max_hr"}}` (`max_hr` null when the watch's was kept) and drops the cached watch zones, so the next `zones show` reads them again.
+`hr_max` is the highest strap HR pace has seen, a lower bound of the true max, so a lower or unknown value never replaces the watch's `maxHeartRateUsed`; `zone5Floor` must be below the value actually sent.
+Success returns `{"action": "update", "resource": "hr_zones", "id": null, "echo": {"sports", "floors", "max_hr"}}` (`max_hr` null when the watch's value was kept) and drops the cached watch zones, so the next `zones show` reads them again.
 `--dry-run` makes the one read and returns `{"dry_run": true, "payload": {"before", "after", "body"}}`: the target entries as the watch has them now, the same entries as they would be sent, and the full body.
-Refusals, all before any write: `bad_args` without a current LT1 and LT2 record with HR (no Garmin call), with `floor_errors` (no Garmin call), or with `hr_max` unknown and `zone5Floor` not below the watch's `maxHeartRateUsed`; `endpoint_unavailable` when the watch zones have no `DEFAULT` or `RUNNING` entry.
+Refusals, all before any write: `bad_args` without a current LT1 and LT2 record with HR (no Garmin call), with `floor_errors` (no Garmin call), or with `zone5Floor` not below the `maxHeartRateUsed` to be sent; `endpoint_unavailable` when the watch zones have no `DEFAULT` or `RUNNING` entry.
 
 ## Keeping this file honest
 

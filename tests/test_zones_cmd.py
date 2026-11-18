@@ -883,3 +883,17 @@ def test_push_read_errors_propagate(garmin) -> None:
     lab("--max-hr", "190")
     garmin["errors"]["connectapi"] = ApiError("auth_required", "no tokens", 401)
     fails("push", code="auth_required")
+
+
+def test_push_never_lowers_the_watch_max_hr(garmin) -> None:
+    # pace's max HR is the highest strap HR seen: a lower bound, so it only ever raises the watch's value
+    lab("--max-hr", "186")
+    garmin["zones"] = [{**WATCH, "maxHeartRateUsed": 192}]
+    out = run("push")
+    assert out["echo"]["max_hr"] is None
+    assert puts(garmin)[0][2]["json"][0]["maxHeartRateUsed"] == 192
+    with zones.transaction() as data:
+        data["hr_max"] = {"bpm": 195, "activity": None, "date": day(1)}
+    out = run("push")
+    assert out["echo"]["max_hr"] == 195
+    assert puts(garmin)[1][2]["json"][0]["maxHeartRateUsed"] == 195
