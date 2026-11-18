@@ -58,6 +58,17 @@ def _is_num(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _effort_ok(e: Any) -> bool:
+    """A stored race effort: integer activity, ISO date string, positive duration_s and distance_m."""
+    if not isinstance(e, dict) or not _is_int(e.get("activity")) or not isinstance(e.get("date"), str):
+        return False
+    try:
+        date.fromisoformat(e["date"])
+    except ValueError:
+        return False
+    return all(_is_num(e.get(k)) and e[k] > 0 for k in ("duration_s", "distance_m"))
+
+
 def _bad(msg: str, hint: str | None = None) -> PaceError:
     return PaceError("bad_args", msg, hint=hint)
 
@@ -75,7 +86,7 @@ def load() -> dict[str, Any]:
             or not all(isinstance(e, dict) for e in estimates)
             or not (hr_max is None or isinstance(hr_max, dict))
             or not (h4 is None or isinstance(h4, dict))
-            or not isinstance(efforts, list) or not all(isinstance(e, dict) for e in efforts)):
+            or not isinstance(efforts, list) or not all(_effort_ok(e) for e in efforts)):
         raise PaceError("internal", "zones has an unexpected shape",
                         hint=f"Inspect or move {path}; pace never overwrites it.")
     ids = {r["id"] for r in records}

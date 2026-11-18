@@ -765,6 +765,16 @@ def test_analyze_race_time_trial_class_saves_race_tt(garmin) -> None:
     assert stored()["efforts"] == []
 
 
+def test_analyze_race_hill_effort_is_not_stored_as_a_point(garmin) -> None:
+    race_garmin(garmin, 1100, 4400.0)
+    rows = garmin["details"]["activityDetailMetrics"]
+    for r in rows:
+        r["metrics"][4] = 100.0 + r["metrics"][3] * 0.03
+    out = run("analyze", "9001", "--test", "race", "--save")
+    assert out["status"] == "rejected" and out["effort_saved"] is None and stored()["efforts"] == []
+    assert "nothing was stored except hr_max and the alpha1 memory" in out["save_refused"]
+
+
 def test_analyze_race_below_120_s_is_refused(garmin) -> None:
     race_garmin(garmin, 100, 500.0)
     assert "120 s" in fails("analyze", "9001", "--test", "race")["message"]

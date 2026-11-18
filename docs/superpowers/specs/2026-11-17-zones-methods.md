@@ -92,6 +92,7 @@ LT2 pace (s/km) = 1000 / CS
 ```
 Optional extra points: Garmin personal records (1 km, 1 mile, 5 km) whose record date is inside the analysis window and whose duration is between 120 s and 1200 s may be added as (duration, distance) points (pace heuristic; Anderson et al. 2026 advise excluding race efforts of 800 m or less and 10 km or more).
 Race efforts stored by section 9b inside the window are added the same way; a record set in a stored effort's activity is dropped (user decision 2026-11-18).
+The run of a stored effort gives no training windows: it counts through its effort point only (controller ruling).
 Inputs: per-sample distance, time, elevation, cadence; Garmin PR list (one call); run dates.
 Window: the last 8 weeks (`--weeks 8`); Hunter et al. used 6 weeks, Smyth and Muniz-Pumares 16 weeks.
 Validity gates (pace heuristic):
@@ -544,8 +545,10 @@ Rules in this section are user decisions of 2026-11-18 unless marked otherwise.
 Protocol: none; the user or the coach marks a run as an all-out effort with `zones analyze ID --test race [--laps A-B]` (Garmin rarely tags races, so the list-row event type is not used).
 The effort is laps A to B (1-based, inclusive), else the whole activity.
 Without `--laps`, the analysis is refused when the first or last lap is slower than 0.85 x the median lap speed, with a hint to pass `--laps`.
-The median is taken over the laps between the first and the last, or over all laps when there are only two (pace heuristic: with three laps, warm-up, effort and cool-down, a plain median is a slow lap and would let the warm-up through).
-Duration = the moving time of the effort (section 1 stop rules); distance = the distance covered over the effort.
+The median is taken over the laps between the first and the last; with only two laps each is compared with the faster one (pace heuristic and controller ruling: with three laps, warm-up, effort and cool-down, a plain median is a slow lap and would let the warm-up through).
+Any median rule misses warm-ups that make up about half or more of the inner laps; pass `--laps` then.
+Without `--laps`, standing before the start and walking after the finish (samples slow by the section 1 stop rule, or without a distance change) are cut from the ends before any analysis, so they are not stops of the effort and do not shift the 600 s HR offset or the pacing halves (controller ruling).
+Duration = the moving time of the effort (section 1 stop rules); distance = the distance covered in that moving time (the same pairs of consecutive moving samples, so metres walked during a stop are left out with its time).
 Classes by duration:
 ```
 duration < 120 s          refused (bad_args)
@@ -555,6 +558,8 @@ duration > 3600 s         a check only (status "check_only"): average pace and H
 ```
 Critical-speed point (120..1200 s):
 ```
+reject if the ascent is above 10 m per km (the section 1 flat rule on smoothed altitude, as for the time-trial
+          class; controller ruling): status "rejected", and the effort is not stored as a point
 points = this effort + stored efforts + Garmin 1 km, 1 mile and 5 km records (section 3), within the last 16 weeks,
          durations 120..1200 s; a record set in a stored effort's activity, or in this activity, is dropped
 if the point durations span at least 1.5 x (max / min):
@@ -572,6 +577,7 @@ LT2 HR   = R(a + b * CS) with H2 from the current records (14.5), else from the 
 ```
 `--save` stores the effort as `{"activity", "date", "duration_s", "distance_m"}` in `zones.json` `efforts` (one per activity) whatever the status, and, for an `ok` result, a `field_test` record with method `race_cs`.
 Stored efforts inside the history window are also extra H1 points of `zones estimate` (section 3, 14.1).
+The run of a stored effort is left out of the H1 training windows: it counts through its effort point, so its own 180/420/720 s sub-windows do not enter the fit next to it (controller ruling).
 Time-trial class (1200..3600 s): the F2 analysis (section 9) on the effort, without the 1680 s minimum; LT2 pace = the whole effort (moving time / distance); LT2 HR = mean HR from 600 s to the end; the same stop and terrain rejections and pacing check; `--save` stores a `field_test` record with method `race_tt`.
 Check-only class (above 3600 s): "longer than 60 min: below LT2, a check only"; `--save` is refused.
 Why these limits:

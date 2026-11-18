@@ -1364,13 +1364,39 @@ def test_race_laps_select_the_effort_and_a_warmup_is_refused():
     assert analyse(race_tbl(1165, 5042), [lap(0, 600), lap(600, 565)])["status"] == "ok"
 
 
-def test_race_moving_time_excludes_stops():
-    tbl = race_tbl(1165, 5042)
-    for r in tbl:
-        if 500 <= r["t"] < 530:
-            r["speed"] = 0.0
+def test_race_distance_and_duration_come_from_the_same_moving_samples():
+    tbl = table(1200, lambda t: 0.5 if 500 < t <= 530 else 4.0)    # 30 s walking mid-effort: a stop
     out = analyse(tbl)
-    assert out["excluded_s"] == 30 and out["duration_s"] == 1135
+    assert out["duration_s"] == 1169 and out["excluded_s"] == 31
+    assert out["distance_m"] / out["duration_s"] == pytest.approx(4.0)   # walked metres left out with the time
+
+
+def test_race_whole_activity_trims_standing_and_walking_at_the_ends():
+    # 30 s standing, 2400 s at 4 m/s, 20 s walking after the finish; HR 100 before 600 s of running
+    tbl = table(2450, lambda t: 0.0 if t < 30 else (4.0 if t < 2430 else 0.5),
+                hr_fn=lambda t: 100 if t < 630 else 170)
+    out = analyse(tbl)
+    assert out["bounds"] == [29, 2429] and out["duration_s"] == 2400 and out["excluded_s"] == 0
+    assert out["distance_m"] == pytest.approx(9600) and out["status"] == "ok"
+    assert out["lt2"] == {"hr": 170, "pace_s_per_km": 250} and out["fade"] is False
+
+
+def test_race_two_laps_compare_with_the_faster_lap():
+    tbl = table(2000, lambda t: 3.5 if t <= 1000 else 4.2)
+    err = raises_bad(analyse, tbl, [rlap(0, 1000, 3500), rlap(1000, 1000, 4200)])   # 3.5 / 4.2 = 0.83
+    assert err.message.startswith("lap 1 slower than 0.85 x")
+    even = table(2000, lambda t: 3.7 if t <= 1000 else 4.2)                       # 0.88: not refused
+    assert analyse(even, [rlap(0, 1000, 3700), rlap(1000, 1000, 4200)])["status"] == "ok"
+
+
+def test_race_cs_effort_on_a_hill_is_rejected_and_not_a_point():
+    hilly = table(1100, lambda t: 4.0)
+    for r in hilly:
+        r["alt"] = r["dist"] * 0.03
+    out = analyse(hilly, h2=H2R)
+    assert out["class"] == "cs" and out["status"] == "rejected" and out["reasons"] == [th.ASCENT_REASON]
+    assert out["effort_point"] is False and out["lt2"] is None
+    assert analyse(table(1100, lambda t: 4.0))["effort_point"] is True
 
 
 def test_race_shorter_than_120_s_is_refused():

@@ -522,10 +522,16 @@ def test_efforts_store_deduplicates_by_activity(tmp_path) -> None:
     again = zones.add_effort(d, {"activity": 9002, "date": "2026-11-10", "duration_s": 1160, "distance_m": 5040.0})
     assert again == {"activity": 9002, "date": "2026-11-10", "duration_s": 1160, "distance_m": 5040.0}
     assert [e["activity"] for e in d["efforts"]] == [9001, 9002] and "x" not in d["efforts"][0]
-    (tmp_path / "zones.json").write_text(json.dumps({**zones.EMPTY, "efforts": {"no": 1}}))
-    with pytest.raises(PaceError) as exc:
-        zones.load()
-    assert exc.value.code == "internal"
+    good = {"activity": 9001, "date": "2026-10-01", "duration_s": 300, "distance_m": 1495.5}
+    for bad_efforts in ({"no": 1}, [{**good, "activity": "9001"}], [{**good, "date": "yesterday"}],
+                        [{**good, "duration_s": 0}], [{**good, "distance_m": None}], [{**good, "activity": True}],
+                        [{k: v for k, v in good.items() if k != "date"}]):
+        (tmp_path / "zones.json").write_text(json.dumps({**zones.EMPTY, "efforts": bad_efforts}))
+        with pytest.raises(PaceError) as exc:
+            zones.load()
+        assert exc.value.code == "internal", bad_efforts
+    (tmp_path / "zones.json").write_text(json.dumps({**zones.EMPTY, "efforts": [good]}))
+    assert zones.load()["efforts"] == [good]
 
 
 # --- status ---

@@ -391,9 +391,13 @@ class _Reads:
 # --- the estimate ---
 
 def _history_methods(reads: _Reads, prs: list[dict] | None, since: date, efforts: list[dict]) -> tuple[dict, dict]:
+    """H1 and H2 on the history picks. A stored race effort's run stays out of the H1 windows: it counts through its
+    effort point (methods doc 3, 9b), so its own 3/7/12-min sub-windows do not sit next to it in the fit."""
     runs = [{"id": r["id"], "hr_source": r["hr_source"], "table": r["table"]}
             for r in reads.runs.values() if {"effort", "steady"} & set(r["groups"])]
-    cs = thresholds.critical_speed(runs, prs=_maximal_points(prs, efforts, since))
+    raced = {e.get("activity") for e in efforts}
+    cs = thresholds.critical_speed([r for r in runs if r["id"] not in raced],
+                                   prs=_maximal_points(prs, efforts, since))
     h2 = thresholds.hr_speed(runs, include_wrist=reads.include_wrist)
     return cs, h2
 
@@ -929,7 +933,7 @@ def analyze(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                     saved = zones.add_record(data, candidate, today=today)
                 except PaceError as err:
                     refusal = f"not saved: {err.message}"
-            if save and test == "race" and analysis["class"] == "cs":   # the point is stored whatever the fit says
+            if save and test == "race" and analysis["effort_point"]:   # a flat cs effort, whatever the fit says
                 effort_saved = zones.add_effort(data, {"activity": activity_id, "date": day.isoformat(),
                                                        "duration_s": analysis["duration_s"],
                                                        "distance_m": round(analysis["distance_m"], 1)})

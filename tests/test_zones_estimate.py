@@ -435,6 +435,18 @@ def test_h1_adds_stored_race_efforts_and_drops_their_prs(stubs):
     assert [(p["source"], p["activity"]) for p in seen[0]] == [("effort", 9001), ("pr", 9004)]
 
 
+def test_h1_windows_leave_out_stored_effort_activities(stubs):
+    """Methods doc 3 and 9b: a stored effort counts through its point; its run's windows stay out of the H1 fit."""
+    seen = []
+    stubs.setattr(thresholds, "critical_speed",
+                  lambda runs, *, prs: seen.append({r["id"] for r in runs}) or copy.deepcopy(CS_OK))
+    data = zones.load()
+    zones.add_effort(data, {"activity": 101, "date": d(10, 4), "duration_s": 1165, "distance_m": 5042.0})
+    res, _ = run(worked_fetcher(), data)
+    assert 101 not in seen[0] and 103 in seen[0]
+    assert 101 in {r["id"] for r in res["runs_used"]}    # still examined (H2, max HR)
+
+
 def test_current_lt1_record_is_the_drift_ref(stubs):
     data = zones.load()
     zones.accept(data, zones.add_record(data, {"date": d(10, 1), "source": "lab", "lt1": {"hr": 150}},

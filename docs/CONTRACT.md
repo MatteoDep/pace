@@ -582,17 +582,19 @@ Each F3 step row carries `step_share` (the RR power share at the step frequency,
 
 `--test race` (method R, methods doc 9b) analyzes a run the user or the coach marks as an all-out effort (Garmin rarely tags races); `--laps` and `--treadmill` are refused for the other tests and for race respectively (`bad_args`).
 The effort is laps A to B of `--laps A-B` (1-based, inclusive; `--laps A` is one lap), else the whole activity.
-Without `--laps`, an activity whose first or last lap is slower than 0.85 x the median speed of the laps between them (of all laps when there are only two) is refused with `bad_args` and a hint listing the lap speeds.
-The effort's moving time (stops removed by the section 1 rules) picks the class, reported in `class`:
+Without `--laps`, an activity whose first or last lap is slower than 0.85 x the median speed of the laps between them (with two laps, than 0.85 x the faster lap) is refused with `bad_args` and a hint listing the lap speeds.
+Without `--laps`, standing at the start and walking after the finish are cut from the ends (`bounds` shows the effort kept).
+The effort's moving time (stops removed by the section 1 rules) picks the class, reported in `class`; `distance_m` is the distance covered in that moving time:
 - below 120 s: `bad_args`;
-- 120 to 1200 s (`cs`): a critical-speed point; with another maximal point (a stored effort or a Garmin 1 km, 1 mile or 5 km record, within the last 16 weeks, a record set in a stored effort's activity or in this one dropped) whose duration is at least 1.5 x apart, `fit: "points"` fits CS and D' on the points (`rejected` when D' is outside 50..500 m or CS is not below the longest point's speed; confidence `medium` with points from 2 or more activities, else `low`); otherwise, from 600 s, `fit: "single"` gives CS for an assumed D' of 150..300 m (`cs_range`, `lt2_pace_range`, central `cs_mps` at 225 m, `d_prime_m` null, confidence `low`); a shorter single effort is `status: "point_only"` with no estimate;
+- 120 to 1200 s (`cs`): a critical-speed point (`rejected`, and not stored as a point, when the ascent is above 10 m per km); with another maximal point (a stored effort or a Garmin 1 km, 1 mile or 5 km record, within the last 16 weeks, a record set in a stored effort's activity or in this one dropped) whose duration is at least 1.5 x apart, `fit: "points"` fits CS and D' on the points (`rejected` when D' is outside 50..500 m or CS is not below the longest point's speed; confidence `medium` with points from 2 or more activities, else `low`); otherwise, from 600 s, `fit: "single"` gives CS for an assumed D' of 150..300 m (`cs_range`, `lt2_pace_range`, central `cs_mps` at 225 m, `d_prime_m` null, confidence `low`); a shorter single effort is `status: "point_only"` with no estimate;
 - above 1200 s up to 3600 s (`time_trial`): the F2 rules without the 1680 s minimum (LT2 HR = mean HR from 600 s to the end, pace over the moving time of the whole effort, stops above 10 s and ascent rejected, fade check);
 - above 3600 s: `status: "check_only"` with `pace_s_per_km` and `hr` (mean), never an LT2 value.
 A `cs` result carries `points`, `fit`, `cs_mps`, `d_prime_m`, `lt2` and `h2_source`: its LT2 HR is H2 at CS, H2 taken from the current records (as `zones show`), else from the newest `estimates` entry with `h2`, else null with a reason; `flags: ["extrapolated"]` when CS is above H2's `v_max`, and LT2 HR null (reason) above 1.1 x `v_max`.
-`--save` stores a `field_test` record with `method` `race_cs` (with `cs_mps` and `d_prime_m`) or `race_tt` for an `ok` result, and, for every `cs` effort whatever its status, the effort in `efforts` (`effort_saved`; a new analysis of the same activity replaces it).
+`--save` stores a `field_test` record with `method` `race_cs` (with `cs_mps` and `d_prime_m`) or `race_tt` for an `ok` result, and, for every flat `cs` effort whatever its status (`effort_point: true`), the effort in `efforts` (`effort_saved`; a new analysis of the same activity replaces it).
 `point_only`, `rejected` and `check_only` results refuse the record with `save_refused`, as for the field tests.
 The due rule counts a `race_tt` record as an LT2 field test; a `race_cs` record does not reset the field-test clock and, when current with no field test, makes an LT2 test due like a history estimate.
-`zones estimate` adds the stored efforts inside its history window to the H1 points, next to the personal records (dropping a record set in a stored effort's activity).
+`zones estimate` adds the stored efforts inside its history window to the H1 points, next to the personal records (dropping a record set in a stored effort's activity), and leaves the runs of stored efforts out of the H1 training windows.
+`zones.json` `efforts` entries must have an integer `activity`, an ISO `date` and positive `duration_s` and `distance_m`; otherwise the file is reported with the "unexpected shape" error.
 
 ### `zones test-workout`, `add`
 
