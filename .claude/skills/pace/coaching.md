@@ -132,7 +132,7 @@ Evidence: weak/expert opinion for F1; moderate for F2 pace, weak for F2 HR; mode
 ### What was observed on this athlete
 
 On one 13-step ramp (2026-09-09, chest strap, artifacts 0.1 %), alpha1 did not fall with intensity: it was below 0.75 at the easiest steps and above 1.0 at 164-176 bpm, close to the step rate.
-Cardio-locomotor coupling (HR locking to cadence) is a likely but uncited explanation (weak); pace now drops alpha1 windows whose RR power at the step frequency exceeds 0.25 (step interference).
+On this athlete's ramp, warm-up and cool-down the dominant RR oscillation sat at the step frequency (|step rate - HR|), and alpha1 followed its period in beats (methods doc section 6, observed, no published validation); pace now drops alpha1 windows whose RR power at the step frequency exceeds 0.25 (step interference).
 So for LT1 the drift methods are primary: H5 from history and the F1 drift test in the field; H4 and F3 count only when their gates pass, and after two "not monotonic" runs or ramps in a row pace marks alpha1 unreliable: the estimate that sets the mark still shows H4 flagged `alpha1_unreliable` and does not combine it into LT1, later estimates skip it (`pace zones estimate --retry-h4` clears the mark).
 Suggest F1 for LT1; suggest F3 only if `pace zones show` does not mark alpha1 unreliable and the user wants to try it.
 Evidence: weak/expert opinion (one athlete, one ramp).
