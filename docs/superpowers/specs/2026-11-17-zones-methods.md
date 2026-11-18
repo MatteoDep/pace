@@ -295,7 +295,7 @@ null when f0 - 0.05 < 0.04 Hz (HR that close to the step rate or its half is alr
            the window is shorter than one segment, or the RR values are constant
 drop the window if step share > 0.25
 ```
-The 0.25 limit, the 0.05 Hz band and the spectral settings are pace heuristics chosen on this athlete's ramp; for scale, white RR noise gave shares of 0.07-0.16 in pace's synthetic tests.
+The 0.25 limit, the 0.05 Hz band and the spectral settings are pace heuristics chosen on this athlete's ramp; for scale, white RR noise gave a share of about 0.14 at 0.65 Hz in pace's unit test (section 14.2).
 Measured cost: about 0.6 ms per window in pure Python (DFT over the needed bins only), less than one alpha1.
 Consequence for this athlete: H5 (history) and F1 (field test) are the primary LT1 methods; H4 and F3 contribute only when their gates pass, and the coupling exclusion and the monotonicity gate exist so that a pattern like this one produces "alpha1_unusable" rather than a wrong LT1.
 Inputs: data derived from the FIT file (RR intervals; per-second `record` HR, speed, distance, cadence, altitude); the per-sample data already fetched for the run.

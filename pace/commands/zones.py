@@ -390,7 +390,7 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
     if h4_state["unreliable"]:
         since = h4_state.get("since")
         return ({"status": "skipped", "hr": None, "pace_s_per_km": None, "confidence": None, "runs": [],
-                 "notes": [], "rejected": [],
+                 "notes": [], "rejected": [], "flags": [],
                  "reasons": [f"alpha1 marked unreliable for this athlete since {since} (two not-monotonic runs "
                              "in a row): no FIT downloads; retry with --retry-h4"]}, {})
     window_from = max(today - timedelta(weeks=DRIFT_WEEKS), RR_SINCE)
@@ -430,8 +430,11 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
         zones.record_alpha1_outcome(data, rep["outcome"], day=reads.runs[rep["id"]]["date"], activity=rep["id"])
     if h4_state["unreliable"]:   # marked by this estimate
         h4["flags"].append(thresholds.A1_UNRELIABLE)
-        h4["reasons"].append(f"alpha1 marked unreliable for this athlete by this estimate (two not-monotonic runs or "
-                             f"ramps in a row, since {h4_state['since']}): shown for reference, not combined into LT1")
+        reason = (f"alpha1 marked unreliable for this athlete by this estimate (two not-monotonic runs or ramps in a "
+                  f"row, since {h4_state['since']})")
+        if h4["hr"] is not None:
+            reason += ": shown for reference, not combined into LT1"
+        h4["reasons"].append(reason)
     wrist_used = [r["id"] for r in h4["runs"] if r["lt1_hr"] is not None and reads.sources.get(r["id"]) != "strap"]
     if h4["status"] == "ok" and wrist_used:
         h4["confidence"] = "low"

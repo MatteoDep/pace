@@ -349,14 +349,18 @@ def test_two_not_monotonic_runs_mark_h4_unreliable_then_skip(stubs):
     f = FakeFetcher(h4_rows())
     f.cache[("fit", 11)] = {**EMPTY_FIT, "id": 11}
     f.cache[("fit", 12)] = {**EMPTY_FIT, "id": 12}
-    _, data = run(f)
+    first, data = run(f)
     assert data["h4"]["unreliable"] is True and data["h4"]["counted"] == [11, 12]
+    h4 = first["methods"]["H4"]   # marked here with no value: flagged, no "not combined" clause
+    assert h4["status"] == "alpha1_unusable" and h4["flags"] == [thresholds.A1_UNRELIABLE]
+    assert h4["reasons"][-1].startswith("alpha1 marked unreliable") and "not combined" not in h4["reasons"][-1]
     # next estimate: H4 skipped, no FIT download even for a scoring run that is not cached
     rows = h4_rows() + [row(13, d(11, 14))]
     SCORES.update({13: 10.0})
     g = FakeFetcher(rows)
     res, data = run(g, data)
     assert res["methods"]["H4"]["status"] == "skipped" and res["methods"]["H4"]["reasons"]
+    assert res["methods"]["H4"]["flags"] == []
     assert not [k for k in g.log if k[0] == "fit"]
     # --retry-h4 clears the mark and downloads again
     _inject_windows(stubs, {13: []})
@@ -377,7 +381,7 @@ def test_h4_flagged_when_marked_in_same_call(stubs):
     h4 = res["methods"]["H4"]
     assert data["h4"]["unreliable"] is True and data["h4"]["streak"] == 0
     assert h4["status"] == "ok" and h4["hr"] == 145
-    assert h4["flags"] == [thresholds.A1_UNRELIABLE] and any("unreliable" in r for r in h4["reasons"])
+    assert h4["flags"] == [thresholds.A1_UNRELIABLE] and "not combined into LT1" in h4["reasons"][-1]
     assert res["lt1"]["method"] != "H4" and "H4" not in (res["lt1"]["method"] or "")
     assert any("not combined" in n for n in res["lt1"]["notes"])
     assert res["record"]["details"]["h4"]["flags"] == [thresholds.A1_UNRELIABLE]
