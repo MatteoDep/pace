@@ -1044,6 +1044,49 @@ def test_f3_observed_ramp_is_unusable(inject_alpha1):
     assert data["h4"]["streak"] == 1
 
 
+def test_f3_step_excluded_on_step_share(inject_alpha1):
+    # methods doc 9a: a step whose RR oscillation at the step frequency dominates is dropped like a coupled one
+    inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})
+    beats, laps = ramp_beats([(hr, v, 172) for _, hr, v in RAMP_STEPS])
+    rng = random.Random(21)
+    for b in beats:
+        b["rr_s"] += 0.002 * rng.gauss(0, 1)
+    f = hrv.step_frequency_hz(172, 148)                    # step 4 (index 3): HR 148, alpha1 0.70
+    end = 600 + 4 * 240                                    # warm-up 600 s, steps of 240 s
+    for b in beats:
+        if end - 240 <= b["t_s"] < end:
+            b["rr_s"] += 0.020 * math.sin(2 * math.pi * f * b["t_s"])
+    out = th.ramp(beats, laps=laps, treadmill=False)
+    step = out["steps"][3]
+    assert step["status"] == "dropped" and step["reason"].startswith("step interference")
+    assert step["step_share"] > hrv.STEP_SHARE_MAX
+    others = [s for k, s in enumerate(out["steps"]) if k != 3]
+    assert all(s["status"] == "kept" and s["step_share"] is not None and s["step_share"] <= hrv.STEP_SHARE_MAX
+               for s in others)
+    assert out["dropped_step"] == 1 and out["dropped_coupling"] == 0
+    assert out["status"] == "alpha1_unusable" and out["outcome"] == "one_sided"
+
+
+def test_h4_run_refilters_step_share():
+    run = h4_run(3, H4_A)
+    for w in run["windows"][:20]:      # the 20 windows at alpha1 1.00
+        w["step_share"] = hrv.STEP_SHARE_MAX + 0.01
+    for w in run["windows"][20:40]:
+        w["step_share"] = hrv.STEP_SHARE_MAX   # at the limit: kept
+    run["dropped_step"] = 4
+    r = th.alpha1_lt1([run])["runs"][0]
+    assert r["windows"] == 100 and r["dropped_step"] == 24 and r["dropped_coupling"] == 0
+
+
+def test_combine_ignores_flagged_h4():
+    flagged = dict(h4(146), flags=[th.A1_UNRELIABLE])
+    out = th.combine_lt1(H3_142, flagged, h5(142), H2_OK)
+    assert out["method"] == "H5" and out["hr"] == 142
+    assert any("not combined" in n and "146" in n for n in out["notes"])
+    alone = th.combine_lt1(H3_142, flagged, None, H2_OK)
+    assert alone["method"] == "H3"
+
+
 def test_f3_refuses_automatic_laps_and_too_few_steps(inject_alpha1):
     # methods doc 9a: steps come from lap presses; automatic laps (as F1's heuristic) are not steps
     inject_alpha1.update({hr: a for a, hr, _ in RAMP_STEPS})

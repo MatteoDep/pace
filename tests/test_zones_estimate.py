@@ -31,6 +31,10 @@ H2_NONE = {"status": "insufficient_data", "n": 0, "n_runs": 0, "segments": [], "
 # methods doc section 6 "Observed on this athlete": rho = +0.49, 3 points above 0.75 -> not monotonic
 OBSERVED = [(126, 0.54), (133, 0.65), (136, 0.45), (139, 0.35), (142, 0.37), (148, 0.35), (151, 0.46),
             (156, 0.61), (159, 0.63), (164, 1.03), (170, 1.13), (176, 0.99), (180, 0.35)]
+# methods doc 14.2 H4 worked example (run A): 60 windows on each side of 0.75 -> usable, LT1 HR 145
+USABLE = [{"hr": h, "alpha1": a, "speed": v, "cadence": 172, "artifact_share": 0.01}
+          for a, h, v in [(1.00, 130, 2.80), (0.90, 136, 3.04), (0.80, 142, 3.28), (0.70, 148, 3.52),
+                          (0.60, 154, 3.76), (0.50, 160, 4.00)] for _ in range(20)]
 NOT_MONOTONIC = [{"hr": h, "alpha1": a, "speed": 3.0, "cadence": None, "artifact_share": 0.01} for h, a in OBSERVED]
 
 
@@ -325,7 +329,8 @@ def test_rr_rejected_is_marked(stubs):
 
 def _inject_windows(monkeypatch, by_id):
     monkeypatch.setattr(fit, "aligned_rr", lambda data: [{"id": data["id"]}])
-    monkeypatch.setattr(hrv, "windows", lambda aligned: {"windows": by_id[aligned[0]["id"]], "dropped_coupling": 0})
+    monkeypatch.setattr(hrv, "windows", lambda aligned: {"windows": by_id[aligned[0]["id"]], "dropped_coupling": 0,
+                                                       "dropped_step": 0})
 
 
 def test_cached_run_does_not_raise_the_streak_twice(stubs):
@@ -359,6 +364,29 @@ def test_two_not_monotonic_runs_mark_h4_unreliable_then_skip(stubs):
     res, data = run(h, data, retry_h4=True)
     assert ("fit", 13) in h.log and data["h4"]["unreliable"] is False
     assert res["methods"]["H4"]["status"] != "skipped"
+
+
+def test_h4_flagged_when_marked_in_same_call(stubs):
+    # two not_monotonic runs then a usable one, all in one estimate: the mark comes from this estimate, so H4
+    # keeps its value with the flag and the LT1 combination leaves it out (flagged, not hidden)
+    _inject_windows(stubs, {11: NOT_MONOTONIC, 12: NOT_MONOTONIC, 13: USABLE})
+    f = FakeFetcher(h4_rows() + [row(13, d(11, 14))])
+    for rid in (11, 12, 13):
+        f.cache[("fit", rid)] = {**EMPTY_FIT, "id": rid}
+    res, data = run(f)
+    h4 = res["methods"]["H4"]
+    assert data["h4"]["unreliable"] is True and data["h4"]["streak"] == 0
+    assert h4["status"] == "ok" and h4["hr"] == 145
+    assert h4["flags"] == [thresholds.A1_UNRELIABLE] and any("unreliable" in r for r in h4["reasons"])
+    assert res["lt1"]["method"] != "H4" and "H4" not in (res["lt1"]["method"] or "")
+    assert any("not combined" in n for n in res["lt1"]["notes"])
+    assert res["record"]["details"]["h4"]["flags"] == [thresholds.A1_UNRELIABLE]
+    # without the mark the same usable run is combined
+    _inject_windows(stubs, {13: USABLE})
+    g = FakeFetcher([row(13, d(11, 14))])
+    g.cache[("fit", 13)] = {**EMPTY_FIT, "id": 13}
+    res, _ = run(g)
+    assert res["methods"]["H4"]["flags"] == [] and "H4" in res["lt1"]["method"]
 
 
 # --- HRmax, log, record ---

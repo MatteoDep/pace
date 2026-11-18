@@ -959,6 +959,7 @@ F3_WINDOW_S = 120
 F3_MIN_STEPS = 3           # fewer step laps are refused before the gate (which needs 3 on each side)
 F3_MEDIUM_SIDE = 2
 AGREE_BPM = 5
+A1_UNRELIABLE = "alpha1_unreliable"   # H4 flag: marked unreliable by the same estimate (14.2), not combined
 _CONF_RANK = {None: -1, "low": 0, "medium": 1, "high": 2}
 
 
@@ -1049,14 +1050,16 @@ def _side_note(points: list[dict]) -> str | None:
 def _h4_run(run: dict) -> tuple[dict, list[dict], float | None, float | None]:
     """One run: gate, then the alpha1-vs-HR and alpha1-vs-speed regressions on the near-linear windows.
 
-    Windows at coupling risk are dropped here too (hrv.windows already drops them; both are counted).
-    Returns (report, used windows, LT1 HR, LT1 speed).
+    Windows at coupling risk, then windows with `step_share` > hrv.STEP_SHARE_MAX, are dropped here too
+    (hrv.windows already drops them; both are counted). Returns (report, used windows, LT1 HR, LT1 speed).
     """
     given = run.get("windows") or []
-    ws = [w for w in given if w.get("cadence") is None or not hrv.coupled(w["hr"], w["cadence"])]
+    uncoupled = [w for w in given if w.get("cadence") is None or not hrv.coupled(w["hr"], w["cadence"])]
+    ws = [w for w in uncoupled if w.get("step_share") is None or w["step_share"] <= hrv.STEP_SHARE_MAX]
     gate = alpha1_gate(ws)
     out: dict[str, Any] = {"id": run.get("id"), "outcome": gate["outcome"], "rho": gate["rho"], "windows": len(ws),
-                           "dropped_coupling": (run.get("dropped_coupling") or 0) + len(given) - len(ws),
+                           "dropped_coupling": (run.get("dropped_coupling") or 0) + len(given) - len(uncoupled),
+                           "dropped_step": (run.get("dropped_step") or 0) + len(uncoupled) - len(ws),
                            "reasons": list(gate["reasons"]), "notes": [], "lt1_hr": None, "lt1_speed_mps": None,
                            "fit": None, "artifact_share": None}
     note = _side_note(ws)
@@ -1109,8 +1112,9 @@ def _h4_run(run: dict) -> tuple[dict, list[dict], float | None, float | None]:
 def alpha1_lt1(run_windows: list[dict]) -> dict:
     """H4 (methods doc 6): LT1 HR and pace from the alpha1 windows of strap runs.
 
-    run_windows = [{"id", "windows" (pace.hrv.windows output), "dropped_coupling"}]; the caller keeps the 12-week
-    and strap rules. Per-run outcomes ("usable" | "not_monotonic" | "one_sided") feed the H4 memory.
+    run_windows = [{"id", "windows" (pace.hrv.windows output), "dropped_coupling", "dropped_step"}]; the caller
+    keeps the 12-week and strap rules. Per-run outcomes ("usable" | "not_monotonic" | "one_sided") feed the H4
+    memory. `flags` stays empty here; the caller adds A1_UNRELIABLE (14.2).
     """
     runs, hrs, speeds, used = [], [], [], []
     for run in run_windows:
@@ -1123,7 +1127,8 @@ def alpha1_lt1(run_windows: list[dict]) -> dict:
                 speeds.append(speed)
     notes = [f"run {r['id']}: {n}" for r in runs for n in r["notes"]]
     out: dict[str, Any] = {"status": "ok", "hr": None, "pace_s_per_km": None, "speed_mps": None, "spread": None,
-                           "confidence": None, "artifact_share": None, "runs": runs, "notes": notes, "reasons": []}
+                           "confidence": None, "artifact_share": None, "runs": runs, "notes": notes, "reasons": [],
+                           "flags": []}
     if not hrs:
         if runs and all(r["outcome"] != "usable" for r in runs):
             out.update(status="alpha1_unusable", reasons=["no run passed the alpha1 gate"])
@@ -1146,11 +1151,13 @@ def alpha1_lt1(run_windows: list[dict]) -> dict:
 
 def _ramp_step(k: int, span: tuple[float, float], aligned: list[dict], times: list[float], corr: tuple,
                treadmill: bool) -> dict:
-    """One step: the last 120 s with the section 6 extraction, then coupling, artifact and beat rules."""
+    """One step: the last 120 s with the section 6 extraction, then coupling, step interference, artifact and beat
+    rules."""
     start, end = span
     t0, t1 = end - F3_WINDOW_S, end
     step: dict[str, Any] = {"step": k, "bounds": [t0, t1], "status": "skipped", "reason": None, "hr": None,
-                            "speed_mps": None, "cadence": None, "alpha1": None, "artifact_share": None, "beats": None}
+                            "speed_mps": None, "cadence": None, "alpha1": None, "artifact_share": None, "beats": None,
+                            "step_share": None}
     ctimes, cvals, flags = corr
     lo, hi = bisect.bisect_left(times, t0), bisect.bisect_left(times, t1)
     cads = [b.get("cadence") for b in aligned[lo:hi]]
@@ -1164,7 +1171,8 @@ def _ramp_step(k: int, span: tuple[float, float], aligned: list[dict], times: li
         step["reason"] = "cadence missing"
     if step["reason"]:
         return step
-    x = cvals[bisect.bisect_left(ctimes, t0):bisect.bisect_left(ctimes, t1)]
+    a, b = bisect.bisect_left(ctimes, t0), bisect.bisect_left(ctimes, t1)
+    x = cvals[a:b]
     hr, cadence = 60 / statistics.fmean(x), statistics.fmean(cads)
     share = sum(flags[lo:hi]) / (hi - lo)
     step.update(hr=hr, cadence=cadence, artifact_share=share, beats=len(x))
@@ -1173,6 +1181,11 @@ def _ramp_step(k: int, span: tuple[float, float], aligned: list[dict], times: li
         step["speed_mps"] = None if da is None or db is None else (db - da) / F3_WINDOW_S
     if hrv.coupled(hr, cadence):
         step.update(status="dropped", reason="coupling risk: HR within 5% of the step rate or of half of it")
+        return step
+    step["step_share"] = hrv.step_share(ctimes[a:b], x, step_rate_spm=cadence, hr_bpm=hr)
+    if step["step_share"] is not None and step["step_share"] > hrv.STEP_SHARE_MAX:
+        step.update(status="dropped", reason=f"step interference: {step['step_share']:.2f} of the RR power within "
+                    f"{hrv.STEP_BAND_HZ} Hz of the step frequency (limit {hrv.STEP_SHARE_MAX})")
     elif share > hrv.MAX_ARTIFACT_SHARE:
         step.update(status="dropped", reason="artifact share above 5%")
     elif len(x) < hrv.MIN_BEATS:
@@ -1201,7 +1214,8 @@ def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict:
     Treadmill: HR only.
     """
     out: dict[str, Any] = {"status": "rejected", "outcome": None, "lt1": None, "confidence": None, "bracketed": False,
-                           "saveable": False, "steps": [], "dropped_coupling": 0, "gate": None, "fit": None,
+                           "saveable": False, "steps": [], "dropped_coupling": 0, "dropped_step": 0, "gate": None,
+                           "fit": None,
                            "treadmill": treadmill, "reasons": [], "notes": []}
     laps = laps or []
     if laps and _auto_laps(laps):
@@ -1222,7 +1236,9 @@ def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict:
     kept = [s for s in steps if s["status"] == "kept"]
     gate = alpha1_gate(kept)
     out.update(steps=steps, gate=gate, outcome=gate["outcome"],
-               dropped_coupling=sum(s["status"] == "dropped" and s["reason"].startswith("coupling") for s in steps))
+               dropped_coupling=sum(s["status"] == "dropped" and s["reason"].startswith("coupling") for s in steps),
+               dropped_step=sum(s["status"] == "dropped" and s["reason"].startswith("step interference")
+                                for s in steps))
     if not gate["usable"]:
         out.update(status="alpha1_unusable", reasons=list(gate["reasons"]))
         return out
@@ -1258,8 +1274,8 @@ def ramp(aligned: list[dict], *, laps: list[dict], treadmill: bool) -> dict:
 # --- LT1 combination (14.2) ---
 
 def _lt1_of(res: dict | None) -> float | None:
-    """LT1 HR of an H3/H4 ("hr") or H5 ("estimate") result with status ok, else None."""
-    if not res or res.get("status") != "ok":
+    """LT1 HR of an H3/H4 ("hr") or H5 ("estimate") result with status ok and no A1_UNRELIABLE flag, else None."""
+    if not res or res.get("status") != "ok" or A1_UNRELIABLE in (res.get("flags") or []):
         return None
     return res.get("hr") if res.get("hr") is not None else res.get("estimate")
 
@@ -1268,6 +1284,7 @@ def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | No
     """Methods doc 14.2: H4 and H5 combined, H3 as fallback (never averaged in).
 
     h3 = lt1_from_cs, h4 = alpha1_lt1, h5 = drift_bounds, h2 = hr_speed (or {"a", "b"}) results.
+    An H4 flagged A1_UNRELIABLE is left out (a note says so) but stays visible in the methods.
     Final confidence is medium only if the picked result's own confidence is medium, a method outside the picked
     ones agrees within 5 bpm (for "H4+H5" the mutual agreement of H4 and H5 counts, controller ruling), and no
     method with own confidence medium disagrees; never high.
@@ -1278,6 +1295,8 @@ def combine_lt1(h3: dict | None, h4: dict | None, h5: dict | None, h2: dict | No
                            "confidence": None, "own_confidence": None, "flags": [], "suggest": None,
                            "h3": {"hr": (h3 or {}).get("hr"), "pace_s_per_km": (h3 or {}).get("pace_s_per_km")},
                            "notes": [], "reasons": []}
+    if A1_UNRELIABLE in ((h4 or {}).get("flags") or []) and h4.get("hr") is not None:
+        out["notes"].append(f"H4 {h4['hr']} bpm not combined: flagged {A1_UNRELIABLE}")
     v4, v5 = vals["H4"], vals["H5"]
     if v4 is not None and v5 is not None:
         if abs(v4 - v5) <= AGREE_BPM:

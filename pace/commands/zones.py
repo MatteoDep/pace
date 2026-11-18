@@ -382,7 +382,10 @@ def _no_strap(reads: _Reads, res: dict, ids: list[int], dropped: set[int]) -> No
 
 
 async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tuple[dict, dict[int, dict]]:
-    """FIT downloads by span score, then H4 on cached and downloaded RR data; updates the H4 memory."""
+    """FIT downloads by span score, then H4 on cached and downloaded RR data; updates the H4 memory.
+
+    When that update marks alpha1 unreliable (it was not before: an earlier mark skips H4 above), the result keeps
+    its values and gains the flag thresholds.A1_UNRELIABLE, so the LT1 combination leaves it out (14.2)."""
     h4_state = data["h4"]
     if h4_state["unreliable"]:
         since = h4_state.get("since")
@@ -418,12 +421,17 @@ async def _h4(reads: _Reads, data: dict, *, ref: int | None, today: date) -> tup
             rejected.append({"id": rid, "reason": fitmod.no_rr(rid) or "no RR data"})
             continue
         w = hrv.windows(aligned)
-        run_windows.append({"id": rid, "windows": w["windows"], "dropped_coupling": w["dropped_coupling"]})
+        run_windows.append({"id": rid, "windows": w["windows"], "dropped_coupling": w["dropped_coupling"],
+                            "dropped_step": w["dropped_step"]})
     h4 = thresholds.alpha1_lt1(run_windows)
     h4["rejected"] = rejected
     h4["downloads"] = downloads
     for rep in h4["runs"]:  # start-time order within this estimate (earlier estimates counted theirs already)
         zones.record_alpha1_outcome(data, rep["outcome"], day=reads.runs[rep["id"]]["date"], activity=rep["id"])
+    if h4_state["unreliable"]:   # marked by this estimate
+        h4["flags"].append(thresholds.A1_UNRELIABLE)
+        h4["reasons"].append(f"alpha1 marked unreliable for this athlete by this estimate (two not-monotonic runs or "
+                             f"ramps in a row, since {h4_state['since']}): shown for reference, not combined into LT1")
     wrist_used = [r["id"] for r in h4["runs"] if r["lt1_hr"] is not None and reads.sources.get(r["id"]) != "strap"]
     if h4["status"] == "ok" and wrist_used:
         h4["confidence"] = "low"
@@ -468,7 +476,8 @@ def _record(today: date, lt1: dict, lt2: dict, methods: dict, *, data: dict, res
         "details": {
             "h2": ({k: h2[k] for k in ("a", "b", "v_min", "v_max")} if h2.get("status") == "ok" else None),
             "h3": {"hr": methods["H3"].get("hr"), "pace_s_per_km": methods["H3"].get("pace_s_per_km")},
-            "h4": {"hr": methods["H4"].get("hr"), "status": methods["H4"]["status"]},
+            "h4": {"hr": methods["H4"].get("hr"), "status": methods["H4"]["status"],
+                   "flags": methods["H4"].get("flags") or []},
             "h5": {"hr": methods["H5"].get("estimate"), "bounds": methods["H5"].get("bounds"),
                    "status": methods["H5"]["status"]},
             "lt1": {"method": lt1.get("method"), "confidence": lt1.get("confidence"), "suggest": lt1.get("suggest")},

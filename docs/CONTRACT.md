@@ -525,6 +525,9 @@ An estimate with `insufficient_data` methods is still `ok`.
 It always appends `summary` to the `estimates` log and raises `hr_max`; without `--save` no record is stored, so the user can look at the candidate first.
 With `--save` a record that the store refuses (for example LT1 HR at or above LT2 HR) is not an error: the result is `ok` with `saved: null` and a `save_refused` message, the estimate is logged, and nothing needs rerunning.
 The H4 outcomes of the run are merged into the file's alpha1 memory (once per activity), so memory written by another command meanwhile is kept.
+`methods.H4.runs` has one row per run with RR data: `outcome`, `rho`, `windows` (kept), `dropped_coupling` and `dropped_step` (windows dropped for coupling risk and for step interference, `step_share` above 0.25), `lt1_hr`, `lt1_speed_mps`, `fit`, `reasons` and `notes`.
+`methods.H4.flags` is `["alpha1_unreliable"]` when this same estimate marked alpha1 unreliable: H4 keeps its values and reasons but `lt1` leaves it out and notes so (flagged, not hidden).
+When the mark was already set before the estimate (and no `--retry-h4`), H4 is `skipped` with no values.
 
 Budget: `--max-calls` is a hard cap on every Garmin call of the run, the 2x extension included.
 Each picked run costs one `get_activity` and one `get_activity_details`, a FIT download one call, and the activity list, personal records and sleep stats a few more; cache hits are free.
@@ -573,6 +576,7 @@ A refused save is not an error: the result is `ok` with the full analysis, `save
 F1 confidence is `medium`, or `low` when the newest F3 record of the last 28 days disagrees by more than 5 bpm; F2 is `low` when the pace faded or stops occurred.
 F2 without laps takes the fastest 1800 s window that spans no stop longer than 10 s; shorter stops are allowed and reported, as with laps.
 F3 takes its steps from lap presses: laps that look automatic (every lap 1100 m or 8 min or shorter, as for F1) or fewer than 3 step laps reject the ramp before the gate.
+Each F3 step row carries `step_share` (the RR power share at the step frequency, null when not computable); a step above 0.25 is dropped with reason "step interference", counted in `dropped_step` as coupled steps are in `dropped_coupling`.
 
 ### `zones test-workout`, `add`
 

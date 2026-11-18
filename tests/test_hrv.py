@@ -240,7 +240,7 @@ def test_windows_coupling_counted_only_after_earlier_checks() -> None:
     stopped = _beats(lambda t: 60 / 176, cadence=185, noise=0.002)
     next(b for b in stopped if b["t_s"] >= 650)["stop"] = True
     for beats in (hill, walk, stopped):
-        assert hrv.windows(beats) == {"windows": [], "dropped_coupling": 0}
+        assert hrv.windows(beats) == {"windows": [], "dropped_coupling": 0, "dropped_step": 0}
     many = _beats(lambda t: 60 / 176, until=760, cadence=185, noise=0.002)
     assert hrv.windows(many)["dropped_coupling"] == 8  # windows at 600, 605, ..., 635
 
@@ -327,3 +327,78 @@ def test_windows_gentle_climb_with_noise_is_not_flat() -> None:
     for b in beats:
         b["alt"] = 10.0 + slope * b["dist"] + rng.gauss(0, 0.3)
     assert hrv.windows(beats)["windows"] == []
+
+
+# --- step-interference gate (methods doc 6, pace heuristic) ---
+
+def _tachogram(hr: float, *, sine_hz: float | None, amp: float = 0.020, noise: float = 0.002, seconds: float = 120.0,
+               seed: int = 5) -> tuple[list[float], list[float]]:
+    """Beat times and RR values: RR = 60 / hr plus a sine sampled at the beat times plus white noise."""
+    rng = random.Random(seed)
+    times, rr, t = [], [], 0.0
+    while t < seconds:
+        v = 60 / hr + noise * rng.gauss(0, 1)
+        if sine_hz is not None:
+            v += amp * math.sin(2 * math.pi * sine_hz * t)
+        t += v
+        times.append(t)
+        rr.append(v)
+    return times, rr
+
+
+@pytest.mark.parametrize(("step", "hr", "f"), [(173, 134, 39 / 60), (176, 110, 44 / 60), (180, 92, 4 / 60)])
+def test_step_frequency_aliasing(step: float, hr: float, f: float) -> None:
+    # k = round(f_step / f_hr): 1 gives |step rate - HR|, 2 covers HR near half the step rate
+    assert hrv.step_frequency_hz(step, hr) == pytest.approx(f)
+
+
+def test_step_share_synthetic() -> None:
+    assert hrv.step_frequency_hz(173, 134) == pytest.approx(0.65)
+    times, rr = _tachogram(134, sine_hz=0.65)
+    assert hrv.step_share(times, rr, step_rate_spm=173, hr_bpm=134) > 0.5
+    times, rr = _tachogram(134, sine_hz=None)
+    clean = hrv.step_share(times, rr, step_rate_spm=173, hr_bpm=134)
+    assert clean is not None and clean < 0.15
+    # |176 - 180| / 60 Hz - STEP_BAND_HZ is below SPECTRUM_MIN_HZ: left to the coupling rule
+    times, rr = _tachogram(176, sine_hz=None)
+    assert hrv.step_share(times, rr, step_rate_spm=180, hr_bpm=176) is None
+
+
+def test_step_share_short_or_constant_window_is_none() -> None:
+    times, rr = _tachogram(134, sine_hz=0.65, seconds=hrv.SPECTRUM_SEG_S - 2)
+    assert hrv.step_share(times, rr, step_rate_spm=173, hr_bpm=134) is None   # shorter than one segment
+    times = [k * 0.4 for k in range(1, 301)]
+    assert hrv.step_share(times, [0.4] * 300, step_rate_spm=172, hr_bpm=150) is None   # no variance at all
+
+
+def test_step_share_uses_hr_nyquist_and_segments() -> None:
+    # 200 s of beats: four 64 s segments spread over the window; the sine near the beat Nyquist is still seen
+    times, rr = _tachogram(150, sine_hz=1.15, seconds=200)
+    assert hrv.step_frequency_hz(219, 150) == pytest.approx(1.15)
+    assert hrv.step_share(times, rr, step_rate_spm=219, hr_bpm=150) > 0.5
+
+
+def _step_beats(amp: float) -> list[dict]:
+    """The single 600..720 s window of `_beats` (HR 150, cadence 172) with an RR sine at |172 - 150| / 60 Hz."""
+    beats = _beats(lambda t: 0.4, noise=0.002)
+    f = hrv.step_frequency_hz(172, 150)
+    for b in beats:
+        b["rr_s"] += amp * math.sin(2 * math.pi * f * b["t_s"])
+    return beats
+
+
+def test_windows_drop_step_dominated() -> None:
+    res = hrv.windows(_step_beats(0.020))
+    assert res["windows"] == [] and res["dropped_step"] == 1 and res["dropped_coupling"] == 0
+    kept = hrv.windows(_step_beats(0.0))
+    assert kept["dropped_step"] == 0 and len(kept["windows"]) == 1
+    assert 0 <= kept["windows"][0]["step_share"] <= hrv.STEP_SHARE_MAX
+
+
+def test_windows_step_drop_counted_only_after_coupling() -> None:
+    # a coupled window is counted once, under coupling, even with a step oscillation
+    beats = _beats(lambda t: 60 / 176, cadence=185, noise=0.002)
+    for b in beats:
+        b["rr_s"] += 0.020 * math.sin(2 * math.pi * hrv.step_frequency_hz(185, 176) * b["t_s"])
+    res = hrv.windows(beats)
+    assert res["dropped_coupling"] == 1 and res["dropped_step"] == 0

@@ -222,6 +222,7 @@ Qualifying windows in a training run:
 - the whole window lies between 600 s and 4500 s of the run (warm-up excluded; fatigue lowers alpha1 at a given load later in long sessions: from 0.71 to 0.32 at 3 m/s after a 6 h run in Rogers et al. 2021c, and a bias of -12.3 bpm on a second ramp in Van Hooren et al. 2025);
 - outdoor, flat, stop-free, mean cadence >= 140 (section 1);
 - no cardio-locomotor coupling risk: the window is dropped when abs(HR - c) / c <= 0.05 or abs(HR - c / 2) / (c / 2) <= 0.05, with c the window's mean cadence in steps/min (pace heuristic, see "Observed on this athlete" below); the number of windows dropped by this rule is reported;
+- no step interference: after the coupling check, the window is dropped when its step share (below) is above 0.25 (pace heuristic, see "Step interference" below); the count is reported as `dropped_step`, counted like the coupling drops (only windows that passed every earlier check);
 - speed of each 30 s sub-window within +/-10% of the window speed (pace heuristic);
 - the 120 s before the window have a mean speed within +/-10% of the window speed, and the 180 s before the window contain no 30 s stretch faster than 1.10 x the window speed (pace heuristic: alpha1 lags changes in load, and Andriolo et al. 2024 found raw load-alpha1 pairs from everyday workouts poorly correlated for this reason).
 
@@ -273,6 +274,29 @@ alpha1   0.54  0.65  0.45  0.35  0.37  0.35  0.46  0.61  0.63  1.03  1.13  0.99 
 ```
 alpha1 did not fall with intensity: it was already below 0.75 at the easiest steps, and rose above 1.0 at 164-176 bpm, where HR approached the step rate.
 A likely explanation is cardio-locomotor coupling (the heart rate locking to the step rate, which imposes a periodic structure on the RR series); this is uncited reasoning, no study on coupling and DFA alpha1 in running was opened for this note, so the grade of the coupling claim is weak.
+Step interference (observed on the same ramp, its warm-up and its cool-down, Polar H10 chest strap, 2026-09-09; controller analysis 2026-11-18):
+- The dominant RR oscillation sat within 0.05 Hz of abs(step rate - HR) in 98% of the ramp's 2-min windows (57% of the warm-up windows, 85% of the cool-down windows).
+- Its period in beats, HR / abs(step rate - HR), ran from about 3 to over 20 beats, and alpha1 followed it: about 0.2-0.5 at 3-4 beats, above 1.0 past 16 beats.
+  A likely reading (reasoning, not tested): a periodic component of 3-4 beats looks anti-correlated at the DFA box sizes 4..16 (alpha1 low), one of 16 or more beats looks like a trend inside the boxes (alpha1 high).
+- Breathing locked at 2:2 or 3:3 (step rate / 4 or / 6) did not match the oscillation.
+- Windows whose step share was 0.25 or lower read alpha1 0.83-1.17 at easy effort (about 125-130 bpm), close to the value of about 1.0 expected below LT1.
+- The recording used a Polar H10 chest strap (compared with ECG during incremental exercise by Schaffarczyk et al. 2022), which makes a measurement artifact unlikely; the oscillation is most likely a real beat-to-beat modulation at the step rate, seen through the beat sampling.
+Rule (pace heuristic; no published validation of such a gate was found):
+```
+f_s = step rate / 60, f_h = HR / 60, k = round(f_s / f_h)
+step frequency f0 = abs(f_s - k * f_h)    (the step component as seen in a beat-sampled series: k = 1 gives
+                                           abs(step rate - HR), k = 2 covers HR near half the step rate)
+tachogram: the window's corrected RR, linearly interpolated at 4 Hz
+spectrum:  64 s Hann segments (as many as needed to cover the window, evenly spaced starts from 0 to n - seg),
+           each linearly detrended; power summed over the segments
+step share = power within 0.05 Hz of f0 / power in 0.04 Hz .. min(1.9 Hz, HR / 120)   (HR / 120 = the beat-rate
+           Nyquist; the step band is clipped to that range)
+null when f0 - 0.05 < 0.04 Hz (HR that close to the step rate or its half is already a coupling drop),
+           the window is shorter than one segment, or the RR values are constant
+drop the window if step share > 0.25
+```
+The 0.25 limit, the 0.05 Hz band and the spectral settings are pace heuristics chosen on this athlete's ramp; for scale, white RR noise gave shares of 0.07-0.16 in pace's synthetic tests.
+Measured cost: about 0.6 ms per window in pure Python (DFT over the needed bins only), less than one alpha1.
 Consequence for this athlete: H5 (history) and F1 (field test) are the primary LT1 methods; H4 and F3 contribute only when their gates pass, and the coupling exclusion and the monotonicity gate exist so that a pattern like this one produces "alpha1_unusable" rather than a wrong LT1.
 Inputs: data derived from the FIT file (RR intervals; per-second `record` HR, speed, distance, cadence, altitude); the per-sample data already fetched for the run.
 Known error and validity:
@@ -482,6 +506,8 @@ per step: one alpha1 window = the last 120 s of the step (the first 1-2 min abso
           (gap, stop, < 200 corrected beats); window HR, window speed and artifact share as in section 6
 drop a step whose window has artifact share > 5%
 drop a step at coupling risk (the section 6 rule on the step's HR and mean cadence); report the count
+drop a step whose window has step share > 0.25 (the section 6 step-interference rule, checked after coupling);
+          the step row carries its step share; report the count (`dropped_step`)
 gate (as section 6): rho = Spearman of step HR and alpha1 over the kept steps;
       need rho <= -0.6 and >= 3 kept steps with alpha1 > 0.75 and >= 3 with alpha1 < 0.75;
       otherwise status "alpha1_unusable" with the reason, no estimate, nothing saved
@@ -595,6 +621,8 @@ final confidence = medium only if the picked result's own confidence is medium,
                    and no method with own confidence medium disagrees with it;
                    otherwise low; never high (no field test)
 ```
+H4 flagged, not hidden (user decision 2026-11-18): when the H4 memory update of the same estimate marks alpha1 unreliable (section 6), the H4 result keeps its values and reasons, gains the flag `alpha1_unreliable` and a reason, and the combination above treats H4 as giving no estimate; `lt1` notes "H4 N bpm not combined".
+When the mark was already set before the estimate and `--retry-h4` was not given, H4 stays "skipped" with no values (nothing is computed, so nothing is flagged).
 H5 wins a tie because its result is checked by the same measurement the F1 field test uses, and two of its known failure modes (hills, stops) are filtered (heat is not, section 7); H4 wins when its own confidence is higher, because its marker has lab validation at group level.
 The record's `method` lists the methods used (for example "H4+H5"), with H3's value and any one-sided H4 or H5 notes in the details.
 Worked example, H3 (same data as 14.1):
@@ -618,6 +646,9 @@ Worked example, H4 regression (unit test):
 - Run B: same alpha1 values, HR 2 bpm higher and speed 0.08 m/s higher -> HR = 192 - 60 x alpha1, v = 5.28 - 2.40 x alpha1 -> 147 bpm, 3.48 m/s.
 - H4: LT1 HR = median(145, 147) = 146; LT1 pace = R(1000 / 3.44) = 291 s/km; spread 2; with median artifact share 1.5% -> medium.
 - A run with windows only at alpha1 1.00, 0.90, 0.80 -> "alpha1_unusable", reason "one-sided", note "alpha1 above 0.75 up to 142 bpm"; the H4 streak is unchanged.
+- Step interference (unit test): beats at RR = 60 / 134 s plus a 20 ms sine at 0.65 Hz sampled at the beat times plus 2 ms white noise, step rate 173 -> step frequency 0.65 Hz, share > 0.5; without the sine share < 0.15; HR 176 at 180 steps/min -> null (left to coupling).
+  Step frequency: (173, 134) -> 0.65 Hz; (176, 110) -> 44 / 60 Hz (k = 2); (180, 92) -> 4 / 60 Hz.
+- Flagged H4 (unit test): one estimate with two not-monotonic runs followed by a usable run (the run A windows above) -> H4 marked unreliable by this estimate, H4 keeps LT1 HR 145 with the flag, and the LT1 method is not H4.
 - Gate (unit test): a run whose windows follow the observed pattern of section 6 (the 13 (HR, alpha1) pairs, each repeated 20 times, cadences as in the 14.8 gate test) -> coupling drops reported (40 windows), rho = +0.49 -> "alpha1_unusable", reason "not monotonic"; two such runs in a row (streak 2) -> H4 marked unreliable, and the next `zones estimate` reports H4 "skipped" and makes no FIT download; `--retry-h4` clears the mark.
 - A window of 300 raw beats with 12 flagged (4%) is used; with 18 flagged (6%) it is skipped; a window with 190 corrected beats is skipped.
 Worked example, artifact correction (unit test), values in s around a local median of 0.400:
@@ -763,6 +794,7 @@ Worked example (unit test, alpha1 injected per step, artifact share 1% and caden
 - Fits: HR = 190 - 60 x alpha1, v = 5.20 - 2.40 x alpha1; LT1 HR = R(145.0) = 145; LT1 pace = R(1000 / 3.40) = R(294.1) = 294 s/km; 3 steps on each side, median artifact share 1% -> medium.
 - The step at alpha1 0.70 with artifact share 6% -> dropped; 3 steps above and 2 below -> "alpha1_unusable", reason "one-sided" (fewer than 3 steps below 0.75), nothing saved.
 - Only the first three steps (all alpha1 > 0.75) -> "alpha1_unusable", reason "one-sided".
+- Step interference (unit test): the worked-example steps with 2 ms white RR noise, and a 20 ms sine at the step frequency (abs(172 - 148) / 60 = 0.4 Hz) on the step at alpha1 0.70 -> that step is dropped with reason "step interference" and its share in the row (`dropped_step` 1); the other steps keep shares below 0.25; 2 steps below 0.75 -> "alpha1_unusable", "one-sided".
 - Gate test with the pattern observed on this athlete (unit test): the 13 (HR, alpha1) steps of section 6 with cadences 166, 168, 169, 170, 171, 172, 174, 176, 178, 180, 182, 185, 188 -> the steps at 176 bpm (4.9% from 185) and 180 bpm (4.3% from 188) are dropped for coupling (count 2 reported); over the 11 kept steps rho = +0.49 and only 2 steps lie above 0.75 -> "alpha1_unusable", reasons "not monotonic, rho = 0.49" and "one-sided"; the H4 streak rises by 1.
 
 ### 14.9 Implementation rulings (controller, 2026-11-18)
@@ -777,6 +809,10 @@ Worked example (unit test, alpha1 injected per step, artifact share 1% and caden
 - Decided 2026-11-18 (user decision): the H5 run window becomes 60-150 min and the drift list-row pre-filter 15 m per km (sections 7 and 14.7); the flat limits stay, but altitude is smoothed over 61 s before grade and ascent (section 1).
   Observed effect on the athlete's runs: on raw altitude 80-93% of the 5-min windows of flat runs failed the 10 m/km limit (13-18 m/km of apparent climb); with 61 s smoothing 1-11% failed, and hilly runs still failed 35-100%.
   The hysteresis ruling above was tuned on sub-metre jitter (sigma 0.1-0.3 m); the GPS jitter of metres seen on these runs needs the smoothing as well.
+- Step-interference gate (section 6, pace heuristic): the step share uses the corrected beats of the window; segments are detrended one by one (as Welch with linear detrending), the Hann window is the periodic one, and the step band is clipped to the analysed range so the share never exceeds 1.
+  A window or F3 step whose share is null keeps its place; `step_share` is reported on kept windows and on every F3 step row past the coupling check.
+  The H4 per-run report re-filters given windows by coupling and then by step share, adding both drops to the counts from `hrv.windows`.
+- The `alpha1_unreliable` flag is added whenever the same estimate marks alpha1 unreliable, also when H4 has no value, so the result always says why later estimates will skip H4.
 
 ## 15. Source log
 
