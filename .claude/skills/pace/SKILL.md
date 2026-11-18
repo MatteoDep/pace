@@ -154,7 +154,7 @@ Lab values: record them as reported with `pace zones add --source lab --date <da
 A record becomes current only with `pace zones accept ID [--only lt1|lt2]` on the user's yes (a lab record is current on entry unless older).
 A lab record stays current for 6 months, then `expired`: suggest a retest and show newer estimates next to it without applying them.
 To put the zones on the watch: `pace zones push --dry-run` reads the watch zones live and shows `before` (the watch now), `after` and the body; show the change and run `pace zones push` on yes.
-It is refused (`bad_args`) without a current LT1 and LT2 with HR, or when the floors are invalid; after it, `pace zones show` reports `in_sync: true`.
+It is refused (`bad_args`) without a current LT1 and LT2 with HR, or when the floors are invalid; after it, run `pace zones show` and check `in_sync`: if it is not true, Garmin changed the floors on its side, so tell the user instead of claiming the watch is synced.
 Intensity rule: when `in_sync` is not true and both LT1 and LT2 have a current record, write workout DSL HR targets as bpm ranges from the current zones, not `z1..z5`.
 
 ## Coaching
