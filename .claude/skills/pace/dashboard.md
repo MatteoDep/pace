@@ -6,7 +6,7 @@ Its page reads one attached file, `load.json`, produced by `pace load --export`:
 ## Create
 
 Only when the user asks, never in an unattended run.
-Run `pace load --export $PACE_HOME/dashboard/load.json`, then follow the Data type's instructions: create the artifact from its `type_url` with title "Training Load", upload the file as an asset, and write `dash/meta`, `dash/params` (`{"metric": "km", "sport": "running"}`), `datasets/load` (a `file` source with `updated: {at, by: "pace coach"}`) and `files/index.html` in one batch.
+Run `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"` (`PACE_HOME` is often unset), then follow the Data type's instructions: create the artifact from its `type_url` with title "Training Load", upload the file as an asset, and write `dash/meta`, `dash/params` (`{"metric": "km", "sport": "running"}`), `datasets/load` (a `file` source with `updated: {at, by: "pace coach"}`) and `files/index.html` in one batch.
 The page source used for the current dashboard is in the artifact itself (`files/index.html`); read it there rather than rewriting it from scratch.
 Then `pace diary set dashboard.url <url>`.
 Tell the user the attached file is readable by anyone who can open the link.
@@ -15,11 +15,11 @@ Tell the user the attached file is readable by anyone who can open the link.
 
 When: at the end of a full check-in, and once after a batch of plan edits (not after each edit).
 Steps, exactly:
-1. `pace load --export $PACE_HOME/dashboard/load.json`.
+1. `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"`.
 2. Upload it to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
 3. Read `datasets/load` for its `version` and its current `source.url`; one `update` pinned to that version: `{"source": {"url": "<new>"}, "updated": {"at": "<export Generated time>", "by": "pace coach"}}`.
 4. Delete the replaced asset (the old `/_blob/<id>`).
-5. Read `data/users/me` once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
+5. ArtifactData `list` on collection `data/users/me`, once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
 
 ## Change a view
 

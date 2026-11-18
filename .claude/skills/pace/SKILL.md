@@ -74,7 +74,8 @@ After the run review, in this order, each at most once per session:
 Profile keys: `goal`, `event.name`, `event.date`, `availability`, `background`, `other_sports`, `strength`, `preferences`, `checkin.weight_days`.
 Read them from `pace diary show` before asking anything.
 On the first session do a full intake; afterwards only gaps and changes.
-Ask open questions, one at a time, in conversation (running history and current volume, PBs, goals, races, availability, other sports, strength routine, preferences).
+Ask open questions, one at a time, in conversation (running history and current volume, PBs and recent races with time and date, goals, races, availability, other sports, strength routine, preferences).
+PBs and race results go in `background`; for a race in the last few months, offer `pace zones analyze <activity id> --test race` (Thresholds and zones).
 After each answer run `pace diary set KEY VALUE` and say what you stored.
 Injuries and lasting constraints are entries, not profile keys: `pace diary add --kind injury -- <text>` (after the user confirms the wording) or `pace diary add --kind constraint -- <text>`.
 When one heals or ends, `pace diary resolve ID`.
