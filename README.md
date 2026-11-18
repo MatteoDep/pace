@@ -52,6 +52,7 @@ pace plan status --past 7 --ahead 0
 pace zones show
 pace zones estimate --max-calls 40
 pace zones analyze <activity-id> --test drift
+pace zones analyze <activity-id> --test race --laps 3-3 --save
 pace zones add --source lab --lt1-hr 140 --lt2-hr 165 --lt2-pace 4:10
 pace zones accept <record-id> --only lt2
 pace zones push --dry-run

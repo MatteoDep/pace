@@ -150,6 +150,12 @@ If the result has `save_refused` or a non-empty `deferred` (a partial estimate),
 A field test is due per threshold: plan it with the user; `pace zones test-workout drift|time_trial|ramp` returns the workout DSL; put `data.workout` in a session (`pace plan add -`, or `pace plan set ID --workout -` with the DSL on stdin) and push it on yes.
 After the test run: `pace zones analyze <activity id> --test drift|time_trial|ramp --save`; a refused save comes back as `save_refused` (with `saved: null`), carrying the verdict and the next test to plan.
 For LT1 on this athlete, prefer the drift test (F1): DFA alpha1 did not fall with intensity on their ramp, so a ramp (F3) only when `pace zones show` does not mark alpha1 unreliable and the user wants it.
+Why alpha1 fails for them: their RR oscillates at the step frequency (|step rate - HR|), which pace drops as step interference (methods doc section 6).
+pace offers methods and data, the athlete decides the zones.
+For each method lay out its result with its reliability (confidence and flags such as `alpha1_unreliable`, `extrapolated`, GPS-only terrain), say which one you would trust and why, and let the athlete decide what to record and accept.
+A flagged value stays visible; say why it is flagged and do not hide it.
+When the athlete mentions a race or an all-out effort, offer `pace zones analyze <activity id> --test race --save` (add `--laps A-B` when the activity has warm-up or cool-down laps).
+It is an LT2 source: a saved `race_cs` or `race_tt` record becomes current only with `pace zones accept`; a single effort or `extrapolated` LT2 HR is low confidence, say so.
 Lab values: record them as reported with `pace zones add --source lab --date <date> --lt1-hr ... --lt2-hr ... --method <criterion>`, then state the new zones.
 A record becomes current only with `pace zones accept ID [--only lt1|lt2]` on the user's yes (a lab record is current on entry unless older).
 A lab record stays current for 6 months, then `expired`: suggest a retest and show newer estimates next to it without applying them.

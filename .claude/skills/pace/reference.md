@@ -92,7 +92,7 @@ Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (d
 | workout | `pace workout delete` | id | (G) Delete a saved workout. |
 | zones | `pace zones show` | none | What are the current LT1 and LT2, the zones, `in_sync` with the watch, and is anything `due`? |
 | zones | `pace zones estimate` | none | (L) What do my recent runs say about LT1 and LT2? `--save` stores the record. |
-| zones | `pace zones analyze` | id | (L) What did this field test (drift, time_trial, ramp) show? `--save` stores the record. |
+| zones | `pace zones analyze` | id | (L) What did this field test (drift, time_trial, ramp) or race effort (race, `--laps A-B`) show? `--save` stores the record. |
 | zones | `pace zones test-workout` | none | Which workout DSL runs this field test? |
 | zones | `pace zones add` | none | (L) Record a threshold record (lab values as reported). |
 | zones | `pace zones accept` | none | (L) Make a record current (all thresholds, or `--only lt1` or `lt2`). |

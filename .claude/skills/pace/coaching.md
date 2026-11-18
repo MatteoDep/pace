@@ -126,13 +126,14 @@ Evidence: moderate for CS from training data and for alpha1 at group level; weak
 - F1 drift test for LT1: 15 min warm-up building to the target, 60 min (at least 40) at constant pace on flat ground, no stops; drift 3.5-5 % means "at LT1" (LT1 HR = first-half HR), below 3.5 % retest 5 bpm higher, above 5 % retest 5 bpm lower; avoid heat, a fasted state and the day after a hard session; read as +/-5 bpm.
 - F2 30-minute solo time trial for LT2: LT2 pace from the whole 30 min, LT2 HR from the last 20 min; one validation study (SEE 8 bpm for HR); starting too fast flags the result.
 - F3 DFA alpha1 ramp for LT1: 8 steps of 4 min, each about 6 bpm higher; usable only when alpha1 falls with HR.
+- Race effort (`--test race`): an all-out 120-1200 s effort is a critical-speed point (a single effort of 600 s or more gives a range, D' 150-300 m, low confidence; shorter is point only); 1200-3600 s is read like the 30-minute time trial; over 3600 s is check only; LT2 HR comes from the HR-speed fit, is flagged `extrapolated` and is null above 1.1 x the top speed.
 Evidence: weak/expert opinion for F1; moderate for F2 pace, weak for F2 HR; moderate at group level and weak for an individual for F3.
 
 ### What was observed on this athlete
 
 On one 13-step ramp (2026-09-09, chest strap, artifacts 0.1 %), alpha1 did not fall with intensity: it was below 0.75 at the easiest steps and above 1.0 at 164-176 bpm, close to the step rate.
-Cardio-locomotor coupling (HR locking to cadence) is a likely but uncited explanation (weak).
-So for LT1 the drift methods are primary: H5 from history and the F1 drift test in the field; H4 and F3 count only when their gates pass, and after two "not monotonic" runs or ramps in a row pace marks alpha1 unreliable and skips it (`pace zones estimate --retry-h4` clears the mark).
+Cardio-locomotor coupling (HR locking to cadence) is a likely but uncited explanation (weak); pace now drops alpha1 windows whose RR power at the step frequency exceeds 0.25 (step interference).
+So for LT1 the drift methods are primary: H5 from history and the F1 drift test in the field; H4 and F3 count only when their gates pass, and after two "not monotonic" runs or ramps in a row pace marks alpha1 unreliable: the estimate that sets the mark still shows H4 flagged `alpha1_unreliable` and does not combine it into LT1, later estimates skip it (`pace zones estimate --retry-h4` clears the mark).
 Suggest F1 for LT1; suggest F3 only if `pace zones show` does not mark alpha1 unreliable and the user wants to try it.
 Evidence: weak/expert opinion (one athlete, one ramp).
 
