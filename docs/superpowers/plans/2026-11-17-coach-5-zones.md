@@ -78,7 +78,11 @@ Plan 5; depends on plans 1-3 (`pace.store`, `pace.plan`, `pace.sports`, `pace.lo
   RR alignment: `hrv` messages are interleaved after records; plain cumulative RR drifts behind elapsed time (up to 95 s over 3 h, missing beats); rule: start the beat clock at the elapsed `t` of the record preceding the first `hrv` message, add each RR, and when an `hrv` message is reached (before its beats are added) resync to the preceding record's `t` if the offset exceeds 3 s; the RR sanity span excludes pause gaps (44 resyncs in 3 h; 95% of offsets within 2.6 s; one large resync after a pause).
   Fixture: `tests/fixtures/fit_rr_small.json` (synthetic messages with a pause) reproduces the rule.
 - Step 5: `get_activity_details(id, maxchart=2 x elapsed)` returns every sample at 1 s spacing (2379 vs 1199 at maxchart 2000); timestamps are `directTimestamp` epoch ms; `directRunCadence` is strides/min (90 vs list row 179 steps/min), `directDoubleCadence` exists alongside.
-- Step 4 (zone write) waits for the user's yes; Task 5c is blocked on it, Tasks 1-5b are not.
+- Step 4 (zone write, user's yes 2026-11-18): `GET /biometric-service/heartRateZones` returns a list with one entry here, `sport: "DEFAULT"`, fields `trainingMethod` (`HR_RESERVE`), `restingHeartRateUsed`, `lactateThresholdHeartRateUsed` (null), `zone1Floor`..`zone5Floor`, `maxHeartRateUsed`, `restingHrAutoUpdateUsed` (false), `sport`, `changeState` (`UNCHANGED`), plus the owner's profile id.
+  Write: `PUT /biometric-service/heartRateZones` (connectapi, JSON body = the full list as read) returns 204 with no body.
+  The unchanged list changed nothing; the list with `zone1Floor` +1 and that entry's `changeState: "CHANGED"` read back with the new floor (and `changeState` back to `UNCHANGED`), with `trainingMethod` left as read.
+  Still open (user): the floor on the watch after a sync and on the next day; then revert.
+  Ruling: Task 5c writes the floors (and `maxHeartRateUsed` when HRmax is known) into every entry with `sport` `DEFAULT` or `RUNNING`, sets their `changeState` to `CHANGED`, keeps every other field and entry as read; refuses when no such entry exists.
 
 ### Task 1: Zone store, precedence, derivation, due rule
 
