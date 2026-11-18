@@ -31,6 +31,7 @@ from pace.rules import (
     STOP_SPEED_MPS,
     WARMUP_S,
     ascent_profile,
+    smooth_altitude,
 )
 from pace.zones import R
 
@@ -192,13 +193,15 @@ class _Block:
 
     def __init__(self, t0: int, dist: list, hr: list, alt: list, cad: list):
         self.t0, self.n = t0, len(dist)
-        self.dist, self.hr, self.alt, self.cad = dist, hr, alt, cad
+        self.dist, self.hr, self.cad = dist, hr, cad
+        # section 1: GPS altitude smoothed once per block; grade and ascent both read this series (None stays None)
+        self.alt = smooth_altitude(list(range(self.n)), alt)
         self.bad_alt = _prefix_bad(alt)
         self.bad_cad = _prefix_bad(cad)
         self.cad_sum = _prefix_sum(cad)
         self.hr_sum = _prefix_sum(hr)
         self.bad_hr = _prefix_bad(hr)
-        self.asc = ascent_profile(alt)   # section 1 ascent with hysteresis, cumulative per grid index
+        self.asc = ascent_profile(self.alt)   # section 1 ascent with hysteresis, cumulative per grid index
 
     def start_index(self, from_t: float) -> int:
         return max(0, math.ceil(from_t - self.t0))
@@ -475,6 +478,8 @@ def _mean_temp(fit_records: list[dict] | None, a: float, b: float) -> float | st
 
 
 def _ascent_per_km(blocks: list[_Block], a: float, b: float) -> float:
+    """Section 1 ascent per km within a..b on the blocks' smoothed altitudes. Pass blocks of the whole run, not
+    of the a..b rows only, so the smoothing is not truncated at a and b."""
     asc = dist = 0.0
     for blk in blocks:
         lo, hi = math.ceil(max(a, blk.t0)), math.floor(min(b, blk.t0 + blk.n - 1))
@@ -715,7 +720,7 @@ def drift(table: list[dict], *, laps: list[dict], treadmill: bool, fit_records: 
         reasons.append(f"stopped time above {F1_MAX_STOP_TOTAL_S} s")
     if stops and max(stops) > F1_MAX_STOP_S:
         reasons.append(f"a stop longer than {F1_MAX_STOP_S} s")
-    if not treadmill and _ascent_per_km(blocks, start, end) > MAX_ASCENT_M_PER_KM:
+    if not treadmill and _ascent_per_km(_blocks(table)[0], start, end) > MAX_ASCENT_M_PER_KM:   # whole-run smoothing
         reasons.append(ASCENT_REASON)
     mid = start + (end - start) / 2
     h1, h2 = _half_stats(blocks, start, mid), _half_stats(blocks, mid, end)
@@ -816,7 +821,7 @@ def time_trial(table: list[dict], *, laps: list[dict]) -> dict:
         reasons.append(f"trial shorter than {F2_MIN_S} s")
     if stops and max(stops) > STOP_SLOW_S:
         reasons.append(f"a stop longer than {STOP_SLOW_S} s")
-    if blocks and _ascent_per_km(blocks, a, b) > MAX_ASCENT_M_PER_KM:
+    if blocks and _ascent_per_km(_blocks(table)[0], a, b) > MAX_ASCENT_M_PER_KM:   # whole-run smoothing
         reasons.append(ASCENT_REASON)
     dists = [r["dist"] for r in rows if isinstance(r.get("dist"), (int, float))]
     if not blocks or len(dists) < 2:
@@ -1405,7 +1410,7 @@ def select_history(rows_8w: list[dict], *, exclude: set[int] = frozenset()) -> d
 
 
 def select_drift(rows_12w: list[dict], *, ref_hr: int | None, exclude: set[int] = frozenset()) -> dict:
-    """14.7 phase 2: up to 6 H5 drift picks among 60-120 min flat runs (previous-day rule of section 7).
+    """14.7 phase 2: up to 6 H5 drift picks among 60-150 min flat runs (previous-day rule of section 7).
 
     With a ref: alternate nearest averageHR below ref, then at or above, continuing on the other side when one
     runs out; without: nearest-rank percentiles of averageHR. `exclude`: ids to leave out (e.g. wrist runs).

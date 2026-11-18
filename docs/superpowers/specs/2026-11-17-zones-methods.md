@@ -39,6 +39,12 @@ Window clock: windows, segments and halves are measured in elapsed time on the s
 Speed from distance: window speed is (distance at window end minus distance at window start) / window seconds; never average the instantaneous GPS speed (pace heuristic, GPS speed samples are noisy).
 Warm-up: the first 600 s of every run are excluded from the history methods; field tests use the lap the user pressed or, without it, the protocol warm-up time.
 Grade: a window is "flat" if abs(elevation end minus elevation start) / window distance <= 0.02 and total ascent inside it <= 10 m per km (pace heuristic; Forerunner 55 elevation is GPS-based and noisy, so only coarse limits make sense).
+Altitude smoothing: the Forerunner 55 altitude is GPS-derived; on the athlete's flat city runs it wanders 10-25 m per km and 1 s samples jitter by metres.
+Observed 2026-11-18 on the athlete's runs: on raw altitude, 5-min windows of flat runs read 13-18 m/km of climb and 80-93% of them failed the 10 m/km limit; with 61 s smoothing 1-11% failed, while hilly runs still failed 35-100%.
+Rule: before any grade or ascent check, altitude is replaced by its centered moving mean over 61 s (`ALT_SMOOTH_S`; the samples with |t - t_i| <= 30.5 s, missing samples skipped and kept missing, truncated at the ends of the series) (pace heuristic).
+The mean is taken once over a whole series (each stop-free block of the 1 s grid, or a run's beats by beat time for section 6), never per window, so window edges do not truncate it; ascent then uses the 2 m hysteresis of 14.9 on the smoothed series.
+Smoothing removes jitter, not slow wander: GPS wander steeper than the limits still fails, by design.
+Bridges and underpasses (rises of 4-8 m) are below this noise and are not detected (user decision 2026-11-18: accepted).
 Walking: windows with mean cadence below 140 steps/min are excluded (pace heuristic).
 Cadence is always in steps/min: running FIT `cadence` is in strides/min, so steps/min = 2 x (cadence + fractional_cadence), with fractional_cadence as decoded (FIT scale 1/128 already applied); the unit of the Garmin details `directRunCadence` is pinned in plan 5 Task 0.
 HR artefacts: HR samples outside 30..230 are dropped; the first 300 s of a run are ignored for max HR because dry-strap spikes are common there (pace heuristic).
@@ -334,6 +340,7 @@ reject if: total ascent of the segment > 10 m per km;
 halves H1, H2 of equal time; EF_k = speed_k / HR_k; drift % = (EF_1 / EF_2 - 1) * 100   (as F1)
 h = R(mean HR of H1); label = "below" if drift <= 5.0 else "above"
 ```
+Which runs are examined: 14.7 phase 2 picks runs of 60-150 min (`H5_RUN_S`) whose list-row elevation gain is <= 15 m per km (`DRIFT_MAX_GAIN`); the pre-filter is laxer than the 10 m/km segment limit because Garmin's whole-run `elevationGain` carries the same GPS noise as the samples, and the segment is then checked on smoothed altitudes (user decision 2026-11-18).
 Temperature: the Forerunner 55 records none, so in practice heat is not filtered; every evidence row reports `temperature` in C when the FIT data carries it and `"unknown"` otherwise, and the coach is told that heat is unfiltered for "unknown" rows.
 The method has two steps, tested separately: segment (one run's samples -> an evidence row `{h, drift, label, segment bounds, length, temperature}` or a rejection with its reason) and bounds (the evidence rows -> bounds, estimate, confidence).
 A "below" run says LT1 HR >= h; an "above" run says LT1 HR <= h.
@@ -713,7 +720,7 @@ Selection runs in two phases, because the drift picks need a reference HR that m
 Phase 1, history picks (8-week candidates):
 - up to 6 "effort" runs for H1, ranked by list rows only: races (`eventType` race) first, then list-row `maxHR` (highest first), then `averageSpeed` (fastest first); RPE is not used for ranking (it is only in `get_activity`);
 - up to 6 "steady" runs for H2, 30-90 min long, among the candidates not picked as effort runs: for p in 10, 30, 50, 70, 90, 100, the target is the nearest-rank percentile of `averageSpeed` (the value at rank ceil(p / 100 x n) in ascending order of the n candidates), and the pick is the not yet picked candidate whose `averageSpeed` is nearest the target; effort runs also contribute steady segments if any pass the filters.
-Phase 2, drift picks for H5 (12-week list rows: running, not treadmill, not trail, 60-120 min, average HR present, elevation gain <= 10 m per km, the previous-day rule of section 7):
+Phase 2, drift picks for H5 (12-week list rows: running, not treadmill, not trail, 60-150 min, average HR present, elevation gain <= 15 m per km, the previous-day rule of section 7; window and gain limit are a user decision 2026-11-18, section 7):
 - ref = the HR of the current LT1 record if one exists, else this estimate's H3 LT1 HR, else none;
 - with a ref, up to 6 picks alternating, starting below: the not yet picked run with the nearest `averageHR` below ref, then the nearest at or above ref; when one side runs out, continue on the other side;
 - without a ref, the nearest-rank percentiles of `averageHR` as for the steady picks.
@@ -767,6 +774,9 @@ Worked example (unit test, alpha1 injected per step, artifact share 1% and caden
 - `derive` reports `floor_errors`; `zones push` (Task 5c) refuses while it is non-empty.
 - Observed on the athlete's data after these fixes (read-only run): H2 fits 33 segments from 11 runs (HR = 22.1 + 37.39 v, SEE 4.0 bpm); H1 is rejected (best 3/7/12-min windows 4.15/4.00/3.97 m/s are not maximal); H5 finds only 3 candidate runs in the 60-120 min list window and none with a 45-min steady segment; H4 finds no run passing the gate.
   Pending user decision: whether to relax the H5 run window or the flat limit; until then LT1 needs F1 and LT2 needs F2.
+- Decided 2026-11-18 (user decision): the H5 run window becomes 60-150 min and the drift list-row pre-filter 15 m per km (sections 7 and 14.7); the flat limits stay, but altitude is smoothed over 61 s before grade and ascent (section 1).
+  Observed effect on the athlete's runs: on raw altitude 80-93% of the 5-min windows of flat runs failed the 10 m/km limit (13-18 m/km of apparent climb); with 61 s smoothing 1-11% failed, and hilly runs still failed 35-100%.
+  The hysteresis ruling above was tuned on sub-metre jitter (sigma 0.1-0.3 m); the GPS jitter of metres seen on these runs needs the smoothing as well.
 
 ## 15. Source log
 

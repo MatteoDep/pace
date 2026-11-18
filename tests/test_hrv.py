@@ -297,6 +297,27 @@ def test_windows_flat_run_with_altitude_noise_is_flat(noise: str) -> None:
     assert len(hrv.windows(beats)["windows"]) == 1
 
 
+def test_beats_flat_uses_smoothing(monkeypatch) -> None:
+    # methods doc section 1: altitude is smoothed once per run by beat time (beats ~0.4 s apart), then checked
+    rng = random.Random(13)
+    beats = _beats(lambda t: 0.4)
+    per_second: dict[int, float] = {}
+    for b in beats:                                   # GPS altitude: one jittered value per second (sd 1.5 m)
+        b["alt"] = per_second.setdefault(math.floor(b["t_s"]), 10.0 + rng.gauss(0, 1.5))
+    inside = [b for b in beats if 600 <= b["t_s"] < 720]
+    assert not hrv._flat([b["alt"] for b in inside], 3.0 * 120)        # raw: the jitter reads as climbing
+    calls = []
+    real = hrv.smooth_altitude
+
+    def spy(times, alts, **kw):
+        calls.append(times)
+        return real(times, alts, **kw)
+
+    monkeypatch.setattr(hrv, "smooth_altitude", spy)
+    assert len(_only(hrv.windows(beats))) == 1
+    assert calls == [[b["t_s"] for b in beats]]                       # once, on beat times
+
+
 def test_windows_gentle_climb_with_noise_is_not_flat() -> None:
     # methods doc section 1: grade under MAX_GRADE but ascent 1.5 x MAX_ASCENT_M_PER_KM is still a climb
     rng = random.Random(12)

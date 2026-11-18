@@ -11,8 +11,9 @@ STOP_SPEED_MPS = 1.0         # a stretch below this speed ...
 STOP_SLOW_S = 10             # ... lasting more than this is a stop; F2 also rejects any stop above it (section 9)
 
 # --- section 1: flat windows (Forerunner 55 elevation is GPS-based and noisy) ---
+ALT_SMOOTH_S = 61            # centered moving mean of altitude before any grade or ascent check (pace heuristic)
 MAX_GRADE = 0.02             # abs(elevation end - start) / distance
-MAX_ASCENT_M_PER_KM = 10.0   # total ascent, counted by ascent_profile
+MAX_ASCENT_M_PER_KM = 10.0   # total ascent, counted by ascent_profile on smoothed altitudes
 ASCENT_HYSTERESIS_M = 2.0    # a rise counts only once it exceeds this since the last turning point (pace heuristic)
 
 # --- section 1: walking, warm-up, HR artefacts and max HR ---
@@ -33,15 +34,52 @@ HARD_EFFORT_TE = 4.0         # list-row aerobicTrainingEffect at or above this
 # it). Raising H5_MIN_S or H5_START_S without raising H5_RUN_S[0] spends calls on runs that can never qualify.
 H5_START_S = 900             # segments start at 900 s (15 min warm-up), 60 s steps
 H5_MIN_S = 2700              # shortest accepted segment
-H5_RUN_S = (3600, 7200)      # drift picks: list-row duration 60-120 min
+H5_RUN_S = (3600, 9000)      # drift picks: list-row duration 60-150 min (user decision 2026-11-18)
 
 # --- 14.7 list-row pre-filters (elevation gain per km of the whole run) ---
 SEL_MAX_GAIN = 15.0          # history picks: laxer than the window limit, a hilly run can hold flat windows
-DRIFT_MAX_GAIN = MAX_ASCENT_M_PER_KM   # drift picks: the section 1 limit, as H5 rejects a segment above it
+# drift picks: Garmin's whole-run elevationGain carries the same GPS noise as the samples (section 1), so this is
+# laxer than MAX_ASCENT_M_PER_KM; H5 then checks the segment on smoothed altitudes (user decision 2026-11-18)
+DRIFT_MAX_GAIN = 15.0
+
+
+def smooth_altitude(times: list[float], alts: list[float | None], *,
+                    width_s: float = ALT_SMOOTH_S) -> list[float | None]:
+    """Centered moving mean of altitude over the samples with |t - t_i| <= width_s / 2 (methods doc section 1).
+
+    `times` must be non-decreasing and as long as `alts`. None samples are skipped in the means and stay None in
+    the output. The window is a time span, not a sample count, and is truncated at the ends of the series.
+    O(n): two pointers and a running sum. Smooth a whole series once, never a window of it (that would truncate
+    the mean at the window edges).
+    """
+    if len(times) != len(alts):
+        raise ValueError("times and alts differ in length")
+    half = width_s / 2
+    out: list[float | None] = []
+    lo = hi = 0                      # the window is samples lo..hi-1
+    total, count = 0.0, 0
+    for t, a in zip(times, alts):
+        while hi < len(times) and times[hi] - t <= half:
+            if alts[hi] is not None:
+                total += alts[hi]
+                count += 1
+            hi += 1
+        while t - times[lo] > half:
+            if alts[lo] is not None:
+                total -= alts[lo]
+                count -= 1
+            lo += 1
+        if not count:
+            total = 0.0              # drop the rounding residue of the running sum
+        out.append(None if a is None else total / count)
+    return out
 
 
 def ascent_profile(alts: list[float | None], *, threshold_m: float = ASCENT_HYSTERESIS_M) -> list[float]:
     """Cumulative ascent (m) at each sample, with hysteresis against altitude noise.
+
+    Callers pass altitudes already smoothed with `smooth_altitude` (methods doc section 1); this stays pure
+    hysteresis.
 
     A climb counts only once the rise since the last low turning point exceeds `threshold_m`; it then counts in
     full (from that low point), and every further rise counts until a drop of more than `threshold_m` ends it.

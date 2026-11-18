@@ -408,6 +408,53 @@ def test_noisy_climb_rejects_f1_and_f2():
     assert f2["status"] == "rejected" and th.ASCENT_REASON in f2["reasons"]
 
 
+def gps_flat(tbl, seed=5, hill=None):
+    """GPS-like altitude on flat ground: a slow sine (3 m amplitude, 2 km wavelength) plus iid 1 s jitter (sd 1.5 m);
+    `hill` = (start_m, rise_m, length_m) adds a real climb."""
+    rng = random.Random(seed)
+    for r in tbl:
+        d = r["dist"]
+        r["alt"] = 100.0 + 3.0 * math.sin(2 * math.pi * d / 2000) + rng.gauss(0, 1.5)
+        if hill:
+            start, rise, length = hill
+            r["alt"] += rise * min(max((d - start) / length, 0.0), 1.0)
+    return tbl
+
+
+def _windows_300(blk, step=60):
+    return [(i, blk.window_ok(i, i + 300)) for i in range(0, blk.n - 300, step)]
+
+
+def test_noisy_flat_block_passes(monkeypatch):
+    # methods doc section 1: GPS jitter of metres per second on a flat run is smoothed away before grade and ascent
+    tbl = gps_flat(table(3900, lambda t: 3.0))
+    with monkeypatch.context() as m:
+        m.setattr(th, "smooth_altitude", lambda times, alts, **kw: list(alts))
+        (raw,), _ = th._blocks(tbl)
+        assert sum(not ok for _, ok in _windows_300(raw)) > 0.5 * len(_windows_300(raw))   # the noise bites
+        assert "rejected" in th.drift_segment(run(31, tbl), fit_records=None)
+    (blk,), _ = th._blocks(tbl)
+    oks = _windows_300(blk, step=1)
+    assert sum(ok for _, ok in oks) >= 0.95 * len(oks)
+    ev = th.drift_segment(run(31, tbl), fit_records=None)
+    assert "rejected" not in ev and ev["length_s"] >= rules.H5_MIN_S
+    # F1 and F2 terrain checks read the same smoothed series
+    f1 = th.drift(gps_flat(f1_table(3.20, 140, 3.18, 146)), laps=F1_LAPS, treadmill=False)
+    assert f1["status"] == "ok"
+    f2 = th.time_trial(gps_flat(tt_table()), laps=TT_LAPS)
+    assert th.ASCENT_REASON not in f2.get("reasons", [])
+
+
+def test_real_hill_fails():
+    # methods doc section 1: smoothing removes jitter, not a real climb (30 m over 1 km at 3 m/s: t 2000..2333)
+    tbl = gps_flat(table(3900, lambda t: 3.0), hill=(6000.0, 30.0, 1000.0))
+    (blk,), _ = th._blocks(tbl)
+    on_hill = [ok for i, ok in _windows_300(blk, step=1) if 2000 <= blk.t0 + i and blk.t0 + i + 300 <= 2333]
+    assert on_hill and not any(on_hill)
+    out = th.drift_segment(run(32, tbl), fit_records=None)
+    assert "rejected" in out
+
+
 def test_h5_segment_wrist():
     r = run(8, steady_table(3000), src="wrist")
     assert th.drift_segment(r, fit_records=None) == {"id": 8, "rejected": th.WRIST_REASON}

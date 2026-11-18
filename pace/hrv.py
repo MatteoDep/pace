@@ -8,7 +8,7 @@ import bisect
 import math
 from typing import Any
 
-from pace.rules import GAP_RR_S, MAX_ASCENT_M_PER_KM, MAX_GRADE, MIN_CADENCE, WARMUP_S, ascent_m
+from pace.rules import GAP_RR_S, MAX_ASCENT_M_PER_KM, MAX_GRADE, MIN_CADENCE, WARMUP_S, ascent_m, smooth_altitude
 
 MEDIAN_HALF = 10           # 21-beat local median
 BAND = 0.20                # valid if within 20% of the local median
@@ -182,6 +182,7 @@ def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5
     if not aligned:
         return result
     times = [b["t_s"] for b in aligned]
+    alts = smooth_altitude(times, [b["alt"] for b in aligned])   # section 1: once per run, by beat time
     ctimes, cvals, flags = corrected_beats(aligned)
     flag_cum, bad_cum = [0], [0]
     for b, f in zip(aligned, flags, strict=True):
@@ -199,14 +200,14 @@ def windows(aligned: list[dict[str, Any]], *, size_s: int = 120, step_s: int = 5
     t0 = math.ceil(WINDOW_FROM_S / step_s) * step_s
     while t0 + size_s <= WINDOW_TO_S and times[-1] >= t0 + size_s:
         t1 = t0 + size_s
-        w = _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, result)
+        w = _window(aligned, alts, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, result)
         if w is not None:
             result["windows"].append(w)
         t0 += step_s
     return result
 
 
-def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, result) -> dict[str, Any] | None:
+def _window(aligned, alts, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, result) -> dict[str, Any] | None:
     lo, hi = bisect.bisect_left(times, t0), bisect.bisect_left(times, t1)
     raw = hi - lo
     if raw == 0 or bad_cum[hi] - bad_cum[lo] > 0:
@@ -218,7 +219,7 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
     if cadence < MIN_CADENCE:
         return None
     v = speed(t0, t1)
-    if v is None or v <= 0 or not _flat(aligned[lo:hi], v * (t1 - t0)):
+    if v is None or v <= 0 or not _flat(alts[lo:hi], v * (t1 - t0)):
         return None
     for s in range(int((t1 - t0) // SUB_WINDOW_S)):
         sv = speed(t0 + s * SUB_WINDOW_S, t0 + (s + 1) * SUB_WINDOW_S)
@@ -250,10 +251,10 @@ def _window(aligned, t0, t1, times, flag_cum, bad_cum, ctimes, cvals, speed, res
             "t_mid": (t0 + t1) / 2}
 
 
-def _flat(beats: list[dict[str, Any]], dist_m: float) -> bool:
+def _flat(alts: list[float | None], dist_m: float) -> bool:
     """Section 1: abs(elevation change) / distance <= MAX_GRADE and total ascent (with hysteresis,
-    `rules.ascent_m`) <= MAX_ASCENT_M_PER_KM."""
-    alts = [b["alt"] for b in beats]
+    `rules.ascent_m`) <= MAX_ASCENT_M_PER_KM. `alts` is the window's slice of the run's smoothed altitudes
+    (`rules.smooth_altitude`, by beat time); a None sample fails the window."""
     if any(a is None for a in alts):
         return False
     return abs(alts[-1] - alts[0]) / dist_m <= MAX_GRADE and ascent_m(alts) <= MAX_ASCENT_M_PER_KM * dist_m / 1000
