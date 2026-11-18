@@ -446,6 +446,7 @@ This section is built as coach plan 5, after plan 2.
   Any other `internal` error on a FIT download defers that read and marks nothing.
 - A wrist-HR run analyzed with `zones analyze --save` is saved with confidence `low`.
 - `zones push` is not part of this step (it waits for the live verification of the Garmin write).
+- `zones push` (plan 5 Task 5c, after the live check of the write) writes the five floors, and max HR when known, into every `DEFAULT` and `RUNNING` entry of the watch zones and keeps the rest as read; its body is built on a live read, so `--dry-run` makes that one read (the only dry-run that touches the network).
 
 ## Implementation notes (post-hoc)
 

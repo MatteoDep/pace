@@ -1,4 +1,4 @@
-"""`pace zones` commands: show, estimate, analyze, test-workout, add, accept, remove (Garmin faked, never real)."""
+"""`pace zones` commands: show, estimate, analyze, test-workout, add, accept, remove, push (Garmin faked, never real)."""
 
 import copy
 import json
@@ -68,7 +68,7 @@ def garmin(monkeypatch):
             a, b = args[:2]
             return [r for r in state["rows"] if a <= r["startTimeLocal"][:10] <= b]
         if method == "connectapi" and args[0] == ZONES_PATH:
-            return state["zones"]
+            return None if kwargs.get("method") == "PUT" else state["zones"]   # the PUT answers 204, no body
         if method == "get_activity":
             return state["activity"]
         if method == "get_activity_details":
@@ -77,15 +77,16 @@ def garmin(monkeypatch):
             return state["splits"]
         return []
 
-    async def safe_call(method, *args, **kwargs):
-        state["calls"].append((method, args, kwargs))
-        p = payload(method, args, kwargs)
+    async def safe_call(method_name, *args, **kwargs):    # `method` is a connectapi kwarg (PUT)
+        state["calls"].append((method_name, args, kwargs))
+        p = payload(method_name, args, kwargs)
         if isinstance(p, ApiError):
             return False, None, p
         return True, p, None
 
     monkeypatch.setattr("pace.commands._helpers.safe_call", safe_call)
     monkeypatch.setattr("pace.api.safe_call", safe_call)
+    monkeypatch.setattr("pace.writes.safe_call", safe_call)
     return state
 
 
@@ -639,3 +640,108 @@ def test_analyze_arguments(garmin) -> None:
     garmin["errors"]["get_activity"] = ApiError("not_found", "gone", 404)
     drift_garmin(garmin)
     fails("analyze", "77", "--test", "drift", code="not_found")
+
+
+# --- push ---
+
+# Synthetic ids only (never a real Garmin profile id).
+WATCH = {"trainingMethod": "HR_RESERVE", "restingHeartRateUsed": 50, "lactateThresholdHeartRateUsed": None,
+         "zone1Floor": 100, "zone2Floor": 120, "zone3Floor": 135, "zone4Floor": 150, "zone5Floor": 170,
+         "maxHeartRateUsed": 185, "restingHrAutoUpdateUsed": False, "sport": "DEFAULT", "changeState": "UNCHANGED",
+         "userProfilePK": 12345}
+CYCLING = {**WATCH, "sport": "CYCLING", "zone1Floor": 90}
+PUSHED = {"zone1Floor": 112, "zone2Floor": 126, "zone3Floor": 140, "zone4Floor": 165, "zone5Floor": 178}
+
+
+def puts(g):
+    return [c for c in g["calls"] if c[0] == "connectapi" and c[2].get("method") == "PUT"]
+
+
+def gets(g):
+    return [c for c in g["calls"] if c[0] == "connectapi" and c[2].get("method") != "PUT"]
+
+
+def test_push_dry_run_reads_live_zones_once_and_writes_nothing(garmin) -> None:
+    # Review Focus 6: zones changed in the Garmin app since the last (cached) read show up as `before`
+    lab("--max-hr", "190")
+    garmin["zones"] = [copy.deepcopy(WATCH), copy.deepcopy(CYCLING)]
+    run("show")                                              # caches the watch zones
+    garmin["zones"] = [{**WATCH, "zone2Floor": 121}, copy.deepcopy(CYCLING)]
+    garmin["calls"].clear()
+    out = run("push", "--dry-run")
+    assert out["dry_run"] is True and set(out["payload"]) == {"before", "after", "body"}
+    after = {**WATCH, **PUSHED, "maxHeartRateUsed": 190, "changeState": "CHANGED"}
+    assert out["payload"]["before"] == [{**WATCH, "zone2Floor": 121}]
+    assert out["payload"]["after"] == [after]
+    assert out["payload"]["body"] == [after, CYCLING]
+    assert len(gets(garmin)) == 1 and puts(garmin) == [] and len(garmin["calls"]) == 1
+
+
+def test_push_sends_the_body_and_invalidates_the_zones_read(garmin) -> None:
+    lab("--max-hr", "190")
+    running = {**WATCH, "sport": "RUNNING", "zone5Floor": 160}
+    garmin["zones"] = [copy.deepcopy(WATCH), copy.deepcopy(CYCLING), running]
+    run("show")
+    garmin["calls"].clear()
+    out = run("push")
+    assert out == {"action": "update", "resource": "hr_zones", "id": None,
+                   "echo": {"sports": ["DEFAULT", "RUNNING"], "floors": PUSHED, "max_hr": 190}}
+    [put] = puts(garmin)
+    assert put[1] == (ZONES_PATH,)
+    assert put[2]["json"] == [{**WATCH, **PUSHED, "maxHeartRateUsed": 190, "changeState": "CHANGED"}, CYCLING,
+                              {**running, **PUSHED, "maxHeartRateUsed": 190, "changeState": "CHANGED"}]
+    assert len(gets(garmin)) == 1                            # the body comes from a live read, not the cache
+    garmin["calls"].clear()
+    run("show")
+    assert len(gets(garmin)) == 1                            # the cached watch zones were dropped
+
+
+def test_push_refused_without_a_complete_pair_or_with_invalid_floors(garmin) -> None:
+    garmin["zones"] = [copy.deepcopy(WATCH)]
+    err = fails("push")
+    assert "LT1" in err["message"] and "zones show" in err["hint"]
+    ze_record(date_=day(1), lt1=(140, 330), lt2=None)
+    with zones.transaction() as data:
+        data["current"]["lt1"] = 1
+    fails("push", "--dry-run")
+    assert garmin["calls"] == []
+    # Review Focus 5: invalid floors (zone5Floor at HRmax) are never pushed
+    lab()
+    with zones.transaction() as data:
+        data["hr_max"] = {"bpm": 166, "activity": None, "date": day(1)}
+    err = fails("push")
+    assert "zone5Floor 166 is not below max HR 166" in err["message"]
+    assert garmin["calls"] == []
+
+
+def test_push_without_hr_max_keeps_garmins_max_and_checks_zone5_against_it(garmin) -> None:
+    lab()                                                    # no max HR anywhere: zone5Floor 165 + R(12.5) = 178
+    garmin["zones"] = [copy.deepcopy(WATCH)]
+    out = run("push", "--dry-run")
+    assert out["payload"]["after"] == [{**WATCH, **PUSHED, "changeState": "CHANGED"}]   # maxHeartRateUsed 185 kept
+    out = run("push")
+    assert out["echo"] == {"sports": ["DEFAULT"], "floors": PUSHED, "max_hr": None}
+    assert puts(garmin)[0][2]["json"][0]["maxHeartRateUsed"] == 185
+    garmin["calls"].clear()
+    garmin["zones"] = [{**WATCH, "maxHeartRateUsed": 178}]
+    err = fails("push")
+    assert "zone5Floor 178" in err["message"] and "178" in err["message"] and "--max-hr" in err["hint"]
+    garmin["zones"] = [{**WATCH, "maxHeartRateUsed": None}]
+    fails("push")
+    assert puts(garmin) == []
+
+
+def test_push_refused_without_a_default_or_running_entry(garmin) -> None:
+    lab("--max-hr", "190")
+    garmin["zones"] = [copy.deepcopy(CYCLING)]
+    err = fails("push", code="endpoint_unavailable")
+    assert "DEFAULT" in err["message"] and "RUNNING" in err["message"]
+    garmin["zones"] = {"unexpected": True}
+    fails("push", code="endpoint_unavailable")
+    assert puts(garmin) == []
+
+
+def test_push_read_errors_propagate(garmin) -> None:
+    lab("--max-hr", "190")
+    garmin["errors"]["connectapi"] = ApiError("auth_required", "no tokens", 401)
+    fails("push", code="auth_required")

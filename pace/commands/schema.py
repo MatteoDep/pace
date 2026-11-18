@@ -53,9 +53,9 @@ RANGE_FLAGS = ["--from", "--to", "--days"]
 
 #: The write safety contract, shared by every mutating command.
 WRITES: dict[str, Any] = {
-    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body",
+    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body; exception: zones push --dry-run makes one live read of the watch zones, payload {before, after, body}",
     "result": {"action": "create | delete | update | link | unlink",
-               "resource": "workout | weight | hydration | bp | activity_gear | activity_effort",
+               "resource": "workout | weight | hydration | bp | activity_gear | activity_effort | hr_zones",
                "id": "Garmin-assigned id when the response carries one, else null",
                "echo": "the values you sent, for confirmation",
                "batch": "plan push/unpush return {results, done, failed}: results[] = {id, ok, action "
@@ -196,6 +196,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "zones add", "help": "Add a threshold record (lab, field_test or estimate); paces are m:ss per km. A lab record becomes current for each threshold it has unless that threshold's current record is newer. Refused when LT1 HR is not below LT2 HR.", "keyed": "none", "args": [], "flags": ["--source", "--date", "--lt1-hr", "--lt1-pace", "--lt2-hr", "--lt2-pace", "--max-hr", "--rest-hr", "--method", "--confidence", "--activity", "--notes"], "required_flags": ["--source"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "zones accept", "help": "Make a record current for every threshold it has, or only --only lt1|lt2; refused when the resulting LT1 HR is not below LT2 HR.", "keyed": "none", "args": ["ID"], "flags": ["--only"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "zones remove", "help": "Delete a record; refused while it is current for a threshold unless --force (then that threshold has no current record).", "keyed": "none", "args": ["ID"], "flags": ["--force"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones push", "help": "Write the current zones to the watch: the five floors (rule lt-5z-v1), and max HR when pace knows it (else Garmin's is kept and zone5Floor must be below it), into every DEFAULT and RUNNING entry of Garmin's HR zones; other entries and fields are kept. Built from one live read of the watch zones (never the cache), then one write; drops the cached watch zones. Refused (bad_args) without a current LT1 and LT2 with HR or with invalid floors; endpoint_unavailable without a DEFAULT or RUNNING entry. --dry-run makes the read, shows {before, after, body} and writes nothing.", "keyed": "none", "args": [], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
 ]
 
 
@@ -242,7 +243,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin.",
                    "load": "Weekly and daily training load.",
                    "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
-                   "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file)."},
+                   "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file); push to the watch."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,

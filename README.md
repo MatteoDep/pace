@@ -54,6 +54,7 @@ pace zones estimate --max-calls 40
 pace zones analyze <activity-id> --test drift
 pace zones add --source lab --lt1-hr 140 --lt2-hr 165 --lt2-pace 4:10
 pace zones accept <record-id> --only lt2
+pace zones push --dry-run
 pace load --weeks 8 --weeks-ahead 4
 pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
@@ -73,7 +74,7 @@ To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 A cold `pace zones estimate` takes up to about 4 minutes (the 40-call cap at 10 calls a minute); use a 10-minute shell timeout.
 `pace cache clear` does not clear `$PACE_HOME/fit/` (derived FIT data for the zones methods).
-The diary, the plan and the zones records are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data; the confirmation rule covers Garmin writes only (`zones` has no Garmin write yet), and the coaching skill decides when to ask about local writes.
+The diary, the plan and the zones records are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data; the confirmation rule covers Garmin writes only (`zones push` is the one zones command that writes to Garmin), and the coaching skill decides when to ask about local writes.
 
 `pace chart` writes PNG charts (1200 x 675 px) to `$PACE_HOME/charts/` unless `--out` names a `.png` path; the envelope returns the path.
 Output contract: `docs/CONTRACT.md`.

@@ -112,7 +112,7 @@ When a chart answers better than a table (trends, load, a run's profile), render
 ## Writes
 
 Garmin writes (`"write": true` in `pace schema`) need an explicit yes after the user has seen the planned write (as a table, or the `--dry-run` payload summarized):
-`pace workout push`, `pace workout schedule`, `pace workout delete`, `pace plan push`, `pace plan unpush`, `pace log weight add`, `pace log weight delete`, `pace log hydration`, `pace log bp add`, `pace log bp delete`, `pace gear link`, `pace gear unlink`, `pace activity effort`, and `pace zones push` once available.
+`pace workout push`, `pace workout schedule`, `pace workout delete`, `pace plan push`, `pace plan unpush`, `pace log weight add`, `pace log weight delete`, `pace log hydration`, `pace log bp add`, `pace log bp delete`, `pace gear link`, `pace gear unlink`, `pace activity effort` and `pace zones push`.
 Two exceptions: the user's own RPE/feel statement is the yes for that one `pace activity effort ID --rpe N --feel LABEL` (feel: very-weak, weak, normal, strong, very-strong), and a weight number the user gives is the yes for that one `pace log weight add`; echo what was written.
 Plan changes are proposed and applied on the user's yes: `pace plan new`, `pace plan meta`, `pace plan add`, `pace plan set`, `pace plan remove`, `pace plan block add`, `pace plan block set`, `pace plan block remove`.
 `pace zones accept` also needs the user's yes.
@@ -153,7 +153,8 @@ For LT1 on this athlete, prefer the drift test (F1): DFA alpha1 did not fall wit
 Lab values: record them as reported with `pace zones add --source lab --date <date> --lt1-hr ... --lt2-hr ... --method <criterion>`, then state the new zones.
 A record becomes current only with `pace zones accept ID [--only lt1|lt2]` on the user's yes (a lab record is current on entry unless older).
 A lab record stays current for 6 months, then `expired`: suggest a retest and show newer estimates next to it without applying them.
-Once available, `pace zones push --dry-run` shows the watch zones to write; `pace zones push` on yes.
+To put the zones on the watch: `pace zones push --dry-run` reads the watch zones live and shows `before` (the watch now), `after` and the body; show the change and run `pace zones push` on yes.
+It is refused (`bad_args`) without a current LT1 and LT2 with HR, or when the floors are invalid; after it, `pace zones show` reports `in_sync: true`.
 Intensity rule: when `in_sync` is not true and both LT1 and LT2 have a current record, write workout DSL HR targets as bpm ranges from the current zones, not `z1..z5`.
 
 ## Coaching

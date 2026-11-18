@@ -134,18 +134,18 @@ Documented in `pace schema` and the skill; never repeated per response.
 
 ### Writes
 
-Thirteen commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`, `plan push`, `plan unpush`.
+Fourteen commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`, `plan push`, `plan unpush`, `zones push`.
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
-`--dry-run` makes no network call.
+`--dry-run` makes no network call, with one exception: `zones push --dry-run` makes one live read of the watch zones (never the cache), because the body is built on it; it writes nothing.
 It returns `{"dry_run": true, "payload": ...}`: the exact call pace will make, so a caller can inspect precisely what would be sent before committing to it.
-The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands and `gear link`/`gear unlink` show `{"method": ..., ...arguments}` for the garminconnect call; `activity effort` shows `{"path": ..., "json": ...}` like `workout schedule`.
+The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands and `gear link`/`gear unlink` show `{"method": ..., ...arguments}` for the garminconnect call; `activity effort` shows `{"path": ..., "json": ...}` like `workout schedule`; `zones push` shows `{"before", "after", "body"}` (see Zones below).
 
 `--date D` on `log weight add` and `log bp add` timestamps the entry at 12:00 local time of D, not midnight, so a day's entry cannot land in the neighbouring day once Garmin converts it to GMT.
 `log hydration` and the two deletes take a plain date (`cdate`) instead.
 
-Without `--dry-run`, a successful write returns `{"action": "create"|"delete"|"update"|"link"|"unlink", "resource": "workout"|"weight"|"hydration"|"bp"|"activity_gear"|"activity_effort", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
-`gear link` and `gear unlink` return `link`/`unlink` on `activity_gear`; `activity effort` returns `update` on `activity_effort`; all three have `id: null`.
+Without `--dry-run`, a successful write returns `{"action": "create"|"delete"|"update"|"link"|"unlink", "resource": "workout"|"weight"|"hydration"|"bp"|"activity_gear"|"activity_effort"|"hr_zones", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
+`gear link` and `gear unlink` return `link`/`unlink` on `activity_gear`; `activity effort` returns `update` on `activity_effort`; `zones push` returns `update` on `hr_zones`; all four have `id: null`.
 A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
 `plan push` and `plan unpush` are batches with their own result shape (see Plan below).
 
@@ -486,11 +486,10 @@ There is no `--fields`, `--bucket` or `--raw`; the charts read the same rows.
 ## Zones
 
 `pace zones` keeps the athlete's lactate thresholds (LT1, LT2) and derives training zones from them.
-It reads and writes one local file, `$PACE_HOME/zones.json`; `show`, `estimate` and `analyze` also read Garmin.
-Commands: `zones show`, `estimate`, `analyze`, `test-workout`, `add`, `accept`, `remove`.
-`pace schema` marks `estimate`, `analyze`, `add`, `accept` and `remove` `"local_write": true` and describes the rules under the top-level `zones` key (`rule`, `sources`, `lab_valid_days`, `due`, `max_calls`, `no_rr_reasons`).
+It reads and writes one local file, `$PACE_HOME/zones.json`; `show`, `estimate` and `analyze` also read Garmin, and `push` writes the zones to the watch.
+Commands: `zones show`, `estimate`, `analyze`, `test-workout`, `add`, `accept`, `remove`, `push`.
+`pace schema` marks `estimate`, `analyze`, `add`, `accept` and `remove` `"local_write": true`, `push` `"write": true`, and describes the rules under the top-level `zones` key (`rule`, `sources`, `lab_valid_days`, `due`, `max_calls`, `no_rr_reasons`).
 The methods, formulas and evidence are in `docs/superpowers/specs/2026-11-17-zones-methods.md`.
-Writing the zones to the watch (`zones push`) is not available yet and is not described here.
 
 File shape: `{"records": [...], "current": {"lt1": id|null, "lt2": id|null}, "next_id": N, "estimates": [...], "hr_max": {"bpm", "activity", "date"}|null, "h4": {"streak", "unreliable", "since", "counted"}}`.
 A record is `{"id", "date", "source": "estimate"|"field_test"|"lab", "method", "lt1": {"hr", "pace_s_per_km"}|null, "lt2": {...}|null, "max_hr", "rest_hr", "cs_mps", "d_prime_m", "activities", "confidence": "low"|"medium"|"high"|null, "notes", "details"}`.
@@ -580,6 +579,16 @@ F3 takes its steps from lap presses: laps that look automatic (every lap 1100 m 
 `zones test-workout drift|time_trial|ramp` returns `{"workout": DSL}` for `pace plan set --workout`, with targets from the current LT1 record or the newest estimate; it makes no Garmin call.
 `zones add --source S [--date D] [--lt1-hr] [--lt1-pace] [--lt2-hr] [--lt2-pace] [--max-hr] [--rest-hr] [--method] [--confidence] [--activity ID]... [--notes]` returns `{"record", "current"}`.
 `--source` is required; a record needs at least one threshold value; a higher `--max-hr` raises `hr_max`.
+
+### `zones push`
+
+`zones push [--dry-run]` writes the current zones to the watch (a Garmin write: show it and get the user's yes first).
+It reads the watch zones live (`GET connectapi /biometric-service/heartRateZones`, never the cache), then sends `PUT` to the same path with the full list as read, in which every entry with `sport` `DEFAULT` or `RUNNING` gets the five floors `zone1Floor`..`zone5Floor` of `zones show`, `maxHeartRateUsed` = `hr_max` when pace knows it, and `changeState: "CHANGED"`.
+Every other entry and field (`trainingMethod`, resting HR, the profile id) is sent as read.
+With `hr_max` unknown, the watch's `maxHeartRateUsed` is kept and `zone5Floor` must be below it.
+Success returns `{"action": "update", "resource": "hr_zones", "id": null, "echo": {"sports", "floors", "max_hr"}}` (`max_hr` null when the watch's was kept) and drops the cached watch zones, so the next `zones show` reads them again.
+`--dry-run` makes the one read and returns `{"dry_run": true, "payload": {"before", "after", "body"}}`: the target entries as the watch has them now, the same entries as they would be sent, and the full body.
+Refusals, all before any write: `bad_args` without a current LT1 and LT2 record with HR (no Garmin call), with `floor_errors` (no Garmin call), or with `hr_max` unknown and `zone5Floor` not below the watch's `maxHeartRateUsed`; `endpoint_unavailable` when the watch zones have no `DEFAULT` or `RUNNING` entry.
 
 ## Keeping this file honest
 

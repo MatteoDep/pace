@@ -72,7 +72,8 @@ def test_writes_and_dsl_in_schema() -> None:
     assert set(data["writes"]) == {"dry_run", "result", "invalidation", "idempotency", "confirm"}
     assert "not idempotent" in data["writes"]["idempotency"]
     assert {"update", "link", "unlink"} <= set(data["writes"]["result"]["action"].split(" | "))
-    assert {"activity_gear", "activity_effort"} <= set(data["writes"]["result"]["resource"].split(" | "))
+    assert {"activity_gear", "activity_effort", "hr_zones"} <= set(data["writes"]["result"]["resource"].split(" | "))
+    assert "zones push --dry-run makes one live read" in data["writes"]["dry_run"]
     assert "link" in data["writes"]["idempotency"]
     assert "plan push skips unchanged pushed sessions" in data["writes"]["idempotency"]
     assert "results[].steps[]" in data["writes"]["result"]["batch"]
@@ -80,7 +81,7 @@ def test_writes_and_dsl_in_schema() -> None:
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete", "activity effort",
-                      "gear link", "gear unlink", "plan push", "plan unpush"}
+                      "gear link", "gear unlink", "plan push", "plan unpush", "zones push"}
     for c in data["commands"]:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]
@@ -187,6 +188,8 @@ def test_zones_in_schema() -> None:
     for name in names:
         assert "write" not in entries[name], name
         assert bool(entries[name].get("local_write")) is (name in writes), name
+    assert entries["zones push"]["write"] is True and entries["zones push"]["flags"] == ["--dry-run"]
+    assert "local_write" not in entries["zones push"]
     assert entries["zones add"]["required_flags"] == ["--source"]
     assert entries["zones analyze"]["required_flags"] == ["--test"]
     assert "--save" in entries["zones analyze"]["help"] and "also stores a field-test record" in entries["zones analyze"]["help"]

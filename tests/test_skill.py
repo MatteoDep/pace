@@ -21,9 +21,8 @@ DESCRIPTION = (
     "athlete diary, training plan and zones."
 )
 
-# Spans that are not schema commands: `pace schema` describes itself, login is human-only,
-# `pace zones push` waits for plan 5 Task 5c (drop it here once the command lands).
-ALLOWED = {"schema": set(), "auth login": set(), "zones push": {"--dry-run"}}
+# Spans that are not schema commands: `pace schema` describes itself, login is human-only.
+ALLOWED = {"schema": set(), "auth login": set()}
 FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*")
 SPAN_RE = re.compile(r"`(pace [^`\n]*)`")
 

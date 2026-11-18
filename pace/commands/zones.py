@@ -1,4 +1,4 @@
-"""`zones` commands: show, estimate, analyze, test-workout, add, accept, remove.
+"""`zones` commands: show, estimate, analyze, test-workout, add, accept, remove, push.
 
 The estimate orchestrator (methods doc 14.7) comes first; the typer commands are at the end of the file.
 
@@ -30,6 +30,7 @@ from pace.factory import NO_CACHE_OPT
 from pace.ratelimit import limiter
 from pace.spec import TTL_STATIC
 from pace.workout import parse_pace
+from pace.writes import WriteSpec, run_write
 
 RR_SINCE = date(2026, 9, 1)     # first date with RR data on this athlete's watch (14.7)
 DRIFT_WEEKS = 12                # H5 drift picks and H4 runs: the last 12 weeks
@@ -44,6 +45,8 @@ DEFAULT_WEEKS = 8
 DEFAULT_MAX_CALLS = 40
 GARMIN_ZONES_PATH = "/biometric-service/heartRateZones"
 GARMIN_ZONES_TTL = 300
+#: Cache key of the watch-zones read (`cached_call("connectapi", GARMIN_ZONES_PATH)`), dropped by `zones push`.
+GARMIN_ZONES_KEY = f"connectapi:{GARMIN_ZONES_PATH}"
 DUE_LOOKBACK_DAYS = 56          # `zones show` reads the list this far before the last estimate (the run before it)
 NO_ESTIMATE_LOOKBACK_DAYS = 84
 F3_RECENT_DAYS = 28             # F1 compares with the newest F3 of this many days (methods doc 9a)
@@ -575,7 +578,7 @@ async def run_estimate(fetcher: Fetcher, data: dict, *, today: date, weeks: int 
 # --- commands ---
 
 app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, pretty_exceptions_enable=False,
-                  help="Thresholds and zones: estimate, analyze field tests, record, accept (local file + Garmin reads).")
+                  help="Thresholds and zones: estimate, analyze field tests, record, accept (local file); push to Garmin.")
 
 
 def _bad(msg: str, hint: str | None = None) -> PaceError:
@@ -919,3 +922,36 @@ def remove(record_id: int = typer.Argument(..., metavar="ID"),
             return Result({"removed": removed, "current": _current_view(data)})
 
     run_command("zones remove", {"id": record_id, "force": force}, work)
+
+
+# --- Garmin write ---
+
+PUSH_DRY_RUN_OPT = typer.Option(False, "--dry-run", help="Show before, after and the exact Garmin body; makes one "
+                                "live read of the watch zones (never the cache) and no write.")
+
+
+@app.command("push")
+def push(dry_run: bool = PUSH_DRY_RUN_OPT) -> None:
+    """Write the current zones (five floors, max HR when known) to the watch's DEFAULT and RUNNING HR zones."""
+    async def work() -> Result:
+        data = zones.load()
+        cur = zones.current(data)
+        hr_max = (data.get("hr_max") or {}).get("bpm")
+        derived = zones.derive(cur["lt1"], cur["lt2"], h2=zones.h2_of(cur["lt1"], cur["lt2"]), hr_max=hr_max)
+        floors = derived["floors"]
+        if floors is None:
+            raise _bad("no zones to push: needs a current LT1 and a current LT2 record, both with HR",
+                       hint="See `pace zones show`; make records current with `pace zones accept ID`.")
+        if derived["floor_errors"]:
+            raise _bad("the derived zones are invalid: " + "; ".join(derived["floor_errors"]),
+                       hint="See `pace zones show`; fix the current records before pushing.")
+        live = await cached_call("connectapi", GARMIN_ZONES_PATH, cache=None, ttl=0)   # live: the body is built on it
+        plan = zones.push_body(live, floors, hr_max=hr_max)
+        spec = WriteSpec(resource="hr_zones", action="update", method="connectapi", args=(GARMIN_ZONES_PATH,),
+                         kwargs={"method": "PUT", "json": plan["body"]}, payload=plan,
+                         echo={"sports": [e["sport"] for e in plan["after"]],
+                               "floors": {k: floors[k] for k in zones.FLOOR_KEYS}, "max_hr": hr_max},
+                         invalidate=(GARMIN_ZONES_KEY,))
+        return await run_write(spec, dry_run=dry_run)
+
+    run_command("zones push", {"dry_run": dry_run}, work)

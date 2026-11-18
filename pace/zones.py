@@ -28,7 +28,7 @@ HR_DRIFT_BPM = 4
 PACE_DRIFT_FRAC = 0.03
 H2_RANGE_SLACK = 0.10
 OUTCOMES = ("usable", "not_monotonic", "one_sided", "insufficient_data")  # the last two leave the streak alone
-PUSH_SPORTS = ("RUNNING", "DEFAULT")  # watch entry compared by status(); pinned in plan 5 Task 5c
+PUSH_SPORTS = ("RUNNING", "DEFAULT")  # watch entries status() compares (first match) and push_body() writes (all)
 FLOOR_KEYS = ("zone1Floor", "zone2Floor", "zone3Floor", "zone4Floor", "zone5Floor")
 
 EMPTY: dict[str, Any] = {
@@ -459,6 +459,37 @@ def _garmin_entry(garmin_zones: list[dict[str, Any]] | None) -> dict[str, Any] |
     return None
 
 
+def push_body(garmin_zones: Any, floors: dict[str, Any], *, hr_max: int | None) -> dict[str, Any]:
+    """The Garmin zones write (plan 5 Task 0): every DEFAULT or RUNNING entry gets the five floors, `maxHeartRateUsed`
+    = HRmax when known (else Garmin's is kept and zone5Floor must be below it) and `changeState` CHANGED; every other
+    field and entry is kept as read. Returns {"before", "after", "body"}: the target entries as read and as sent,
+    and the full list to PUT. Raises endpoint_unavailable without a target entry, bad_args when zone5Floor is not
+    below Garmin's max HR."""
+    entries = garmin_zones if isinstance(garmin_zones, list) else []
+    body = copy.deepcopy(entries)
+    before, after = [], []
+    for i, entry in enumerate(body):
+        if not isinstance(entry, dict) or entry.get("sport") not in PUSH_SPORTS:
+            continue
+        before.append(copy.deepcopy(entries[i]))
+        entry.update({k: floors[k] for k in FLOOR_KEYS})
+        if hr_max is not None:
+            entry["maxHeartRateUsed"] = hr_max
+        else:
+            kept = entry.get("maxHeartRateUsed")
+            if not isinstance(kept, (int, float)) or floors["zone5Floor"] >= kept:
+                raise PaceError("bad_args", f"zone5Floor {floors['zone5Floor']} is not below the watch's max HR {kept}"
+                                f" ({entry['sport']} entry) and pace knows no max HR",
+                                hint="pace learns max HR from strap runs (`zones estimate`, `zones analyze`) and from "
+                                     "lab records with --max-hr; push again once it is known.")
+        entry["changeState"] = "CHANGED"
+        after.append(entry)
+    if not after:
+        raise PaceError("endpoint_unavailable", f"the watch HR zones have no {' or '.join(PUSH_SPORTS)} entry to write",
+                        hint="Set the HR zones once in the Garmin Connect app, then push again; do not retry unchanged.")
+    return {"before": before, "after": after, "body": body}
+
+
 def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, Any]] | None,
            runs_since: list[dict[str, Any]]) -> dict[str, Any]:
     cur = current(data)
@@ -488,5 +519,5 @@ def status(data: dict[str, Any], *, today: date, garmin_zones: list[dict[str, An
     }
 
 
-__all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "floor_errors", "h2_of",
+__all__ = ["R", "load", "transaction", "add_record", "accept", "remove", "current", "derive", "floor_errors", "h2_of", "push_body",
            "provenance", "last_complete_estimate_day", "log_estimate", "update_hr_max", "record_alpha1_outcome", "reset_h4", "due", "status"]
