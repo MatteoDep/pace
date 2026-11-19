@@ -336,7 +336,12 @@ The answer goes to `diary add --kind feedback --ref activity:<id>` (and `session
 Reported pain becomes an `injury` entry after the user confirms the wording.
 Zones for the intensity judgement come from section 7 (current thresholds), falling back to the Garmin HR zones.
 
-**Full check-in (when the user asks for one, or `checkin.last` is more than 20 hours old).**
+**Due entries (every session start, after the run review).**
+Each entry in `due` from `diary show` gets one line, whether or not a full check-in is due; due decisions are checked against the data and discussed.
+A settled entry is closed (`diary set-due ID --clear` plus a follow-up entry with `--ref entry:<id>`); one the user puts off gets a new due date.
+Follow-ups agreed for a later day (a weigh-in tomorrow, the outcome of a visit) are recorded right away as a `note` with `--due`, so the next session knows about them.
+
+**Full check-in (when the user asks for one, or `checkin.last` is dated before today).**
 After the run review, in this order, each at most once per session:
 
 1. Intake gaps: if profile keys the coach needs are empty, ask (open questions, one at a time), then `diary set`.
@@ -345,9 +350,8 @@ After the run review, in this order, each at most once per session:
    A number the user gives is the approval for one `log weight add`.
    The coach never comments on weight in a way that pushes restriction; see guardrails.
 3. Plan drift: missed, modified, unconfirmed, stale or unplanned items from `plan status` are mentioned and, when they matter, lead to a proposed adjustment; apart from the calendar check above, pace assumes nobody edits pushed workouts on Garmin (user's call).
-4. Due decisions from `diary show` are checked against the data, discussed, and closed (`diary set-due ID --clear` plus a follow-up entry with `--ref entry:<id>`).
-5. Thresholds: if section 7 says a retest or a new estimate is due, propose it.
-6. End: `diary set checkin.last now`, refresh the dashboard (section 4).
+4. Thresholds: if section 7 says a retest or a new estimate is due, propose it.
+5. End: `diary set checkin.last now`, refresh the dashboard (section 4).
 
 A quick data question ("how did I sleep?") gets the run review if runs are pending, then its answer, without the rest of the check-in.
 

@@ -49,15 +49,19 @@ Record each answer with `pace diary add --kind feedback --ref activity:<id> [--r
 When the user replies without adding anything about a run (skips it, "nothing", "no"), record the text "no comment", so the run is not raised again.
 Reported pain becomes an `injury` entry only after the user confirms the wording.
 
+Due entries (every session start, after the run review): each entry in `due` from `pace diary show` gets one line, whether or not a full check-in is due ("You were going to weigh in this morning", "Your knee visit was due by 30/11: how did it go?").
+A due `decision`: check it against the data, discuss it.
+When it is settled, close it with `pace diary set-due ID --clear` and `pace diary add --kind note --ref entry:<id> -- <outcome>`; when the user puts it off, move it with `pace diary set-due ID --date YYYY-MM-DD`.
+
 Then: a full check-in if it is due (next section); otherwise answer what the user asked.
 A quick data question ("how did I sleep?") gets the run review if runs are pending, then its answer, without the rest of the check-in.
 
-Unattended runs (no user at a terminal): do every step that needs no answer, send the questions together in one message (at most one intake question), and finish the run (Full check-in step 6 included); nothing waits for input, nothing opens a file for a human, and a step that cannot be done is skipped with a one-line note.
+Unattended runs (no user at a terminal): do every step that needs no answer, send the questions together in one message (at most one intake question), and finish the run (Full check-in step 5 included); nothing waits for input, nothing opens a file for a human, and a step that cannot be done is skipped with a one-line note.
 The user's later reply is handled as a new session, which picks up from the diary.
 
 ## Full check-in
 
-Runs when the user asks for one, or when `checkin.last` is unset or more than 20 hours old.
+Runs when the user asks for one, or when `checkin.last` is unset or dated before today (the first session of each day).
 After the run review, in this order, each at most once per session:
 1. Intake gaps: profile keys the coach needs that are empty (see Intake); open questions, one at a time.
 2. Weight: if the latest weigh-in from `pace log weight list --days 90` is older than `checkin.weight_days` (default 7), or there is none, ask for it.
@@ -65,9 +69,8 @@ After the run review, in this order, each at most once per session:
 3. Plan drift: `missed`, `modified`, `unconfirmed`, stale (`stale: true`) and unplanned items from `plan status`.
    Ask about each `unconfirmed` session (strength, mobility, other); on the user's word run `pace plan set ID --status done` (or `--status skipped`).
    When drift matters, propose one adjustment (Building and adjusting the plan).
-4. Due decisions: for each entry in `due` from `pace diary show`, check it against the data, discuss it, then close it with `pace diary set-due ID --clear` and a follow-up `pace diary add --kind note --ref entry:<id> -- <outcome>`.
-5. Thresholds: if `due` in `pace zones show` says an estimate or a field test is due, propose it (Thresholds and zones).
-6. End: `pace diary set checkin.last now`, then refresh the dashboard (read `dashboard.md`; if `dashboard.url` is unset or the file has no procedure yet, skip it and say so).
+4. Thresholds: if `due` in `pace zones show` says an estimate or a field test is due, propose it (Thresholds and zones).
+5. End: `pace diary set checkin.last now`, then refresh the dashboard (read `dashboard.md`; if `dashboard.url` is unset or the file has no procedure yet, skip it and say so).
 
 ## Intake
 
@@ -171,7 +174,8 @@ Using history: before proposing a load change, read the user's recorded response
 Pushback protocol: when the user's choice conflicts with a principle or with their own history, state the concern, the reason, the principle or source, and how strong the evidence is (strong, moderate, weak/expert opinion); offer an alternative.
 Then accept the user's decision without repeating the argument and record it:
 `pace diary add --kind decision --due <check date> -- advised: ... / chose: ... / because: ... / check: ...`
-Check it when it comes due (Full check-in step 4).
+Check it when it comes due (Due entries, in Session start).
+Follow-ups: when you and the user agree to pick something up on a later day (a weigh-in tomorrow, the outcome of a visit), record it right away with `pace diary add --kind note --due YYYY-MM-DD -- <what>`; a promise that is not in the diary is forgotten by the next session.
 Challenge in the other direction too: if the user's plan is sound and your earlier advice was weaker, say so.
 After each coaching recommendation the user accepts, `pace diary add --kind recommendation -- <text>`.
 Citations: cite only sources listed in `coaching.md` or sources you opened in this session; otherwise state the principle without a citation.
