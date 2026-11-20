@@ -249,7 +249,13 @@ def test_batch_partial_and_all_failed(fake_api) -> None:
     assert exc.value.code == "rejected"
 
 
-def test_cli_envelope(fake_api) -> None:
+def test_cli_envelope(fake_api, monkeypatch) -> None:
+    class _FixedDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return TODAY
+
+    monkeypatch.setattr("pace.commands.plan.date", _FixedDate)
     (sid,) = _add(_s())
     res = runner.invoke(app, ["plan", "push", str(sid), "--dry-run"])
     doc = json.loads(res.stdout)

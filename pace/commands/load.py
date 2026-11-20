@@ -83,7 +83,8 @@ def load(weeks: int = typer.Option(16, "--weeks", help="Whole weeks back, this w
         if weeks_ahead is not None and weeks_ahead < 0:
             raise PaceError("bad_args", "--weeks-ahead must be >= 0")
         today = date.today()
-        start, end = load_mod.default_range(plan_store.load(), today=today, weeks=weeks, weeks_ahead=weeks_ahead)
+        plan_data = plan_store.load()
+        start, end = load_mod.default_range(plan_data, today=today, weeks=weeks, weeks_ahead=weeks_ahead)
         cache = Cache()
         tracker = CacheTracker()
         try:
@@ -96,13 +97,13 @@ def load(weeks: int = typer.Option(16, "--weeks", help="Whole weeks back, this w
             for sp in SPORTS:
                 d = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sp)
                 rows += _week_rows(d, today) + _day_rows(d, today)
-            nxt = _next_row(plan_store.load().get("sessions", []), acts, today)
+            nxt = _next_row(plan_data.get("sessions", []), acts, today)
             rows += [nxt] if nxt else []
-            meta = [{"label": "Generated", "value": datetime.now().isoformat(timespec="seconds")},
+            meta = [{"label": "Generated", "value": datetime.now().astimezone().isoformat(timespec="seconds")},
                     {"label": "Command", "value": "pace load --export"}]
             save_json(export, {"rows": rows, "meta": meta})
             return Result({"path": str(export), "rows": len(rows)}, tracker.report())
         data = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sport)
         return Result(data, tracker.report())
 
-    run("load", {"weeks": weeks, "weeks_ahead": weeks_ahead, "sport": sport}, work)
+    run("load", {"weeks": weeks, "weeks_ahead": weeks_ahead, "sport": None if export is not None else sport}, work)

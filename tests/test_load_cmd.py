@@ -60,7 +60,7 @@ def _sess(i, d, **kw):
 
 
 def test_export_shape_and_remaining(api, tmp_path) -> None:
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta
     today = date.today()
     mon = today - timedelta(days=today.weekday())
     _plan([_sess(1, (mon + timedelta(days=14)).isoformat())])
@@ -71,6 +71,8 @@ def test_export_shape_and_remaining(api, tmp_path) -> None:
     assert f["rows"] and doc["data"]["rows"] == len(f["rows"])
     assert [m["label"] for m in f["meta"]] == ["Generated", "Command"]
     assert f["meta"][1]["value"] == "pace load --export"
+    assert datetime.fromisoformat(f["meta"][0]["value"]).utcoffset() is not None
+    assert doc["args"]["sport"] is None
     weeks = [r for r in f["rows"] if r["table"] == "week"]
     assert {r["sport"] for r in weeks} == {"running", "all"}
     run = [r for r in weeks if r["sport"] == "running"]
