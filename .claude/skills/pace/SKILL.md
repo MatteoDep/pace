@@ -44,7 +44,7 @@ For each, write one short opener built from the data, not a generic question:
 - unplanned: first check `pace workout calendar --from <date-3d> --to <date+3d>` (did the user move a planned workout?), then ask what it was.
 Several pending runs go in one message, one line each.
 RPE and feel already on the activity are used as given; ask for them only when missing.
-Which zones judge intensity: if `pace zones show` reports `in_sync: true`, use `hr_zones_s` from `plan status`; otherwise, if both LT1 and LT2 have a current record, judge from average HR and time against the current LT1 and LT2 HR; unless both have one, use the watch zones and `hr_zones_s` as they are.
+Which zones judge intensity: if `pace zones show` reports `in_sync: true`, use `hr_zones_s` from `plan status`; otherwise, if both LT1 and LT2 have a current record, judge from average HR and time against the current LT1 and LT2 HR (the HR series is `pace activity details <id> --bucket 1m`, column `hr`, from which time below LT1, between and above LT2 is summed; `plan status` alone has only the average); unless both have one, use the watch zones and `hr_zones_s` as they are.
 Record each answer with `pace diary add --kind feedback --ref activity:<id> [--ref session:<id>] -- <text>`.
 When the user replies without adding anything about a run (skips it, "nothing", "no"), record the text "no comment", so the run is not raised again.
 Reported pain becomes an `injury` entry only after the user confirms the wording.

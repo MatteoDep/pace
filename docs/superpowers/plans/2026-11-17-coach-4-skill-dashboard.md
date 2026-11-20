@@ -25,6 +25,7 @@ Supersedes Tasks 3-4 of `docs/superpowers/plans/2026-09-06-diary-and-skill.md`.
 - Which zones judge intensity (spec 7): if `pace zones show` reports `in_sync: true` (pace's current floors equal the watch's), the run review uses `hr_zones_s` from `plan status`; otherwise it judges from average HR and time against the current LT1/LT2 HR, and workout DSL targets use bpm ranges instead of `z1..z5`; with no current record, the watch's zones and `hr_zones_s` are used as they are.
 - Unattended runs: `auth_required` ends the run with one message asking the user to run `pace auth login`; nothing waits for a login.
 - Run review and check-in exactly as spec 5B (2026-11-17): openers built from the data, one line per pending run, "no comment" recorded when the user adds nothing, full check-in only when asked or `checkin.last` older than 20 hours.
+  (Changed to "dated before today" in commit 55ff62d; SKILL.md and the spec carry the current rule.)
 - Runtime citation rule in `SKILL.md`: cite only sources in `coaching.md` or sources opened in this session; otherwise state the principle without a citation.
 - The user's watch (Forerunner 55) records no HRV and no sleep score; the skill uses resting HR, sleep, RPE/feel and load, and HRV only when present.
 - Charts: terminal sessions write `--out "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/chart-<kind>.png"`; `.gitignore` gains `/chart-*.png`.

@@ -3068,7 +3068,7 @@ pace <group> --help      # Typer help still works
 pace wellness sleep --days 7
 pace wellness hr --to yesterday --bucket 1h
 pace activity list --days 14 --type running
-pace activity details 10000000001
+pace activity details <activity-id>
 pace training readiness
 ```
 

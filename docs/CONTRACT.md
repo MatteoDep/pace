@@ -378,7 +378,7 @@ A 400 from Garmin surfaces as `rejected`.
 
 ## Load
 
-`pace load [--weeks N] [--weeks-ahead N] [--sport running|all] [--no-cache]` returns weekly and daily training load.
+`pace load [--weeks N] [--weeks-ahead N] [--sport running|all] [--export PATH] [--no-cache]` returns weekly and daily training load.
 It is keyed by weeks (`keyed: "week"` in `pace schema`): there is no `--from` or `--to`.
 `--weeks` counts whole weeks back, this week included (default 16, at least 1).
 `--weeks-ahead` counts whole weeks after this one; by default the range runs through the week of the plan's last session, never before this week.
@@ -413,8 +413,8 @@ That method pages internally in requests the rate limiter does not count.
 ### Export
 
 `pace load --export PATH` takes the usual range flags and writes one JSON file for the dashboard instead of returning the load data.
-`--sport` with `--export` is `bad_args`: both sports are computed.
-The file is `{"rows": [...], "meta": [{"label": "Generated", "value": ISO datetime}, {"label": "Command", "value": "pace load --export"}]}`, written atomically with mode 0600.
+`--sport` with `--export` is `bad_args`: both sports are computed, and the envelope args echo `"sport": null`.
+The file is `{"rows": [...], "meta": [{"label": "Generated", "value": ISO datetime with UTC offset}, {"label": "Command", "value": "pace load --export"}]}`, written atomically with mode 0600.
 The result is `data = {"path": PATH, "rows": n}`.
 Every row has `table` set to `week`, `day` or `next`.
 `week` rows: `week`, `start`, `sport` (`running` or `all`) and the `actual_`, `planned_`, `projected_`, `remaining_` and `missing_` values with the suffixes `km`, `elev_m` and `hours`; a side that is absent in the load data is null.

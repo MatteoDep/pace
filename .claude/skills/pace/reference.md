@@ -2,7 +2,7 @@
 
 Command map, workout DSL and presentation tables for the pace coaching skill.
 Generated from `pace schema` (version 2.0.0) when the skill was written; `pace schema <group>` is the authority for flags, fields and rules.
-Keyed: `date` takes `--from/--to/--days`, `id` takes a positional id, `week` takes `--weeks`, `none` takes no range.
+Keyed: `date` takes `--from/--to/--days` (`plan status` and `workout calendar` take `--past/--ahead` instead of `--days`), `id` takes a positional id, `week` takes `--weeks`, `none` takes no range.
 Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (diary, plan, zones files); see `## Writes` in SKILL.md.
 
 ## Command map

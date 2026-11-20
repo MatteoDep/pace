@@ -310,6 +310,16 @@ Data on the page stays minimal: what the question needs, no raw dumps.
 No CLI work for artifacts beyond `pace load`.
 Project 2 risk, noted for its brainstorm: the scheduled Telegram session must have the Artifact tool to refresh the dashboard.
 
+### Post-hoc notes (plan 4, skill and dashboard, implemented 2026-11-19)
+
+- Section 4: `pace load --export PATH` writes `{"rows", "meta"}` for the dashboard; rows carry `table` = `week`, `day` or `next`, both sports, and meta has `Generated` (ISO time with UTC offset) and `Command`.
+  The export shape is in `docs/CONTRACT.md` (`### Export`) and the procedures in `.claude/skills/pace/dashboard.md`.
+- The Data artifact holds dataset `load` with calcs `weeks`, `days`, `thisweek` and `nextsession`, and the page filters `metric` (`km`, `elev_m`, `hours`) and `sport` (`running`, `all`).
+- Charts: a terminal session writes PNGs to the repo root through `--out`; an unattended run omits `--out` and gets `$PACE_HOME/charts/` (see `SKILL.md`).
+- Section 5, Forerunner 55 limits: no HRV status, no sleep score and no Garmin lactate threshold; the skill uses resting HR, sleep, RPE/feel and load, and HRV only when present.
+- Dashboard refresh is debounced: at the end of a full check-in and once after a batch of plan edits, not after each edit.
+- Section 7: the run review judges intensity from `hr_zones_s` when `pace zones show` reports `in_sync: true`, otherwise from the HR series of `pace activity details` against pace's LT1 and LT2.
+
 ## 5. Skill (`.claude/skills/pace/`)
 
 `SKILL.md` plus reference files loaded on demand: `reference.md` (command map, presentation tables, from plan 3) and `coaching.md` (principles and sources).
