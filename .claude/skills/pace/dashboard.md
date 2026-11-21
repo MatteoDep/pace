@@ -18,7 +18,7 @@ Steps, exactly:
 1. `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"`.
 2. Upload it to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
 3. Read `datasets/load` for its `version` and its current `source.url`; one `update` pinned to that version: `{"source": {"url": "<new>"}, "updated": {"at": "<export Generated time>", "by": "pace coach"}}`.
-4. Delete the replaced asset (the old `/_blob/<id>`).
+4. Keep the asset you just replaced, since a page open during the refresh may still fetch it; delete every older one (Artifact `list` with `scope: "assets"`, then delete each asset that is neither the new one nor the replaced one).
 5. ArtifactData `list` on collection `data/users/me`, once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
 6. Write the current settings (Settings below).
 
