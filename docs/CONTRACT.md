@@ -218,9 +218,9 @@ Values are non-empty text, with these rules:
 - `checkin.weight_days`: integer 0 to 90, 0 = never ask (`diary.checkin_weight_days_range`); the default is 7 when unset (`diary.checkin_weight_days_default`).
 - `checkin.gear`: `true` or `false`, case-insensitive, stored as a JSON boolean; `false` when unset (`diary.checkin_gear_default`).
 - `units`: `metric` or `imperial`, case-insensitive, stored lowercase (`diary.units_values`); display only, the CLI stays SI.
-The three keys above are the coach settings (`diary.settings_keys`).
 - `checkin.last`: `now` or an ISO datetime, stored as a local-offset ISO datetime to the second.
 - `dashboard.url`: must start with `https://claude.ai/`.
+`checkin.weight_days`, `checkin.gear` and `units` are the coach settings (`diary.settings_keys`).
 Dotted keys are stored nested (`event.name` under `event`).
 Setting or unsetting any key except `checkin.*`, `dashboard.*` and `units` stamps `profile.updated` with today's date.
 `diary unset KEY` removes the key and is a no-op when it is not set.

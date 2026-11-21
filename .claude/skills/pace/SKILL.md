@@ -32,7 +32,7 @@ Then, with D from the profile, these three together:
     pace plan status --from <D> --ahead 7
     pace zones show
 
-and, when the profile has `dashboard.url`, read the pending dashboard settings (Settings).
+With them, when the profile has `dashboard.url`, read the pending dashboard settings (Settings).
 D is the date of the profile's `checkin.last`, but at most 21 days back; when `checkin.last` is unset, D is 7 days back.
 If `pace auth status` says no tokens or any call returns `auth_required`: send one message asking the user to run `pace auth login` in their own terminal (interactive MFA), and stop; never run it yourself, never wait for it.
 Empty data is normal for a new user (no profile, no plan, no zones): go to Intake, do not treat it as an error.
