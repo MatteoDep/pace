@@ -1,0 +1,13 @@
+{
+ "metadataDTO": {
+  "sensors": [
+   {
+    "serialNumber": 1,
+    "sourceType": "BLUETOOTH_LOW_ENERGY",
+    "batteryStatus": "NEW",
+    "bleDeviceType": "HEART_RATE",
+    "batteryLevel": 90
+   }
+  ]
+ }
+}

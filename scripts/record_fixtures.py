@@ -122,6 +122,7 @@ def main() -> None:
     d = ["--to", ns.date]
     for name in ("summary", "sleep", "hr", "stress", "body-battery", "hrv", "hydration", "spo2"):
         record(f"wellness_{name}", ["wellness", name, *d])
+    record("wellness_sleep-range", ["wellness", "sleep-range", "--days", "28", *d])
     for name in ("status", "readiness", "endurance", "fitness-age", "hill-score"):
         record(f"training_{name}", ["training", name, *d])
     record("training_race-predictions", ["training", "race-predictions"])

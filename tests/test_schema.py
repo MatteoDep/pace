@@ -72,13 +72,16 @@ def test_writes_and_dsl_in_schema() -> None:
     assert set(data["writes"]) == {"dry_run", "result", "invalidation", "idempotency", "confirm"}
     assert "not idempotent" in data["writes"]["idempotency"]
     assert {"update", "link", "unlink"} <= set(data["writes"]["result"]["action"].split(" | "))
-    assert {"activity_gear", "activity_effort"} <= set(data["writes"]["result"]["resource"].split(" | "))
+    assert {"activity_gear", "activity_effort", "hr_zones"} <= set(data["writes"]["result"]["resource"].split(" | "))
+    assert "zones push --dry-run makes one live read" in data["writes"]["dry_run"]
     assert "link" in data["writes"]["idempotency"]
+    assert "plan push skips unchanged pushed sessions" in data["writes"]["idempotency"]
+    assert "results[].steps[]" in data["writes"]["result"]["batch"]
     assert "link" in data["groups"]["gear"] and "effort" in data["groups"]["activity"]
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete", "activity effort",
-                      "gear link", "gear unlink"}
+                      "gear link", "gear unlink", "plan push", "plan unpush", "zones push"}
     for c in data["commands"]:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]
@@ -103,3 +106,104 @@ def test_retry_hints_warn_about_non_idempotent_writes() -> None:
     from pace.envelope import HINTS
     for code in ("network", "rate_limited"):
         assert "verify with the matching read" in HINTS[code], code
+
+
+def test_diary_in_schema() -> None:
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"diary show", "diary set", "diary unset", "diary add", "diary remove", "diary set-due", "diary resolve"}
+    assert names <= set(entries)
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name != "diary show"), name
+    assert entries["diary add"]["required_flags"] == ["--kind"]
+    assert "Garmin" in data["writes"]["confirm"]
+    assert data["diary"]["kinds"][-1] == "decision"
+    assert "dashboard.url" in data["diary"]["profile_keys"]
+    assert "diary" in data["groups"]
+    res = runner.invoke(app, ["schema", "diary"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"diary"}
+
+
+def test_plan_in_schema() -> None:
+    from pace.plan import (INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES,
+                           WORKOUT_PREFIX)
+    from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"plan new", "plan show", "plan meta", "plan block add", "plan block set", "plan block remove",
+             "plan add", "plan set", "plan remove"}
+    assert names <= set(entries)
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name != "plan show"), name
+    assert entries["plan new"]["required_flags"] == ["--name"]
+    assert entries["plan block add"]["required_flags"] == ["--name", "--phase", "--start", "--end"]
+    for entry in entries.values():
+        for flag in entry.get("required_flags", []):
+            assert flag in entry["flags"], entry["name"]
+    assert "plan" in data["groups"]
+    plan = data["plan"]
+    assert plan["path"] == "$PACE_HOME/plan.json"
+    assert plan["sports"] == SESSION_SPORTS and plan["pushable"] == PUSHABLE and plan["untracked"] == UNTRACKED
+    assert plan["intensities"] == INTENSITIES and plan["statuses"] == STATUSES
+    assert plan["settable_statuses"] == SETTABLE_STATUSES
+    assert plan["derived_statuses"] == ["done", "modified", "missed", "unconfirmed", "rest"]
+    assert plan["phases"] == PHASES and plan["session_fields"] == SESSION_FIELDS
+    assert plan["modified_tolerance"] == MODIFIED_TOLERANCE and plan["workout_name_prefix"] == WORKOUT_PREFIX
+    res = runner.invoke(app, ["schema", "plan"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"plan"}
+
+
+def test_load_is_week_keyed_and_noted() -> None:
+    doc = build_schema("load")
+    (entry,) = doc["commands"]
+    assert entry["name"] == "load" and entry["keyed"] == "week"
+    assert "--from" not in entry["flags"] and {"--weeks", "--weeks-ahead", "--sport"} <= set(entry["flags"])
+    assert any("keyed week" in n for n in doc["notes"])
+
+
+def test_chart_help_names_every_kind() -> None:
+    from pace.charts import KINDS
+    from pace.cli import app as cli_app
+
+    (entry,) = build_schema("chart")["commands"]
+    assert all(kind in entry["help"] for kind in KINDS)
+    assert "14" in entry["help"] and "90" in entry["help"] and "56" in entry["help"]
+    chart_help = next(c.help for c in cli_app.registered_commands if c.name == "chart")
+    assert all(kind in chart_help for kind in KINDS)
+    assert all(kind in build_schema(None)["groups"]["chart"] for kind in KINDS)
+
+
+def test_zones_in_schema() -> None:
+    from pace import fit, zones
+    data = build_schema(None)
+    entries = {c["name"]: c for c in data["commands"]}
+    names = {"zones show", "zones estimate", "zones analyze", "zones test-workout", "zones add", "zones accept",
+             "zones remove"}
+    assert names <= set(entries)
+    writes = {"zones estimate", "zones analyze", "zones add", "zones accept", "zones remove"}
+    for name in names:
+        assert "write" not in entries[name], name
+        assert bool(entries[name].get("local_write")) is (name in writes), name
+    assert entries["zones push"]["write"] is True and entries["zones push"]["flags"] == ["--dry-run"]
+    assert "local_write" not in entries["zones push"]
+    assert entries["zones add"]["required_flags"] == ["--source"]
+    assert entries["zones analyze"]["required_flags"] == ["--test"]
+    assert "--save" in entries["zones analyze"]["help"] and "also stores a field-test record" in entries["zones analyze"]["help"]
+    assert "--laps" in entries["zones analyze"]["flags"] and "race" in entries["zones analyze"]["help"]
+    assert "--save also stores a full record" in entries["zones estimate"]["help"]
+    assert "10-minute" in entries["zones estimate"]["help"]
+    assert {"--weeks", "--max-calls", "--include-wrist", "--retry-h4", "--save", "--no-cache"} <= set(entries["zones estimate"]["flags"])
+    assert "zones" in data["groups"] and "zones" in data["writes"]["confirm"]
+    z = data["zones"]
+    assert z["analyze_tests"] == [*z["tests"], "race"]
+    assert z["rule"] == "lt-5z-v1" and z["lab_valid_days"] == 183 and z["sources"] == ["estimate", "field_test", "lab"]
+    assert z["max_calls"]["default"] == 40 and "hard cap" in z["max_calls"]["rule"]
+    assert z["due"]["estimate_every_days"] == zones.ESTIMATE_EVERY_DAYS and z["due"]["field_test_every_days"] == 84
+    assert z["no_rr_reasons"] == list(fit.NO_RR_REASONS) and "fit_unreadable" in z["no_rr_reasons"]
+    res = runner.invoke(app, ["schema", "zones"])
+    assert res.exit_code == 0
+    assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"zones"}

@@ -4,12 +4,19 @@ from typing import Any
 
 import typer
 
-from pace import __version__
+from pace import __version__, fit
+from pace import zones as zonesmod
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
+from pace.commands.zones import ANALYZE_TESTS, DEFAULT_MAX_CALLS, DEFAULT_WEEKS, F3_RECENT_DAYS, TESTS
 from pace.commands.workout import WORKOUT_LIST_FIELDS
+from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
+from pace.plan import (
+    INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES, WORKOUT_PREFIX,
+)
 from pace.ratelimit import CONCURRENCY, limiter
+from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 from pace.workout import DSL_REFERENCE
 
@@ -38,6 +45,7 @@ NOTES: list[str] = [
     "--help prints plain text (not JSON)",
     "auto buckets are scored against the whole requested range, not one day",
     "required_flags lists options that must be given; a command without the key has none",
+    "keyed week: week-ranged (--weeks back, --weeks-ahead forward), no --from/--to; rows are whole ISO weeks",
 ]
 
 SHAPE_FLAGS = ["--fields", "--bucket", "--raw", "--no-cache"]
@@ -45,17 +53,23 @@ RANGE_FLAGS = ["--from", "--to", "--days"]
 
 #: The write safety contract, shared by every mutating command.
 WRITES: dict[str, Any] = {
-    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body",
+    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body; exception: zones push --dry-run makes one live read of the watch zones, payload {before, after, body}",
     "result": {"action": "create | delete | update | link | unlink",
-               "resource": "workout | weight | hydration | bp | activity_gear | activity_effort",
+               "resource": "workout | weight | hydration | bp | activity_gear | activity_effort | hr_zones",
                "id": "Garmin-assigned id when the response carries one, else null",
-               "echo": "the values you sent, for confirmation"},
+               "echo": "the values you sent, for confirmation",
+               "batch": "plan push/unpush return {results, done, failed}: results[] = {id, ok, action "
+                        "(pushed | skipped | unpushed | noop; null when refused), steps, error, garmin, session}, "
+                        "results[].steps[] = {step: delete | upload | schedule, payload, id}; "
+                        "ok: false only when every session failed and no step completed"},
     "invalidation": "successful writes drop the affected cache keys",
     "idempotency": "Writes are not idempotent: a retry after an ambiguous failure duplicates the "
                    "workout/weigh-in/hydration. Verify with the matching read (workout list, "
                    "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
-                   "state, so repeating them is harmless.",
-    "confirm": "agents must show the planned write and get an explicit yes before calling",
+                   "state, so repeating them is harmless. "
+                   "plan push skips unchanged pushed sessions (unless --force) and records every landed id.",
+    "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
+               "local_write commands (diary, plan edits, zones) are outside this rule; the coaching skill decides when to ask about them.",
 }
 
 GLOBAL_FLAGS = {
@@ -111,6 +125,10 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "flags": ["--limit"] + SHAPE_FLAGS, "default_fields": list(WORKOUT_LIST_FIELDS), "series": [], "ttl_s": 600},
     {"name": "workout show", "help": "One saved workout, full structure.", "keyed": "id", "args": ["WORKOUT_ID"],
      "flags": SHAPE_FLAGS, "default_fields": [], "series": [], "ttl_s": 86400},
+    {"name": "workout calendar",
+     "help": "Workouts scheduled on the Garmin calendar in a range (default: today to 14 days ahead); one call per month, at most 12.",
+     "keyed": "date", "args": [], "flags": ["--from", "--to", "--past", "--ahead", "--no-cache"], "default_fields": [],
+     "series": [], "ttl_s": 300},
     {"name": "workout push", "help": "Create a workout on Garmin Connect from the compact DSL (see `pace schema` -> workout_dsl).",
      "keyed": "none", "args": ["FILE"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
     {"name": "workout schedule", "help": "Put a saved workout on the Garmin calendar (syncs to the watch).",
@@ -142,6 +160,43 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "ttl_s": 0, "write": True},
     {"name": "log bp list", "help": "Blood pressure readings in a date range (one Garmin call).", "keyed": "date",
      "args": [], "flags": RANGE_FLAGS + SHAPE_FLAGS, "default_fields": ["measurementSummaries"], "series": [], "ttl_s": 600},
+    {"name": "diary show", "help": 'Profile, active constraints/injuries, due entries and recent entries (newest first); truncated when --limit cuts entries.', "keyed": "none", "args": [], "flags": ["--since", "--kind", "--ref", "--limit"],
+     "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "diary set", "help": 'Set a profile field (see the diary block for keys).', "keyed": "none", "args": ["KEY", "VALUE"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary unset", "help": 'Remove a profile field.', "keyed": "none", "args": ["KEY"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary add", "help": 'Append an entry. TEXT goes after `--` when it may start with `-`.', "keyed": "none", "args": ["TEXT..."], "flags": ["--kind", "--date", "--tag", "--ref", "--due"], "required_flags": ["--kind"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary remove", "help": 'Delete an entry; ids are never reused.', "keyed": "none", "args": ["ID"], "flags": [],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary set-due", "help": "Set or clear an entry's due date. Give exactly one of --date or --clear.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--clear"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
+     "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "wellness sleep-range", "help": "Nightly sleep (deep, light, REM, awake seconds), resting HR, average HR, HRV and sleep score for a date range, from one Garmin call per 28 days; fields are null when absent (HRV and score on the current watch). Rows: date, sleep_s, deep_s, light_s, rem_s, awake_s, rhr, avg_hr, hrv, hrv_7d, score.", "keyed": "date", "args": [], "flags": RANGE_FLAGS + ["--no-cache"], "default_fields": [], "series": [], "ttl_s": 3600},
+    {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. --export PATH writes dashboard rows (both sports; --sport is bad_args) and returns data = {path, rows}. Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--export", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "chart", "help": "Render a PNG chart (1200 x 675 px) and return data = {path, kind, range, summary}. KIND: volume (weekly bars and rolling 7-day line; week-ranged like `load`: --weeks, --weeks-ahead; --metric km|elev|hours, --sport running|all), plan (sessions by status and unplanned activities; day-ranged: --from, --to, --past, --ahead; default 14 days back, 14 ahead), recovery (resting HR, its 7-day mean, HRV when recorded; day-ranged, default 90 back through today), sleep (stacked sleep stages per night, score when recorded; day-ranged, default 90 back through today), weight (weigh-ins and their 7-day mean; day-ranged, default 90 back through today), intensity (HR-zone time against planned intensity per ISO week; day-ranged, default 56 back and 14 ahead snapped to whole ISO weeks, --sport running|all) or activity ID (pace or speed, heart rate and elevation over distance; positional activity ID, no range flags). Health kinds stop at today even when --to is later. A flag the kind does not use is bad_args. Default path $PACE_HOME/charts/<name>.png; --out must end in .png.", "keyed": "none", "args": ["KIND", "[ID]"], "flags": ["--weeks", "--weeks-ahead", "--from", "--to", "--past", "--ahead", "--metric", "--sport", "--out", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "plan new", "help": "Start a new plan; the current one is archived to $PACE_HOME/plans/.", "keyed": "none", "args": [], "flags": ["--name", "--goal", "--event-date"], "required_flags": ["--name"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan show", "help": "Plan meta, all blocks and the sessions in the range (default: 7 days back, 28 ahead).", "keyed": "none", "args": [], "flags": ["--from", "--to", "--past", "--ahead"], "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "plan status", "help": "Planned vs done for a range (default: 7 days back, 7 ahead): sessions matched to Garmin activities (derived status done, modified, missed, unconfirmed, rest), unplanned activities, totals. Effort (RPE, feel) costs one Garmin call per activity, cached one day; --no-effort skips it.", "keyed": "date", "args": [], "flags": ["--from", "--to", "--past", "--ahead", "--no-effort", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "plan meta", "help": "Set a plan field (name, goal, event_date).", "keyed": "none", "args": ["KEY", "VALUE"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block add", "help": "Add a block; ids are b1, b2, ...", "keyed": "none", "args": [], "flags": ["--name", "--phase", "--start", "--end", "--focus"], "required_flags": ["--name", "--phase", "--start", "--end"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block set", "help": "Change a block; only the given fields change.", "keyed": "none", "args": ["ID"], "flags": ["--name", "--phase", "--start", "--end", "--focus"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan block remove", "help": "Delete a block no session uses.", "keyed": "none", "args": ["ID"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan add", "help": "Add sessions from a JSON file or - (one session or a list; all or nothing).", "keyed": "none", "args": ["FILE"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan set", "help": "Change a session; only the given fields change; `none` clears duration, distance, elevation, block, activity and workout.", "keyed": "none", "args": ["ID"], "flags": ["--date", "--title", "--purpose", "--intensity", "--sport", "--block", "--duration", "--distance", "--elevation", "--notes", "--status", "--activity", "--workout"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan remove", "help": "Delete sessions; refused for any with a Garmin workout.", "keyed": "none", "args": ["ID..."], "flags": [], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "plan push", "help": "Upload and schedule sessions on Garmin (workout named 'pace: <name>'); unchanged pushed sessions are skipped unless --force; past sessions are refused.", "keyed": "none", "args": ["ID..."], "flags": ["--force", "--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "plan unpush", "help": "Delete the sessions' workouts from Garmin (404 counts as done); the sessions stay, planned; refused when both the session date and the date its workout was pushed to are past.", "keyed": "none", "args": ["ID..."], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
+    {"name": "zones show", "help": "Current LT1 and LT2 records with provenance, expired (per threshold), derived zones (rule lt-5z-v1), all records (current_for), candidates, due (estimate, field_test per threshold, reasons), hr_max, the alpha1 (h4) status, the watch's HR zones (garmin; null when unreadable) and in_sync. Two Garmin reads: the activity list for the due rule and the watch zones (cached).", "keyed": "none", "args": [], "flags": ["--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "zones estimate", "help": "Estimate LT1 and LT2 from recent runs (critical speed, HR-speed regression, alpha1, HR drift). Hard cap --max-calls on Garmin calls: the rest is deferred and the estimate logged as partial; a cold run takes up to about 4 minutes (use a 10-minute timeout), near-instant from cache. Always appends a summary to the local estimates log and raises hr_max; --save also stores a full record (source estimate); records never become current without `zones accept`. H4 runs report dropped_coupling and dropped_step (alpha1 windows dropped for coupling or step interference); an H4 marked unreliable by this same estimate keeps its values with flags [alpha1_unreliable] and is not combined into lt1.", "keyed": "none", "args": [], "flags": ["--weeks", "--max-calls", "--include-wrist", "--retry-h4", "--save", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones analyze", "help": "Analyze a field-test run: drift (F1, LT1 HR and pace), time_trial (F2, LT2) or ramp (F3, alpha1 steps; needs the FIT file, downloaded once), or an all-out effort the user or coach marks with race (R, LT2; --laps A-B selects the effort laps, 1-based inclusive, else the whole activity, refused when its first or last lap looks like a warm-up or cool-down; by moving time: 120-1200 s a critical-speed point, CS from the stored efforts and Garmin PRs of the last 16 weeks or a single-effort range from 600 s, else status point_only, LT2 HR from H2 at CS, flagged extrapolated above H2's top speed and null above 1.1x; 1200-3600 s the F2 rules; above 3600 s status check_only; below 120 s bad_args; --save also stores a 120-1200 s effort in zones.json efforts). Needs laps for F2 and F3. Always raises hr_max (strap runs) and, for ramp, records the alpha1 gate outcome (ramp steps carry step_share; a step dominated by step interference is dropped, counted in dropped_step); --save also stores a field-test record, refused (bad_args, the verdict and next test in the message) for an F1 that is not 'at LT1' with even pace, a rejected F2 or an unusable or unbracketed F3.", "keyed": "id", "args": ["ACTIVITY_ID"], "flags": ["--test", "--laps", "--treadmill", "--save", "--no-cache"], "required_flags": ["--test"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones test-workout", "help": "Workout DSL for a field test (drift, time_trial, ramp), targets from the current LT1 record or the newest estimate; add it to the plan. No Garmin call.", "keyed": "none", "args": ["KIND"], "flags": [], "default_fields": [], "series": [], "ttl_s": 0},
+    {"name": "zones add", "help": "Add a threshold record (lab, field_test or estimate); paces are m:ss per km. A lab record becomes current for each threshold it has unless that threshold's current record is newer. Refused when LT1 HR is not below LT2 HR.", "keyed": "none", "args": [], "flags": ["--source", "--date", "--lt1-hr", "--lt1-pace", "--lt2-hr", "--lt2-pace", "--max-hr", "--rest-hr", "--method", "--confidence", "--activity", "--notes"], "required_flags": ["--source"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones accept", "help": "Make a record current for every threshold it has, or only --only lt1|lt2; refused when the resulting LT1 HR is not below LT2 HR.", "keyed": "none", "args": ["ID"], "flags": ["--only"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones remove", "help": "Delete a record; refused while it is current for a threshold unless --force (then that threshold has no current record).", "keyed": "none", "args": ["ID"], "flags": ["--force"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
+    {"name": "zones push", "help": "Write the current zones to the watch: the five floors (rule lt-5z-v1), and max HR when pace knows it (else Garmin's is kept and zone5Floor must be below it), into every DEFAULT and RUNNING entry of Garmin's HR zones; other entries and fields are kept. Built from one live read of the watch zones (never the cache), then one write; drops the cached watch zones. Refused (bad_args) without a current LT1 and LT2 with HR or with invalid floors; endpoint_unavailable without a DEFAULT or RUNNING entry. --dry-run makes the read, shows {before, after, body} and writes nothing.", "keyed": "none", "args": [], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0, "write": True},
 ]
 
 
@@ -183,16 +238,44 @@ def build_schema(group: str | None) -> dict[str, Any]:
         "groups": {**GROUPS, "activity": "Workouts and activity history; set effort (RPE/feel) on one activity.", "auth": "Authentication.",
                    "cache": "Local cache.", "config": "User configuration.",
                    "workout": "Structured workouts: list, show, push, schedule, delete.",
-                   "log": "Health logs written to Garmin Connect."},
+                   "log": "Health logs written to Garmin Connect.",
+                   "diary": "Athlete diary: the coach's durable memory (local file).",
+                   "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin.",
+                   "load": "Weekly and daily training load.",
+                   "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
+                   "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file); push to the watch."},
         "commands": commands,
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
+        "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
+                  "ref_pattern": REF_PATTERN, "checkin_weight_days_default": WEIGHT_DAYS_DEFAULT},
+        "plan": {"path": "$PACE_HOME/plan.json", "sports": SESSION_SPORTS, "pushable": PUSHABLE,
+                 "untracked": UNTRACKED, "intensities": INTENSITIES, "statuses": STATUSES,
+                 "settable_statuses": SETTABLE_STATUSES,
+                 "derived_statuses": ["done", "modified", "missed", "unconfirmed", "rest"], "phases": PHASES,
+                 "session_fields": SESSION_FIELDS, "modified_tolerance": MODIFIED_TOLERANCE,
+                 "workout_name_prefix": WORKOUT_PREFIX},
+        "zones": {"path": "$PACE_HOME/zones.json", "rule": zonesmod.ZONE_RULE, "sources": list(zonesmod.SOURCES),
+                  "confidences": list(zonesmod.CONFIDENCES), "tests": list(TESTS), "analyze_tests": list(ANALYZE_TESTS),
+                  "lab_valid_days": zonesmod.LAB_VALID_DAYS, "weeks_default": DEFAULT_WEEKS,
+                  "due": {"estimate_every_days": zonesmod.ESTIMATE_EVERY_DAYS,
+                          "field_test_every_days": zonesmod.FIELD_TEST_EVERY_DAYS,
+                          "break_days": zonesmod.BREAK_DAYS, "retrain_days": zonesmod.RETRAIN_DAYS,
+                          "hr_drift_bpm": zonesmod.HR_DRIFT_BPM, "pace_drift_frac": zonesmod.PACE_DRIFT_FRAC,
+                          "hard_training_effect": zonesmod.HARD_EFFORT_TE,
+                          "f3_recent_days": F3_RECENT_DAYS},
+                  "max_calls": {"default": DEFAULT_MAX_CALLS,
+                                "rule": "hard cap on all Garmin calls of one estimate, extension included; each "
+                                        "picked run costs get_activity + get_activity_details, a FIT download one "
+                                        "call; cache hits are free; at the cap the rest is deferred and the "
+                                        "estimate is logged partial (the due rule skips partial entries)"},
+                  "no_rr_reasons": list(fit.NO_RR_REASONS)},
     }
 
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "zones"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

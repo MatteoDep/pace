@@ -1,0 +1,987 @@
+{
+ "comment": "Synthetic FIT messages (name, fields): 1 Hz records, 20 s pause at 30-50 s with no records and no hrv, 5 RR of 0.4 s per hrv message. Expected alignment: beats resync to the preceding record's elapsed t when the cumulative offset exceeds 3 s (once, after the pause); cadence steps/min = 2 x (89 + 0.5) = 179.",
+ "messages": [
+  [
+   "session",
+   {
+    "start_time": "2026-10-01T08:00:00+00:00",
+    "total_elapsed_time": 70.0,
+    "total_timer_time": 50.0
+   }
+  ],
+  [
+   "event",
+   {
+    "timestamp": "2026-10-01T08:00:00+00:00",
+    "event": "timer",
+    "event_type": "start"
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:00+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 0.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:01+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 3.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:02+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 6.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:03+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 9.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:04+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 12.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:05+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 15.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:06+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 18.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:07+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 21.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:08+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 24.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:09+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 27.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:10+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 30.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:11+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 33.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:12+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 36.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:13+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 39.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:14+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 42.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:15+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 45.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:16+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 48.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:17+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 51.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:18+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 54.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:19+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 57.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:20+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 60.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:21+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 63.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:22+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 66.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:23+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 69.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:24+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 72.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:25+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 75.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:26+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 78.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:27+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 81.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:28+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 84.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:29+00:00",
+    "heart_rate": 150,
+    "enhanced_speed": 3.0,
+    "speed": 3.0,
+    "distance": 87.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "event",
+   {
+    "timestamp": "2026-10-01T08:00:30+00:00",
+    "event": "timer",
+    "event_type": "stop_all"
+   }
+  ],
+  [
+   "event",
+   {
+    "timestamp": "2026-10-01T08:00:50+00:00",
+    "event": "timer",
+    "event_type": "start"
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:50+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 155.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:51+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 158.1,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:52+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 161.2,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:53+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 164.3,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:54+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 167.4,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:55+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 170.5,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:56+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 173.6,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:57+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 176.7,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:58+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 179.8,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:00:59+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 182.9,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:00+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 186.0,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:01+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 189.1,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:02+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 192.2,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:03+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 195.3,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:04+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 198.4,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:05+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 201.5,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:06+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 204.6,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:07+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 207.7,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:08+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 210.8,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "record",
+   {
+    "timestamp": "2026-10-01T08:01:09+00:00",
+    "heart_rate": 152,
+    "enhanced_speed": 3.1,
+    "speed": 3.1,
+    "distance": 213.9,
+    "enhanced_altitude": 12.0,
+    "cadence": 89,
+    "fractional_cadence": 0.5
+   }
+  ],
+  [
+   "hrv",
+   {
+    "time": [
+     0.4,
+     0.4,
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  ]
+ ]
+}

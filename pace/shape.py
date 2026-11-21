@@ -83,11 +83,11 @@ def select_fields(obj: dict, paths: list[str]) -> dict:
     return out
 
 
-def choose_bucket(span_s: int, n_samples: int) -> str:
-    if n_samples <= MAX_ROWS:
+def choose_bucket(span_s: int, n_samples: int, max_rows: int = MAX_ROWS) -> str:
+    if n_samples <= max_rows:
         return "none"
     for name, secs in BUCKETS.items():
-        if span_s / secs <= MAX_ROWS:
+        if span_s / secs <= max_rows:
             return name
     return "1d"
 
