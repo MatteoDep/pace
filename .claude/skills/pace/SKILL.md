@@ -74,7 +74,7 @@ After the run review, in this order, each at most once per session:
 
 ## Intake
 
-Profile keys: `goal`, `event.name`, `event.date`, `availability`, `background`, `other_sports`, `strength`, `preferences`, `checkin.weight_days`.
+Profile keys: `goal`, `event.name`, `event.date`, `availability`, `background`, `other_sports`, `strength`, `preferences`, `checkin.weight_days`, `checkin.gear`, `units`.
 Read them from `pace diary show` before asking anything.
 On the first session do a full intake; afterwards only gaps and changes.
 Ask open questions, one at a time, in conversation (running history and current volume, PBs and recent races with time and date, goals, races, availability, other sports, strength routine, preferences).

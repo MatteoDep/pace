@@ -44,7 +44,7 @@ Both documents live under `data/`, where the Data type lets everyone who can ope
 - Test: `tests/test_diary.py`, `tests/test_schema.py` if it asserts the diary block
 
 **Interfaces:**
-- Produces: `PROFILE_KEYS = ("goal", "event.name", "event.date", "availability", "background", "other_sports", "strength", "preferences", "checkin.weight_days", "checkin.gear", "units", "checkin.last", "dashboard.url")`; `UNITS = ("metric", "imperial")`; `GEAR_DEFAULT = False`; `WEIGHT_DAYS_RANGE = (0, 90)`; `SETTINGS_KEYS = ("checkin.weight_days", "checkin.gear", "units")`; schema `diary` block gains `"units": UNITS`, `"checkin_gear_default": GEAR_DEFAULT`, `"checkin_weight_days_range": list(WEIGHT_DAYS_RANGE)`, `"settings_keys": SETTINGS_KEYS`.
+- Produces: `PROFILE_KEYS = ("goal", "event.name", "event.date", "availability", "background", "other_sports", "strength", "preferences", "checkin.weight_days", "checkin.gear", "units", "checkin.last", "dashboard.url")`; `UNIT_SYSTEMS = ("metric", "imperial")`; `GEAR_DEFAULT = False`; `WEIGHT_DAYS_RANGE = (0, 90)`; `SETTINGS_KEYS = ("checkin.weight_days", "checkin.gear", "units")`; schema `diary` block gains `"units": UNITS`, `"checkin_gear_default": GEAR_DEFAULT`, `"checkin_weight_days_range": list(WEIGHT_DAYS_RANGE)`, `"settings_keys": SETTINGS_KEYS`.
 - Also edits `.claude/skills/pace/SKILL.md`'s Intake "Profile keys:" line (new keys in `PROFILE_KEYS` order) so `test_constants_match` stays green in this task.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_diary.py`

@@ -59,7 +59,7 @@ def test_new_profile_keys() -> None:
         assert diary.set_profile(data, key, " v ")[key] == "v"
     diary.set_profile(data, "checkin.weight_days", "10")
     assert data["profile"]["checkin"]["weight_days"] == 10
-    for bad in ("0", "x"):
+    for bad in ("-1", "x"):
         with pytest.raises(PaceError) as exc:
             diary.set_profile(data, "checkin.weight_days", bad)
         assert exc.value.code == "bad_args"
@@ -309,3 +309,30 @@ def test_tags_stripped_deduplicated() -> None:
     data = diary.load()
     e = _add(data, tags=[" a ", "", "b", "a", "  "])
     assert e["tags"] == ["a", "b"]
+
+
+def test_settings_keys() -> None:
+    data = diary.load()
+    assert diary.set_profile(data, "checkin.weight_days", "0")["checkin"]["weight_days"] == 0
+    for raw, want in (("true", True), ("False", False), (" TRUE ", True)):
+        assert diary.set_profile(data, "checkin.gear", raw)["checkin"]["gear"] is want
+    for bad in ("on", "yes", "1", "maybe"):
+        with pytest.raises(PaceError) as exc:
+            diary.set_profile(data, "checkin.gear", bad)
+        assert exc.value.code == "bad_args"
+    for raw, want in (("metric", "metric"), ("Imperial", "imperial")):
+        assert diary.set_profile(data, "units", raw)["units"] == want
+    for bad in ("si", "us", "statute_us"):
+        with pytest.raises(PaceError) as exc:
+            diary.set_profile(data, "units", bad)
+        assert exc.value.code == "bad_args"
+    diary.unset_profile(data, "checkin.gear")
+    assert "gear" not in data["profile"].get("checkin", {})
+
+
+def test_settings_do_not_stamp_updated() -> None:
+    data = diary.load()
+    for key, value in (("checkin.weight_days", "14"), ("checkin.gear", "true"), ("units", "imperial")):
+        diary.set_profile(data, key, value)
+    diary.unset_profile(data, "units")
+    assert "updated" not in data["profile"]

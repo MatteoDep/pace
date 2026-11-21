@@ -9,7 +9,8 @@ from pace import zones as zonesmod
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
 from pace.commands.zones import ANALYZE_TESTS, DEFAULT_MAX_CALLS, DEFAULT_WEEKS, F3_RECENT_DAYS, TESTS
 from pace.commands.workout import WORKOUT_LIST_FIELDS
-from pace.diary import KINDS, PROFILE_KEYS, REF_PATTERN, WEIGHT_DAYS_DEFAULT
+from pace.diary import (GEAR_DEFAULT, KINDS, PROFILE_KEYS, REF_PATTERN, SETTINGS_KEYS, UNIT_SYSTEMS,
+                        WEIGHT_DAYS_DEFAULT, WEIGHT_DAYS_RANGE)
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
 from pace.plan import (
@@ -248,7 +249,9 @@ def build_schema(group: str | None) -> dict[str, Any]:
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
         "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
-                  "ref_pattern": REF_PATTERN, "checkin_weight_days_default": WEIGHT_DAYS_DEFAULT},
+                  "ref_pattern": REF_PATTERN, "checkin_weight_days_default": WEIGHT_DAYS_DEFAULT,
+                  "checkin_weight_days_range": list(WEIGHT_DAYS_RANGE), "checkin_gear_default": GEAR_DEFAULT,
+                  "units_values": list(UNIT_SYSTEMS), "settings_keys": list(SETTINGS_KEYS)},
         "plan": {"path": "$PACE_HOME/plan.json", "sports": SESSION_SPORTS, "pushable": PUSHABLE,
                  "untracked": UNTRACKED, "intensities": INTENSITIES, "statuses": STATUSES,
                  "settable_statuses": SETTABLE_STATUSES,
