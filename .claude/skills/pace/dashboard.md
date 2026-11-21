@@ -18,8 +18,19 @@ Steps, exactly:
 1. `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"`.
 2. Upload it to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
 3. Read `datasets/load` for its `version` and its current `source.url`; one `update` pinned to that version: `{"source": {"url": "<new>"}, "updated": {"at": "<export Generated time>", "by": "pace coach"}}`.
-4. Delete the replaced asset (the old `/_blob/<id>`).
+4. Keep the asset you just replaced, since a page open during the refresh may still fetch it; delete the older load exports (Artifact `list` with `scope: "assets"`, then delete each `application/json` asset that is neither the new one nor the replaced one; never touch assets of other types).
 5. ArtifactData `list` on collection `data/users/me`, once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
+6. Write the current settings (Settings below).
+
+## Settings
+
+The profile panel on the page shows the coach settings and lets the user request changes.
+Two store documents under `data/`, where everyone who can open the page reads and only editors write:
+- `data/settings-current`: `{"weight_days": int, "gear": bool, "units": "metric"|"imperial", "at": "<ISO time>"}`, defaults filled in for unset keys.
+  Only the coach writes it, with ArtifactData `set`: at the end of every Refresh, after applying pending settings, and after a change made in conversation.
+- `data/settings-pending`: the requested fields (any of the three) plus `at`.
+  Only the page writes it, merging a new request into the existing document; the coach reads it with ArtifactData `get`, applies it (SKILL.md, Settings), then `delete`s it pinned to the version it read.
+The page reads both through the datasets `settings_current` and `settings_pending` (`kind: "store"`).
 
 ## Change a view
 
@@ -29,4 +40,4 @@ Deep dives (one run, one block, a comparison) are separate plain artifacts or `p
 ## Unattended runs
 
 The unattended session (project 2) refreshes only; it never creates or redesigns the dashboard.
-It needs permission for the Bash `pace` commands, the Artifact asset upload and delete, and ArtifactData reads and updates on this artifact.
+It needs permission for the Bash `pace` commands, the Artifact asset upload and delete, and ArtifactData reads, updates, sets and deletes on this artifact (the settings documents).
