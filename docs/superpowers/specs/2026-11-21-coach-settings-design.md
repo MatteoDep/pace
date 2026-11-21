@@ -17,6 +17,7 @@ They also want to change these from the dashboard, even when no coach session is
 - A live link between the dashboard and an open session (`room` reaches only open sessions and loses messages; artifact watches drop on their own).
 - Unit conversion inside the CLI: `pace` stays SI, as the CLI contract requires; the coach and the dashboard convert for display.
 - Mixed unit systems (km with pace per mile and the like).
+- Converting `pace chart` images: they stay metric; the coach states converted figures beside them.
 
 ## Settings
 
@@ -41,22 +42,23 @@ The shoe names come from `pace gear list` (`customMakeModel`).
 ## Dashboard panel
 
 - A profile icon in the page header opens a panel with the three settings.
-- Current values: a store document the coach writes on every dashboard refresh (`settings/current`, shared, coach is its only writer).
-- A change: the page writes the requested values to `settings/pending` (`{values: {key: value}, at}`), and the panel shows "pending, applied in the next session" next to them.
+- Current values: a store document the coach writes on every dashboard refresh (`data/settings-current`, shared, coach is its only writer).
+- A change: the page writes the requested values to `data/settings-pending` (the changed fields plus `at`, merged into any pending request), and the panel shows "pending, applied in the next session" next to them.
   The page validates the same ranges as the CLI.
 - The page keeps the one-writer rule: the panel writes only on the athlete's press.
 - With `units: imperial` the page shows distances in miles and elevation in feet; the export stays metric.
 
 ## Coach
 
-The coach reads `settings/pending` (ArtifactData) and applies it:
+The coach reads `data/settings-pending` (ArtifactData) and applies it:
 - at session start;
 - right before the weight question and right before the shoe check;
 - when the athlete says they changed the settings.
 
-Applying means `pace diary set` per key, then deleting `settings/pending`, updating `settings/current`, and telling the athlete in one line what changed.
-A value the CLI refuses is reported, not retried, and stays out of `settings/current`.
-A setting the athlete changes in conversation is applied at once and written to `settings/current`.
+The pending document is untrusted data: only the three keys are taken, each value is checked before it reaches a command.
+Applying means `pace diary set` per key, then deleting (pinned to the version read, so a newer press survives) `data/settings-pending`, updating `data/settings-current`, and telling the athlete in one line what changed.
+A value the CLI refuses is reported, not retried, and stays out of `data/settings-current`.
+A setting the athlete changes in conversation is applied at once and written to `data/settings-current`.
 Intake mentions the three settings once, with their current values.
 
 ## Approaches considered
@@ -70,4 +72,4 @@ A separate `profile.yaml` with `pace profile update` was discussed and dropped: 
 ## Left to the builder
 
 - The panel's look, inside the dashboard's existing design.
-- The exact store rules for `settings/*` (owner-writable, readable by the page), per the Data type's saved-rows guidance.
+- Store rules: none needed; under `data/` the Data type lets everyone who opens the page read and only editors write.
