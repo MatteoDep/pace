@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from pace.api import ApiError
 from pace.cache import Cache
+from pace.dates import sample_days
 from pace.factory import build_command, build_group
 from pace.shape import SeriesSpec
 from pace.spec import GROUPS, EndpointSpec, specs_for
@@ -71,7 +72,7 @@ def test_dated_range_ascending_and_args_echo(fake_api) -> None:
     assert code == 0 and err == ""
     assert doc["ok"] is True and doc["command"] == "wellness hr"
     assert [d["date"] for d in doc["data"]] == ["2026-01-01", "2026-01-02", "2026-01-03"]
-    assert doc["args"] == {"from": "2026-01-01", "to": "2026-01-03", "fields": "default", "bucket": "auto", "raw": False}
+    assert doc["args"] == {"from": "2026-01-01", "to": "2026-01-03", "every": 1, "fields": "default", "bucket": "auto", "raw": False}
     assert doc["cache"] == {"hit": False, "oldest_age_s": 0}
     assert [a for _, a in fake_api["calls"]] == [("2026-01-01",), ("2026-01-02",), ("2026-01-03",)]
 
@@ -246,3 +247,36 @@ def test_every_registry_group_builds_and_renders_help(group) -> None:
             assert "--from" in res.stdout
         if spec.id_arg is not None:
             assert spec.id_arg in res.stdout
+
+
+def test_every_calls_only_grid_days_and_the_last(fake_api) -> None:
+    code, doc, _ = _invoke(_app(DATED), "--to", "2026-01-15", "--days", "15", "--every", "7")
+    called = [a[0] for _, a in fake_api["calls"]]
+    assert code == 0 and called == [d.isoformat() for d in sample_days(date(2026, 1, 1), date(2026, 1, 15), 7)]
+    assert doc["args"]["every"] == 7
+
+
+def test_every_zero_is_bad_args(fake_api) -> None:
+    code, doc, _ = _invoke(_app(DATED), "--every", "0")
+    assert code == 2 and doc["error"]["code"] == "bad_args" and fake_api["calls"] == []
+
+
+SPAN = EndpointSpec("training", "race-predictions", "h", "get_race_predictions", 3600, dated="span",
+                    span_args=("daily",))
+
+
+def test_span_without_range_calls_with_no_dates(fake_api) -> None:
+    code, doc, _ = _invoke(_app(SPAN))
+    assert code == 0 and fake_api["calls"] == [("get_race_predictions", ())]
+
+
+def test_span_range_is_one_call(fake_api) -> None:
+    fake_api["payload"] = lambda m, a: [{"calendarDate": "2026-01-01"}, {"calendarDate": "2026-01-02"}]
+    code, doc, _ = _invoke(_app(SPAN), "--to", "2026-01-02", "--days", "2")
+    assert code == 0 and fake_api["calls"] == [("get_race_predictions", ("2026-01-01", "2026-01-02", "daily"))]
+    assert [r["calendarDate"] for r in doc["data"]] == ["2026-01-01", "2026-01-02"]
+
+
+def test_span_range_too_long_is_bad_args(fake_api) -> None:
+    code, doc, _ = _invoke(_app(SPAN), "--days", "400")
+    assert code == 2 and fake_api["calls"] == []

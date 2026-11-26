@@ -3,6 +3,9 @@
 Command map, workout DSL and presentation tables for the pace coaching skill.
 Generated from `pace schema` (version 2.0.0) when the skill was written; `pace schema <group>` is the authority for flags, fields and rules.
 Keyed: `date` takes `--from/--to/--days` (`plan status` and `workout calendar` take `--past/--ahead` instead of `--days`), `id` takes a positional id, `week` takes `--weeks`, `none` takes no range.
+`--every N` on a per-day date-keyed read samples one day every N days.
+`pace training race-predictions` takes `--from/--to/--days` for one call over a range (latest prediction without them).
+`pace load --rows` returns the dashboard rows as data.
 Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (diary, plan, zones files); see `## Writes` in SKILL.md.
 
 ## Command map
@@ -74,7 +77,7 @@ Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (d
 | training | `pace training endurance` | date | Endurance score. |
 | training | `pace training hill-score` | date | Hill score. |
 | training | `pace training fitness-age` | date | Fitness age. |
-| training | `pace training race-predictions` | none | Predicted 5k, 10k, half and marathon times. |
+| training | `pace training race-predictions` | date | Predicted 5k, 10k, half and marathon times. |
 | wellness | `pace wellness sleep-range` | date | How did I sleep over these nights (stages, resting HR)? One call per 28 days. |
 | wellness | `pace wellness sleep` | date | Sleep of one night in detail (stages, overnight HR, respiration). |
 | wellness | `pace wellness summary` | date | Daily steps, calories, distance, floors, resting HR. |

@@ -68,6 +68,17 @@ A Ctrl-C during a command is caught at the top level and emitted as `{"ok": fals
 If some days fail and some succeed, the failed days appear in `data` as `{"date": ..., "error": {"code": ..., "message": ...}}`, the envelope is `ok: true`, exit 0.
 If every day fails, the envelope is `ok: false` with the first error.
 
+### Sampling a range with `--every`
+
+Date-keyed commands that make one Garmin call per day take `--every N` (default 1) to call only every Nth day.
+The grid is anchored on the calendar (a day is sampled when its proleptic ordinal, `date.toordinal()`, is divisible by N), plus the last day of the range, so a range that moves by one day reuses the cached days.
+`--every 0` or less is `bad_args`.
+The envelope args echo `every`, and `data` holds only the sampled days.
+Commands that fetch a whole range in one call (`wellness sleep-range`, `activity list`, `training race-predictions`) have no `--every`.
+
+`training race-predictions` with no range flag returns the latest prediction, as before.
+With `--from`, `--to` or `--days` it makes one Garmin call over the range (at most 366 days) and returns one row per day with `calendarDate`, `time5K`, `time10K`, `timeHalfMarathon` and `timeMarathon`; the args echo `from` and `to` (null without a range).
+
 ### Shaping flags (every data command)
 
 - `--fields default|all|<a,b.c,d>`.
@@ -421,6 +432,9 @@ It makes one `get_activities_by_date` call from that day to today (skipped when 
 That method pages internally in requests the rate limiter does not count.
 
 ### Export
+
+`pace load --rows` returns the same rows as `--export` in `data` (a list) instead of writing a file.
+`--rows` with `--export` or with `--sport` is `bad_args`.
 
 `pace load --export PATH` takes the usual range flags and writes one JSON file for the dashboard instead of returning the load data.
 `--sport` with `--export` is `bad_args`: both sports are computed, and the envelope args echo `"sport": null`.

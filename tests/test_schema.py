@@ -212,3 +212,11 @@ def test_zones_in_schema() -> None:
     res = runner.invoke(app, ["schema", "zones"])
     assert res.exit_code == 0
     assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"zones"}
+
+
+def test_every_and_span_flags_in_schema() -> None:
+    cmds = {c["name"]: c for c in build_schema(None)["commands"]}
+    assert "--every" in cmds["wellness sleep"]["flags"] and "--every" in cmds["training fitness-age"]["flags"]
+    rp = cmds["training race-predictions"]
+    assert rp["keyed"] == "date" and {"--from", "--to", "--days"} <= set(rp["flags"]) and "--every" not in rp["flags"]
+    assert "--rows" in cmds["load"]["flags"]

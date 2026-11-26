@@ -79,6 +79,7 @@ GLOBAL_FLAGS = {
     "--raw": "Garmin JSON verbatim inside the envelope",
     "--no-cache": "bypass the local cache for this call",
     "--verbose": "(root) log fetch/cache events to stderr",
+    "--every": "date-keyed per-day commands: sample one day every N days (grid anchored on the calendar, plus the last day); not on the one-call range commands",
     "--from/--to/--days": "date-keyed commands; --from overrides --days; dates: YYYY-MM-DD | today | yesterday | -Nd",
     "--help": "plain-text usage, not JSON; exit 0",
     "required_flags": "not a flag: a command entry's `required_flags` lists the options that must be given",
@@ -176,7 +177,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
      "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "wellness sleep-range", "help": "Nightly sleep (deep, light, REM, awake seconds), resting HR, average HR, HRV and sleep score for a date range, from one Garmin call per 28 days; fields are null when absent (HRV and score on the current watch). Rows: date, sleep_s, deep_s, light_s, rem_s, awake_s, rhr, avg_hr, hrv, hrv_7d, score.", "keyed": "date", "args": [], "flags": RANGE_FLAGS + ["--no-cache"], "default_fields": [], "series": [], "ttl_s": 3600},
-    {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. --export PATH writes dashboard rows (both sports; --sport is bad_args) and returns data = {path, rows}. Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--export", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. --export PATH writes dashboard rows (both sports; --sport is bad_args) and returns data = {path, rows}; --rows returns those rows as data (not with --export or --sport). Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--export", "--rows", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
     {"name": "chart", "help": "Render a PNG chart (1200 x 675 px) and return data = {path, kind, range, summary}. KIND: volume (weekly bars and rolling 7-day line; week-ranged like `load`: --weeks, --weeks-ahead; --metric km|elev|hours, --sport running|all), plan (sessions by status and unplanned activities; day-ranged: --from, --to, --past, --ahead; default 14 days back, 14 ahead), recovery (resting HR, its 7-day mean, HRV when recorded; day-ranged, default 90 back through today), sleep (stacked sleep stages per night, score when recorded; day-ranged, default 90 back through today), weight (weigh-ins and their 7-day mean; day-ranged, default 90 back through today), intensity (HR-zone time against planned intensity per ISO week; day-ranged, default 56 back and 14 ahead snapped to whole ISO weeks, --sport running|all) or activity ID (pace or speed, heart rate and elevation over distance; positional activity ID, no range flags). Health kinds stop at today even when --to is later. A flag the kind does not use is bad_args. Default path $PACE_HOME/charts/<name>.png; --out must end in .png.", "keyed": "none", "args": ["KIND", "[ID]"], "flags": ["--weeks", "--weeks-ahead", "--from", "--to", "--past", "--ahead", "--metric", "--sport", "--out", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
     {"name": "plan new", "help": "Start a new plan; the current one is archived to $PACE_HOME/plans/.", "keyed": "none", "args": [], "flags": ["--name", "--goal", "--event-date"], "required_flags": ["--name"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan show", "help": "Plan meta, all blocks and the sessions in the range (default: 7 days back, 28 ahead).", "keyed": "none", "args": [], "flags": ["--from", "--to", "--past", "--ahead"], "default_fields": [], "series": [], "ttl_s": 0},
@@ -206,7 +207,7 @@ def _keyed(spec: EndpointSpec) -> str:
         return "id+date"
     if spec.id_arg:
         return "id"
-    if spec.dated:
+    if spec.dated:  # single, range and span
         return "date"
     return "none"
 
@@ -215,7 +216,8 @@ def _entry(spec: EndpointSpec) -> dict[str, Any]:
     return {
         "name": spec.command, "help": spec.help, "keyed": _keyed(spec),
         "args": [spec.id_arg] if spec.id_arg else [],
-        "flags": (RANGE_FLAGS if spec.dated else []) + SHAPE_FLAGS,
+        "flags": (RANGE_FLAGS if spec.dated else []) + (["--every"] if spec.dated in ("single", "range") else [])
+                 + SHAPE_FLAGS,
         "default_fields": list(spec.default_fields),
         "series": [s.path for s in spec.series],
         "ttl_s": spec.ttl,

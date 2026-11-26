@@ -22,7 +22,9 @@ class EndpointSpec:
     help: str
     method: str
     ttl: int
-    dated: Literal[None, "single", "range"] = None
+    #: single: one call per day with (day,); range: per day with (day, day); span: one call over the
+    #: whole range with (start, end, *span_args), or with no dates when no range flag is given.
+    dated: Literal[None, "single", "range", "span"] = None
     id_arg: str | None = None
     id_type: type = int
     resolver: Literal[None, "upn"] = None
@@ -31,6 +33,8 @@ class EndpointSpec:
     unwrap: Literal[None, "first"] = None
     #: Validates/normalises the id argument before any call; raises PaceError(bad_args).
     id_check: Callable[[Any], Any] | None = None
+    #: Extra positional args after (start, end) for dated="span".
+    span_args: tuple[Any, ...] = ()
 
     @property
     def command(self) -> str:
@@ -240,7 +244,7 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "periodAvgScore",
                  )),
     EndpointSpec("training", "race-predictions", "Predicted race times (5k, 10k, half, marathon).",
-                 "get_race_predictions", TTL_TRAINING,
+                 "get_race_predictions", TTL_TRAINING, dated="span", span_args=("daily",),
                  default_fields=(
                      "calendarDate",
                      "time5K",

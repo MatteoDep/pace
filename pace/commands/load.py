@@ -64,18 +64,31 @@ def _next_row(sessions: list[dict], acts: list[dict], today: date) -> dict | Non
     return None
 
 
+def _dashboard_rows(acts: list[dict], sessions: list[dict], plan_data: dict, *, start: date, end: date,
+                    today: date) -> list[dict]:
+    rows: list[dict] = []
+    for sp in SPORTS:
+        d = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sp)
+        rows += _week_rows(d, today) + _day_rows(d, today)
+    nxt = _next_row(plan_data.get("sessions", []), acts, today)
+    return rows + [nxt] if nxt else rows
+
+
 def load(weeks: int = typer.Option(16, "--weeks", help="Whole weeks back, this week included (>= 1)."),
          weeks_ahead: int | None = typer.Option(None, "--weeks-ahead",
                                                 help="Weeks after this one; default: through the plan's last session."),
          sport_opt: str | None = typer.Option(None, "--sport", help="running (default) or all."),
          export: Path | None = typer.Option(None, "--export", help="Write dashboard rows (both sports) to this JSON file."),
+         rows_opt: bool = typer.Option(False, "--rows", help="Return the dashboard rows (both sports) as data."),
          no_cache: bool = NO_CACHE_OPT) -> None:
     """Weekly and daily load: km, elevation and hours; actual, planned, projected and a rolling 7-day sum."""
     sport = sport_opt or "running"
 
     async def work() -> Result:
-        if export is not None and sport_opt is not None:
-            raise PaceError("bad_args", "--sport cannot be combined with --export (both sports are exported)")
+        if rows_opt and export is not None:
+            raise PaceError("bad_args", "--rows cannot be combined with --export")
+        if (export is not None or rows_opt) and sport_opt is not None:
+            raise PaceError("bad_args", "--sport cannot be combined with --export or --rows (both sports are used)")
         if sport not in SPORTS:
             raise PaceError("bad_args", f"--sport must be one of {', '.join(SPORTS)}")
         if weeks < 1:
@@ -92,13 +105,11 @@ def load(weeks: int = typer.Option(16, "--weeks", help="Whole weeks back, this w
                                                          refresh=no_cache)
         finally:
             cache.close()
+        if rows_opt:
+            return Result(_dashboard_rows(acts, sessions, plan_data, start=start, end=end, today=today),
+                          tracker.report())
         if export is not None:
-            rows = []
-            for sp in SPORTS:
-                d = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sp)
-                rows += _week_rows(d, today) + _day_rows(d, today)
-            nxt = _next_row(plan_data.get("sessions", []), acts, today)
-            rows += [nxt] if nxt else []
+            rows = _dashboard_rows(acts, sessions, plan_data, start=start, end=end, today=today)
             meta = [{"label": "Generated", "value": datetime.now().astimezone().isoformat(timespec="seconds")},
                     {"label": "Command", "value": "pace load --export"}]
             save_json(export, {"rows": rows, "meta": meta})
@@ -106,4 +117,4 @@ def load(weeks: int = typer.Option(16, "--weeks", help="Whole weeks back, this w
         data = load_mod.aggregate(acts, sessions, start=start, end=end, today=today, sport=sport)
         return Result(data, tracker.report())
 
-    run("load", {"weeks": weeks, "weeks_ahead": weeks_ahead, "sport": None if export is not None else sport}, work)
+    run("load", {"weeks": weeks, "weeks_ahead": weeks_ahead, "sport": None if export is not None or rows_opt else sport}, work)
