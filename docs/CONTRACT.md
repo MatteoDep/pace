@@ -129,7 +129,8 @@ A warm cache costs nothing; TTLs are today `spec.ttl` (5 min wellness, 1 h train
 Prefer a narrow range, and expect `--days 30` to sit there for minutes rather than to fail.
 
 `pace export` runs several commands in one process under a budget: a cap on Garmin calls, checked under the limiter lock so a gathered fan-out is counted call by call, and a deadline that includes the limiter's waits.
-A call that would exceed either is not sent and comes back as `deferred`.
+A call that would exceed either is not sent and comes back as `deferred`; this includes a call that was waiting for a concurrency slot when the budget ended.
+Calls already in flight when it ends still finish.
 A `rate_limited` or `network` error ends the budget too.
 Cache hits cost nothing.
 

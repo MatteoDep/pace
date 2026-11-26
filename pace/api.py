@@ -120,11 +120,18 @@ async def safe_call(
 async def _call(
     method_name: str, *args: Any, **kwargs: Any
 ) -> tuple[bool, Any, ApiError | None]:
+    budget = active_budget()
     try:
-        await limiter.acquire(budget=active_budget())
+        await limiter.acquire(budget=budget)
     except BudgetExhausted as exc:
         return False, None, ApiError("deferred", f"Not sent: {exc.reason}")
     async with slot():
+        if budget is not None:
+            # The call may have waited for a slot while others stopped the budget or ran out the clock.
+            try:
+                budget.check_started()
+            except BudgetExhausted as exc:
+                return False, None, ApiError("deferred", f"Not sent: {exc.reason}")
         try:
             method = getattr(get_api(), method_name)
             result = await asyncio.to_thread(method, *args, **kwargs)

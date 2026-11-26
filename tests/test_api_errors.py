@@ -1,6 +1,7 @@
 """Tests for HTTP error classification in the API wrapper."""
 
 import asyncio
+import time
 
 import pytest
 import requests
@@ -8,7 +9,7 @@ from garminconnect import Garmin, GarminConnectConnectionError, GarminConnectToo
 from garth.exc import GarthHTTPError
 
 from pace.api import ApiError, _status_from_text, classify_http, safe_call
-from pace.ratelimit import RateLimiter, budget
+from pace.ratelimit import CONCURRENCY, RateLimiter, budget
 from pace.envelope import HINTS, PaceError, exit_code
 
 
@@ -208,6 +209,7 @@ async def test_real_library_connectapi_wrapper_keeps_reason(monkeypatch) -> None
 class _FakeClient:
     def __init__(self) -> None:
         self.calls = 0
+        self.delay = 0.0
         self._raise: list[Exception] = []
 
     def raise_next(self, exc: Exception) -> None:
@@ -215,6 +217,7 @@ class _FakeClient:
 
     def get_x(self):
         self.calls += 1
+        time.sleep(self.delay)
         if self._raise:
             raise self._raise.pop(0)
         return {"x": 1}
@@ -260,3 +263,17 @@ def test_rate_limited_ends_the_budget(fake_client) -> None:
 
 def test_no_budget_no_change(fake_client) -> None:
     assert all(asyncio.run(safe_call("get_x"))[0] for _ in range(3)) and fake_client.calls == 3
+
+
+def test_stopped_budget_defers_calls_already_waiting_for_a_slot(fake_client) -> None:
+    fake_client.delay = 0.2
+    fake_client.raise_next(GarminConnectTooManyRequestsError("429"))
+
+    async def fan():
+        return await asyncio.gather(*(safe_call("get_x") for _ in range(8)))
+
+    with budget(100, 60) as b:
+        res = asyncio.run(fan())
+    assert b.stopped == "rate_limited"
+    assert fake_client.calls <= CONCURRENCY
+    assert sum(1 for ok, _, err in res if not ok and err.code == "deferred") == 8 - fake_client.calls

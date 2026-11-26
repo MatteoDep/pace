@@ -35,6 +35,14 @@ class Budget:
         if time.monotonic() + wait > self.deadline:
             raise BudgetExhausted("time budget spent")
 
+    def check_started(self) -> None:
+        """Raise BudgetExhausted if a call already counted must still not go out (budget stopped or
+        deadline passed while it waited for a slot). The call count is not re-checked."""
+        if self.stopped:
+            raise BudgetExhausted(f"stopped after {self.stopped}")
+        if time.monotonic() > self.deadline:
+            raise BudgetExhausted("time budget spent")
+
     def stop(self, code: str) -> None:
         self.stopped = code
 
