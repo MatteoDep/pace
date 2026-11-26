@@ -52,6 +52,7 @@
 | `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
 | `rejected` | 1 | 4xx on a write other than 401/403/404/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
 | `network` | 1 | connection failure, 5xx |
+| `deferred` | 1 | only inside `pace export`, when its call or time budget ran out; nothing was sent to Garmin |
 | `internal` | 1 | anything else |
 | `internal` | 130 | aborted by user (Ctrl-C) |
 
@@ -126,6 +127,11 @@ Garmin is called through one process-wide limiter, and `pace schema` publishes i
 A date-keyed command issues one Garmin call per day, so a cold range costs roughly `days x 6 s`: `--days 7` about 40 s, `--days 30` about 3 minutes, the 366-day maximum about 37 minutes.
 A warm cache costs nothing; TTLs are today `spec.ttl` (5 min wellness, 1 h training, 1 day static), yesterday 1 day, older 7 days.
 Prefer a narrow range, and expect `--days 30` to sit there for minutes rather than to fail.
+
+`pace export` runs several commands in one process under a budget: a cap on Garmin calls, checked under the limiter lock so a gathered fan-out is counted call by call, and a deadline that includes the limiter's waits.
+A call that would exceed either is not sent and comes back as `deferred`.
+A `rate_limited` or `network` error ends the budget too.
+Cache hits cost nothing.
 
 ### Units (static)
 

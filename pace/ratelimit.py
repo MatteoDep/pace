@@ -2,7 +2,41 @@
 
 import asyncio
 import time
+import weakref
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+
+class BudgetExhausted(Exception):
+    """The active budget forbids another Garmin call."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass
+class Budget:
+    """Call and time cap for a batch of commands; `deadline` is on the `time.monotonic()` clock."""
+
+    max_calls: int
+    deadline: float
+    calls: int = 0
+    stopped: str | None = None
+
+    def check(self, wait: float = 0.0) -> None:
+        """Raise BudgetExhausted if a call that starts after `wait` seconds is not allowed."""
+        if self.stopped:
+            raise BudgetExhausted(f"stopped after {self.stopped}")
+        if self.calls >= self.max_calls:
+            raise BudgetExhausted(f"call budget of {self.max_calls} spent")
+        if time.monotonic() + wait > self.deadline:
+            raise BudgetExhausted("time budget spent")
+
+    def stop(self, code: str) -> None:
+        self.stopped = code
 
 
 class RateLimiter:
@@ -25,11 +59,25 @@ class RateLimiter:
         self.per_day = per_day
         self._history: deque[float] = deque()
         self._last_call: float = 0.0
-        self._lock = asyncio.Lock()
+        # asyncio primitives bind to the loop that first waits on them; `pace export` runs one
+        # asyncio.run per command, so keep one lock per running loop and one shared history.
+        self._locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            weakref.WeakKeyDictionary()
+        )
 
-    async def acquire(self) -> None:
-        """Block until a call is permitted, then register it."""
-        async with self._lock:
+    def _lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        lock = self._locks.get(loop)
+        if lock is None:
+            lock = self._locks[loop] = asyncio.Lock()
+        return lock
+
+    async def acquire(self, budget: Budget | None = None) -> None:
+        """Block until a call is permitted, then register it.
+
+        With a budget, raise BudgetExhausted instead of sleeping past its limits, and count the
+        call when it is registered."""
+        async with self._lock():
             while True:
                 now = time.monotonic()
 
@@ -57,16 +105,54 @@ class RateLimiter:
                 if calls_last_day >= self.per_day:
                     wait = max(wait, 86400.0 - (now - self._history[0]) + 0.1)
 
+                if budget is not None:
+                    budget.check(wait)
                 if wait <= 0:
                     break
                 await asyncio.sleep(wait)
 
             self._last_call = time.monotonic()
             self._history.append(self._last_call)
+            if budget is not None:
+                budget.calls += 1
 
 
 #: Maximum Garmin calls in flight at once (a day fan-out is gathered, not serialized).
 CONCURRENCY = 3
 
 limiter = RateLimiter()
-concurrency = asyncio.Semaphore(CONCURRENCY)
+
+#: Call outcomes after which the rest of a budget is not worth spending.
+STOP_CODES = ("rate_limited", "network")
+
+_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def slot() -> asyncio.Semaphore:
+    """The CONCURRENCY-slot semaphore of the running event loop (one per loop)."""
+    loop = asyncio.get_running_loop()
+    sem = _slots.get(loop)
+    if sem is None:
+        sem = _slots[loop] = asyncio.Semaphore(CONCURRENCY)
+    return sem
+
+
+_active: Budget | None = None
+
+
+def active_budget() -> Budget | None:
+    return _active
+
+
+@contextmanager
+def budget(max_calls: int, max_seconds: float) -> Iterator[Budget]:
+    """Make a new Budget the active one for the block. Budgets do not nest."""
+    global _active
+    if _active is not None:
+        raise RuntimeError("a budget is already active")
+    b = Budget(max_calls=max_calls, deadline=time.monotonic() + max_seconds)
+    _active = b
+    try:
+        yield b
+    finally:
+        _active = None

@@ -16,7 +16,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 from pace import auth
-from pace.ratelimit import concurrency, limiter
+from pace.ratelimit import STOP_CODES, BudgetExhausted, active_budget, limiter, slot
 
 # The garminconnect library logs full tracebacks on every HTTP error (404, 400,
 # etc.) before raising. We catch and classify those errors in `safe_call`, so
@@ -110,8 +110,21 @@ async def safe_call(
     method_name: str, *args: Any, **kwargs: Any
 ) -> tuple[bool, Any, ApiError | None]:
     """Rate-limited async wrapper. Returns (success, result, error)."""
-    await limiter.acquire()
-    async with concurrency:
+    ok, result, err = await _call(method_name, *args, **kwargs)
+    budget = active_budget()
+    if err is not None and err.code in STOP_CODES and budget is not None:
+        budget.stop(err.code)
+    return ok, result, err
+
+
+async def _call(
+    method_name: str, *args: Any, **kwargs: Any
+) -> tuple[bool, Any, ApiError | None]:
+    try:
+        await limiter.acquire(budget=active_budget())
+    except BudgetExhausted as exc:
+        return False, None, ApiError("deferred", f"Not sent: {exc.reason}")
+    async with slot():
         try:
             method = getattr(get_api(), method_name)
             result = await asyncio.to_thread(method, *args, **kwargs)

@@ -1,12 +1,14 @@
 """Tests for HTTP error classification in the API wrapper."""
 
+import asyncio
+
 import pytest
 import requests
-from garminconnect import Garmin, GarminConnectConnectionError
+from garminconnect import Garmin, GarminConnectConnectionError, GarminConnectTooManyRequestsError
 from garth.exc import GarthHTTPError
 
 from pace.api import ApiError, _status_from_text, classify_http, safe_call
-from pace.ratelimit import RateLimiter
+from pace.ratelimit import RateLimiter, budget
 from pace.envelope import HINTS, PaceError, exit_code
 
 
@@ -201,3 +203,60 @@ async def test_real_library_connectapi_wrapper_keeps_reason(monkeypatch) -> None
     ok, _, err = await safe_call("connectapi", "/x", method="PUT")
     assert not ok and err is not None and err.code == "rejected"
     assert "Gear's start date must be before activity's start date" in err.message
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.calls = 0
+        self._raise: list[Exception] = []
+
+    def raise_next(self, exc: Exception) -> None:
+        self._raise.append(exc)
+
+    def get_x(self):
+        self.calls += 1
+        if self._raise:
+            raise self._raise.pop(0)
+        return {"x": 1}
+
+
+@pytest.fixture
+def fake_client(monkeypatch) -> _FakeClient:
+    client = _FakeClient()
+    monkeypatch.setattr("pace.api.get_api", lambda: client)
+    monkeypatch.setattr(
+        "pace.api.limiter", RateLimiter(min_interval=0.01, per_minute=1000, per_hour=1000, per_day=1000)
+    )
+    return client
+
+
+def test_budget_caps_a_gathered_fanout(fake_client) -> None:
+    async def fan():
+        return await asyncio.gather(*(safe_call("get_x") for _ in range(5)))
+
+    with budget(2, 60) as b:
+        res = asyncio.run(fan())
+    assert sum(ok for ok, _, _ in res) == 2 and fake_client.calls == 2 and b.calls == 2
+    assert all(err.code == "deferred" for ok, _, err in res if not ok)
+
+
+def test_budget_past_deadline_defers_without_calling(fake_client) -> None:
+    with budget(10, 0):
+        ok, _, err = asyncio.run(safe_call("get_x"))
+    assert not ok and err.code == "deferred" and fake_client.calls == 0
+
+
+def test_rate_limited_ends_the_budget(fake_client) -> None:
+    fake_client.raise_next(GarminConnectTooManyRequestsError("429"))
+
+    async def two():
+        return [await safe_call("get_x"), await safe_call("get_x")]
+
+    with budget(10, 60) as b:
+        first, second = asyncio.run(two())
+    assert first[2].code == "rate_limited" and second[2].code == "deferred"
+    assert b.stopped == "rate_limited" and fake_client.calls == 1
+
+
+def test_no_budget_no_change(fake_client) -> None:
+    assert all(asyncio.run(safe_call("get_x"))[0] for _ in range(3)) and fake_client.calls == 3
