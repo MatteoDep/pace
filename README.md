@@ -57,6 +57,7 @@ pace zones add --source lab --lt1-hr 140 --lt2-hr 165 --lt2-pace 4:10
 pace zones accept <record-id> --only lt2
 pace zones push --dry-run
 pace load --weeks 8 --weeks-ahead 4
+pace export
 pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
 pace chart recovery --past 28

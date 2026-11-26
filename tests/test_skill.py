@@ -214,3 +214,10 @@ def test_settings_rules() -> None:
     dash = (SKILL.parent / "dashboard.md").read_text()
     assert "data/settings-pending" in dash and "data/settings-current" in dash
     assert "deletes" in dash
+
+
+def test_dashboard_uses_export() -> None:
+    dash = DASHBOARD.read_text()
+    assert "pace export" in dash and "pace load --export" not in dash
+    assert "## Add a view" in dash and "bolted on" not in dash
+    assert "dash.loader" in dash and "pace export --check" in dash
