@@ -41,7 +41,7 @@ Run review (every session start).
 Pending runs are the activities in the `plan status` days (matched `actual` and `unplanned`) dated D or later that no `feedback` entry references with `activity:<id>`.
 For each, write one short opener built from the data, not a generic question:
 - matched and on target: "Your easy run looked good, anything to add?"
-- matched but off target (intensity vs zone time, duration or distance vs target, RPE vs the session's intent): "I think you ran your easy run a bit too hard (mostly zone 3-4, RPE 6). Was there a change of plans?"
+- matched but off target (intensity vs zone time, the prescribed duration or distance, RPE vs the session's intent; a `modified` status from the estimated target alone is not off target): "I think you ran your easy run a bit too hard (mostly zone 3-4, RPE 6). Was there a change of plans?"
 - unplanned: first check `pace workout calendar --from <date-3d> --to <date+3d>` (did the user move a planned workout?), then ask what it was.
 Several pending runs go in one message, one line each.
 RPE and feel already on the activity are used as given; ask for them only when missing.
@@ -163,6 +163,7 @@ Read `coaching.md` before proposing plan structure, a load change, or a test.
 Building: ask what the user wants (goal, race, timeline, how they like to train); propose structure (blocks, weekly pattern, key sessions) with reasons; adjust to their input.
 Then `pace plan new --name <name> [--goal <goal>] [--event-date <date>]`, `pace plan block add --name <n> --phase <phase> --start <date> --end <date>`, and the sessions as a JSON list on stdin with `pace plan add -`.
 A session: `date`, `sport`, `title`, `intensity` (rest, easy, moderate, hard), and optionally `purpose`, `block`, `target` (`duration_s`, `distance_m`, `elevation_m`), `workout` (the DSL of `reference.md`), `notes`.
+Runs, walks and hikes get both `duration_s` and `distance_m`: the one the session prescribes, named in the title ("50 min easy", "16 km long run"), and the other estimated from the pace you expect at its intensity, so the load chart counts the session in km and in hours.
 Strength and mobility are text sessions (`sport` strength or mobility, no `workout`); cycling, swimming, walking and hiking may carry a workout.
 Push only the next few days, only on yes: `pace plan push ID...`.
 A pushed, unchanged session is skipped; use `--force` only to replace one on purpose.
