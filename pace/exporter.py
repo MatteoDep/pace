@@ -82,7 +82,8 @@ def _is_failed_day(item: Any) -> bool:
 
 
 def extract(data: Any, ds: Dataset) -> tuple[list[dict], list[str]]:
-    """(rows, failed day ISO dates) of a successful envelope's `data`, cut to the recipe's columns."""
+    """(rows, failed day ISO dates) of a successful envelope's `data`, cut to the recipe's columns.
+    A day that failed with auth_required ends the whole export, as a failed command does."""
     if ds.rows is not None:
         found, data = _get_path(data, ds.rows)
         if not found:  # pace prunes empty lists, so a range without rows has no key at all
@@ -93,6 +94,7 @@ def extract(data: Any, ds: Dataset) -> tuple[list[dict], list[str]]:
     failed: list[str] = []
     for item in data if isinstance(data, list) else [data]:
         if _is_failed_day(item):
+            _error(item["error"])  # raises on auth_required
             failed.append(item["date"])
             continue
         if not isinstance(item, dict):
@@ -129,17 +131,19 @@ def _previous(section: Any, ds: Dataset) -> dict | None:
     return {"rows": [r for r in rows if isinstance(r, dict)], "generated": meta.get("generated")}
 
 
-def _failure(env: dict) -> dict | None:
-    """None for an ok envelope, else its {code, message}. auth_required ends the whole export."""
-    if env.get("ok") is True:
-        return None
-    err = env.get("error")
+def _error(err: Any) -> dict:
+    """{code, message} of an envelope's or a failed day's error. auth_required ends the whole export."""
     if not isinstance(err, dict):
         err = {}
     code, message = str(err.get("code") or "internal"), str(err.get("message") or "")
     if code == "auth_required":
         raise PaceError(code, message, err.get("http"))
     return {"code": code, "message": message[:MESSAGE_MAX]}
+
+
+def _failure(env: dict) -> dict | None:
+    """None for an ok envelope, else its {code, message}."""
+    return None if env.get("ok") is True else _error(env.get("error"))
 
 
 def _note_cache(env: dict, st: _Section) -> None:

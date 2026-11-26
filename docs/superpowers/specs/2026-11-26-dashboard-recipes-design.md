@@ -105,7 +105,9 @@ The check also covers arguments: `--export`, `--out`, `--out-dir`, `--save` (the
 - Budget: `--max-calls N` (Garmin calls, cache hits are free) and `--max-seconds N`, defaults 60 calls and 480 s, well under the coach's 10-minute tool limit.
   pace's limiter never fails on its own: it sleeps until a slot frees (up to about an hour once 100 calls in an hour are used), so without a budget an expensive recipe hangs and is killed with no bundle written.
   The budget is enforced where every Garmin call passes (`pace.api.safe_call`), inside the limiter's lock, so the calls a fan-out gathers cannot all pass the check at once: a call past `--max-calls`, or one whose limiter wait would end past the deadline, is not sent and fails with the new error code `deferred`.
-  A Garmin `rate_limited` or `network` error also ends the budget, so every later call is deferred instead of hitting the same wall (as `zones estimate` does).
+  A Garmin `rate_limited` error, or a `network` error with no HTTP status (Garmin did not answer, as on a connection failure), also ends the budget, so every later call is deferred instead of hitting the same wall.
+  A `network` error with a 5xx status fails only its call: one endpoint failing says nothing about the others, and ending the budget on it would defer every later dataset on every refresh while that endpoint stays broken.
+  A failed token login ends the budget whatever its status, since it is not tried again in the run.
   Cache hits stay free after the budget ends, so a dataset served from the cache still refreshes.
   A deferred dataset is handled like any other failure (Failures below) with the reason `deferred`; a deferred day counts in `day_errors`; the next refresh continues from the cache.
   Without an active budget (every command outside `pace export`) nothing changes.
@@ -138,7 +140,7 @@ The envelope's `data` is a summary: per dataset `rows`, `calls`, `stale`, `reaso
 - Previous rows are reused only when the previous section has the same column names (kept in its `meta.columns`), so an edited recipe line never gets rows in the old shape.
 - On a successful command, a missing `rows` path means no rows: pace drops empty lists from its output, so a range without weigh-ins has no `dailyWeightSummaries` key.
 - The bundle, readable by everyone who can open the dashboard, carries error codes only; the messages go to the envelope summary for the coach.
-- `auth_required` stops the export: no bundle is written, the previous one stays, and the envelope carries the error, so the coach asks the athlete to log in.
+- `auth_required` stops the export, whether a whole dataset, a `foreach` child or a single failed day returns it: no bundle is written, the previous one stays, and the envelope carries the error, so the coach asks the athlete to log in.
 - Date-keyed commands that fetch one day per call return `{"date", "error"}` items for the days that failed and raise only when every day fails (`pace/factory.py`).
   The export replaces each failed day with the previous bundle's row for the same date (in the column the recipe maps from the path `date`), or drops it when there is none or no column maps `date`, and counts them in `day_errors`.
   So a brief Garmin error never wipes points the previous bundle had, and a missing day does not keep the whole section stale.

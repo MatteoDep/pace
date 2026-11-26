@@ -54,6 +54,9 @@ def _previous(path: Path) -> dict | None:
 
 def _work(rpath: Path, given: bool, out: Path, max_calls: int, max_seconds: int, check: bool,
           init: bool) -> dict[str, Any]:
+    if init and check:
+        raise PaceError("bad_args", "--init and --check do not go together: --init writes the recipe, "
+                                    "--check writes nothing.")
     if init:
         if rpath.exists():
             raise PaceError("bad_args", f"{rpath} exists; edit it, or move it away to start from the default.")
@@ -80,7 +83,7 @@ def export(
     max_seconds: int = typer.Option(EXPORT_MAX_SECONDS, "--max-seconds", help="Time budget in seconds."),
     check: bool = typer.Option(False, "--check", help="Validate the recipe without network calls; write nothing."),
     init: bool = typer.Option(False, "--init", help="Write the default recipe to --recipe or the default path; "
-                                                    "refused when the file exists."),
+                                                    "refused when the file exists, and with --check."),
 ) -> None:
     """Run the dashboard recipe and write the bundle file."""
     rpath = Path(recipe).expanduser() if recipe else recipe_path()

@@ -130,9 +130,6 @@ CONCURRENCY = 3
 
 limiter = RateLimiter()
 
-#: Call outcomes after which the rest of a budget is not worth spending.
-STOP_CODES = ("rate_limited", "network")
-
 _slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 

@@ -367,6 +367,60 @@ def test_auth_required_mid_run_stops_the_export(garmin, tmp_path) -> None:
     assert e.value.code == "auth_required" and ratelimit.active_budget() is None
 
 
+TOKEN_EXPIRED = GarminConnectAuthenticationError("Authentication failed: 401")
+
+
+def test_auth_required_on_one_failed_day_stops_the_export(garmin, tmp_path) -> None:
+    # two days answer and the third is a 401: the command succeeds with one failed day, but the
+    # tokens are rejected all the same, so the export stops as for a whole-dataset 401
+    days = _days(3)
+    garmin.fail("get_fitnessage_data", TOKEN_EXPIRED, args=(days[2],))
+    recipe = _write_recipe(tmp_path / "r.json", [_fa("fa"), SHOES])
+    code, doc = _cli("--recipe", str(recipe))
+    assert code == 3 and doc["error"]["code"] == "auth_required"
+    assert not bundle_path().exists() and garmin.called("get_gear") == []
+    assert len(garmin.called("get_fitnessage_data")) == 3
+
+
+def test_auth_required_from_a_foreach_child_stops_the_export(garmin) -> None:
+    garmin.fail("get_gear_activities", TOKEN_EXPIRED, args=(U2,))
+    with pytest.raises(PaceError) as e:
+        _run([SHOES, SHOE_ACTS, ACTS])
+    assert e.value.code == "auth_required" and garmin.called("get_activities") == []
+    assert ratelimit.active_budget() is None
+
+
+def test_auth_required_on_a_foreach_childs_failed_day_stops_the_export(garmin) -> None:
+    days = _days(3)
+    # the parent fetches today; its child fetches today (cached) and the two days before, one a 401
+    child = {"id": "c", "command": "training fitness-age", "argv": ["--days", "3", "--to", "{date}"],
+             "foreach": {"dataset": "p", "limit": 1}, "columns": {"date": "date", "age": "fitnessAge"}}
+    garmin.fail("get_fitnessage_data", TOKEN_EXPIRED, args=(days[0],))
+    with pytest.raises(PaceError) as e:
+        _run([_fa("p", days=1), child, ACTS])
+    assert e.value.code == "auth_required" and garmin.called("get_activities") == []
+    assert sorted(a[0] for a in garmin.called("get_fitnessage_data")) == days
+
+
+def test_server_error_fails_only_its_dataset(garmin) -> None:
+    # Garmin answered 500: that dataset is stale, and a later cold dataset still runs
+    garmin.fail("get_activities", GarminConnectConnectionError(
+        "HTTP error: Error in request: 500 Server Error: Internal Server Error"))
+    b, s = _run([ACTS, _fa("fa", days=1)])
+    assert s["datasets"]["acts"]["error"] == {"code": "network", "message": "Server error (500)"}
+    assert b["datasets"]["acts"]["meta"]["stale"] is True
+    assert s["datasets"]["fa"] == {"rows": 1, "calls": 1, "stale": False, "reason": None, "error": None,
+                                   "day_errors": 0, "errors": []}
+
+
+def test_connection_error_defers_the_rest(garmin) -> None:
+    # no answer from Garmin at all: every later call would fail the same way
+    garmin.fail("get_activities", GarminConnectConnectionError("Connection error: Failed to establish a connection"))
+    b, s = _run([ACTS, _fa("fa", days=1)])
+    assert s["datasets"]["acts"]["error"]["code"] == "network" and garmin.called("get_fitnessage_data") == []
+    assert (b["datasets"]["fa"]["meta"]["reason"], b["datasets"]["fa"]["meta"]["calls"]) == ("deferred", 0)
+
+
 def test_rejected_tokens_end_the_export_without_prompting(garmin, tmp_path, monkeypatch) -> None:
     # tokens exist (auth_status says so) but Garmin rejects them: no prompt, one login, auth_required
     logins, prompts = [], []
@@ -465,3 +519,11 @@ def test_cli_check_init_and_run(garmin, tmp_path, monkeypatch) -> None:
                                          "day_errors": 0, "errors": []}
     assert doc["args"] == {"recipe": str(small), "out": str(bundle), "max_calls": 60, "max_seconds": 480,
                            "check": False, "init": False}
+
+
+def test_cli_init_with_check_is_bad_args(garmin) -> None:
+    # --check promises to write nothing, --init writes the recipe: the pair is a mistake, not an init
+    code, doc = _cli("--init", "--check")
+    assert code == 2 and doc["error"]["code"] == "bad_args"
+    assert "--init" in doc["error"]["message"] and "--check" in doc["error"]["message"]
+    assert not recipe_path().exists()

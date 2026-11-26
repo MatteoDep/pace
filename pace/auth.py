@@ -59,10 +59,15 @@ def _http_status(exc: BaseException) -> int | None:
 
 
 def _login_error(exc: BaseException) -> TokenLoginError:
-    """auth_required when there are no tokens or Garmin refused them (auth error, 401, 403), else network."""
+    """auth_required when there are no tokens or Garmin refused them (auth error, 401, 403),
+    rate_limited on a 429, else network."""
     status = _http_status(exc)
     if isinstance(exc, (FileNotFoundError, GarminConnectAuthenticationError)) or status in (401, 403):
         return TokenLoginError("auth_required", f"Stored Garmin tokens are missing or were rejected: {exc}", status)
+    if status == 429:
+        # the library maps a 429 only on the token refresh; on the profile or settings read it
+        # arrives as a connection error with garth's error as the cause
+        return TokenLoginError("rate_limited", f"Token login rate limited: {exc}", status)
     return TokenLoginError("network", f"Token login failed: {exc}", status)
 
 

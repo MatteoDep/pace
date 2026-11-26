@@ -243,7 +243,8 @@ REGISTRY: tuple[EndpointSpec, ...] = (
                      "maxScore",
                      "periodAvgScore",
                  )),
-    EndpointSpec("training", "race-predictions", "Predicted race times (5k, 10k, half, marathon).",
+    EndpointSpec("training", "race-predictions", "Predicted race times (5k, 10k, half, marathon): the latest, "
+                 "or one row per day over --from/--to/--days.",
                  "get_race_predictions", TTL_TRAINING, dated="span", span_args=("daily",),
                  default_fields=(
                      "calendarDate",

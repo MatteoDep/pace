@@ -144,7 +144,8 @@ Prefer a narrow range, and expect `--days 30` to sit there for minutes rather th
 `pace export` runs several commands in one process under a budget: a cap on Garmin calls, checked under the limiter lock so a gathered fan-out is counted call by call, and a deadline that includes the limiter's waits.
 A call that would exceed either is not sent and comes back as `deferred`; this includes a call that was waiting for a concurrency slot when the budget ended.
 Calls already in flight when it ends still finish.
-A `rate_limited` or `network` error ends the budget too.
+A `rate_limited` error, or a `network` error with no HTTP status (Garmin did not answer, as on a connection failure), ends the budget too.
+A `network` error with a 5xx status fails only its call, and the budget goes on.
 Cache hits cost nothing.
 
 ### Units (static)
@@ -648,6 +649,10 @@ The recipe is `$PACE_HOME/dashboard/recipe.json`, or the file given with `--reci
 When the default file does not exist, the built-in default recipe runs.
 A missing `--recipe` file, a file that is not valid JSON, and a recipe that breaks any rule below are `bad_args`, and nothing is written.
 
+The default recipe's measured cost: a cold run (empty cache) made 50 Garmin calls in 261 s with 7 shoes, and an immediate second run made 0 calls in about 1 s.
+On later refreshes the cost is driven by `activity show` (cached one day, one call per activity) and `gear activities` (cached 5 minutes, one call per shoe; raise it with `cache_ttl_overrides` for `gear.activities` in `config.toml`).
+Today's `race_predictions` row can have null times until Garmin computes it, so a page shows the latest row with values.
+
 A recipe is `{"version": 1, "datasets": [...]}` with 1 to 50 datasets; unknown keys are refused at both levels.
 
 | key | required | meaning |
@@ -668,17 +673,18 @@ Writes, commands that write local stores or files (`zones estimate`, `chart`, `a
 The flags listed in `export.refused_flags` of `pace schema` (`--export`, `--out`, `--out-dir`, `--save`, `--no-cache`, `--help`) are refused in `argv`, alone or as `--flag=value`, even on an exportable command.
 
 `--check` validates the recipe, each `argv` included against its command's own parser (placeholders parsed as `0`), without network calls, and writes nothing: `data = {"recipe", "datasets": [ids], "valid": true}`.
-`--init` writes the default recipe to `--recipe` or the default path, for editing, and returns `data = {"path", "datasets": n}`; it is `bad_args` when the file exists.
+`--init` writes the default recipe to `--recipe` or the default path, for editing, and returns `data = {"path", "datasets": n}`; it is `bad_args` when the file exists or with `--check`.
 
 ### Running
 
 A run first checks that Garmin tokens exist: without them it is `auth_required` before any dataset.
 Datasets run without any credential prompt, and a token login that fails as below is not tried again in the same run.
 Tokens that Garmin rejects (its authentication error, 401 or 403) make the first call `auth_required`, which stops the export (Failures below).
-A token login that fails for another reason (a connection error, another HTTP status) makes the call `network`, which ends the budget.
+A token login that fails for another reason makes the call `rate_limited` on a 429 and `network` otherwise (a connection error, another HTTP status), and ends the budget whatever its status.
 `--max-calls` (default 60) caps the Garmin calls of the whole run, `--max-seconds` (default 480) its time, limiter waits included; a value below 1 is `bad_args`.
 Datasets run in recipe order, each as `pace <command> <argv>` runs in a shell (same parsing, defaults, shaping and cache), with an empty stdin.
-A call past the budget is not sent and fails with `deferred`; a `rate_limited` or `network` error ends the budget for the rest of the run.
+A call past the budget is not sent and fails with `deferred`.
+A `rate_limited` error, or a `network` error with no HTTP status, ends the budget for the rest of the run; a `network` error with a 5xx status fails only its call.
 Every dataset still runs after the budget ends: cache hits are free, so a dataset served from the cache still refreshes.
 A `foreach` dataset reads its parent's rows as this run wrote them, stale ones included.
 A parent row whose placeholder values were already run in that dataset is skipped, so each value runs once.
@@ -717,7 +723,7 @@ A date-keyed command that fetches one day per call returns `{"date", "error"}` i
 Each failed day is replaced by the previous section's row with the same date in the column mapped from the path `date`, or dropped when there is none or no column maps `date`; it counts in `day_errors`, and the section is not stale.
 A `foreach` child that fails is recorded in `meta.errors` as `{"parent": {"<placeholder column>": value}, "code"}`, the previous rows with the same `parent.<column>` values are kept, and the other children still run.
 A `foreach` dataset whose parent section is stale with no rows does not run; it keeps its previous rows (same column rule) with `stale: true`, `reason: "error"` and the parent's error code, and the summary carries the parent's message.
-`auth_required` from any command stops the export: no bundle is written, the previous one stays, and the envelope carries the error.
+`auth_required` stops the export, whether a whole command, a `foreach` child or a single failed day returns it: no bundle is written, the previous one stays, and the envelope carries the error.
 A missing, unreadable or non-object previous bundle counts as none; sections whose ids left the recipe are dropped.
 Commands that catch per-item errors themselves (`plan status` effort, the due check of `zones show`) return nulls for a deferred item, with no `stale` flag.
 

@@ -9,7 +9,7 @@ from pace import config
 from pace.envelope import PaceError
 
 RECIPE_VERSION = 1
-ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # use fullmatch: `$` would accept a trailing newline
 MAX_DATASETS = 50
 MAX_FOREACH_LIMIT = 100
 EXPORT_MAX_CALLS = 60
@@ -20,7 +20,7 @@ EXPORT_MAX_SECONDS = 480
 REFUSED_FLAGS = ("--export", "--out", "--out-dir", "--save", "--no-cache", "--help")
 
 _DATASET_KEYS = {"id", "command", "argv", "rows", "columns", "foreach"}
-_PLACEHOLDER_RE = re.compile(r"^\{([^{}]+)\}$")
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")  # use fullmatch, as for ID_RE
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ class Dataset:
 
 def placeholder(arg: str) -> str | None:
     """The column a whole `{column}` argv item names, else None."""
-    m = _PLACEHOLDER_RE.match(arg)
+    m = _PLACEHOLDER_RE.fullmatch(arg)
     return m.group(1) if m else None
 
 
@@ -62,7 +62,7 @@ def _parse_dataset(i: int, raw: Any, commands: dict[str, dict], done: dict[str, 
     if not isinstance(raw, dict):
         raise _bad(where, "must be an object")
     id_ = raw.get("id")
-    if not isinstance(id_, str) or not ID_RE.match(id_):
+    if not isinstance(id_, str) or not ID_RE.fullmatch(id_):
         raise _bad(where, "id must be 1-64 letters, digits, '_' or '-'")
     where = id_
     if id_ in done:
@@ -98,7 +98,7 @@ def _parse_dataset(i: int, raw: Any, commands: dict[str, dict], done: dict[str, 
         f = raw["foreach"]
         if not isinstance(f, dict) or set(f) != {"dataset", "limit"}:
             raise _bad(where, "foreach must be an object with exactly dataset and limit")
-        if f["dataset"] not in done:
+        if not isinstance(f["dataset"], str) or f["dataset"] not in done:
             raise _bad(where, f"foreach dataset {f['dataset']!r} is not defined earlier in the list")
         if not _is_int(f["limit"]) or not 1 <= f["limit"] <= MAX_FOREACH_LIMIT:
             raise _bad(where, f"foreach limit must be an integer 1..{MAX_FOREACH_LIMIT}")
@@ -114,7 +114,7 @@ def _parse_dataset(i: int, raw: Any, commands: dict[str, dict], done: dict[str, 
             if name not in parent:
                 raise _bad(where, f"placeholder {{{name}}} is not a column of {foreach.dataset!r}")
     for a in argv:
-        if not _PLACEHOLDER_RE.match(a) and ("{" in a or "}" in a):
+        if placeholder(a) is None and ("{" in a or "}" in a):
             raise _bad(where, f"argv item {a!r}: '{{' and '}}' are allowed only as a whole {{column}} item")
     return ds
 

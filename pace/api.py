@@ -16,7 +16,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 from pace import auth
-from pace.ratelimit import STOP_CODES, BudgetExhausted, active_budget, limiter, slot
+from pace.ratelimit import BudgetExhausted, active_budget, limiter, slot
 
 # The garminconnect library logs full tracebacks on every HTTP error (404, 400,
 # etc.) before raising. We catch and classify those errors in `safe_call`, so
@@ -106,13 +106,19 @@ def _rejection(status: int | None, err: GarthHTTPError) -> ApiError | None:
     return ApiError("rejected", f"Garmin rejected the request ({status}): {reason[:_BODY_MAX]}", status)
 
 
+def _ends_budget(err: ApiError) -> bool:
+    """Garmin throttles (rate_limited) or does not answer at all (network without an HTTP status):
+    every later call would fail the same way. A 5xx is one endpoint failing, so only its call fails."""
+    return err.code == "rate_limited" or (err.code == "network" and err.http is None)
+
+
 async def safe_call(
     method_name: str, *args: Any, **kwargs: Any
 ) -> tuple[bool, Any, ApiError | None]:
     """Rate-limited async wrapper. Returns (success, result, error)."""
     ok, result, err = await _call(method_name, *args, **kwargs)
     budget = active_budget()
-    if err is not None and err.code in STOP_CODES and budget is not None:
+    if err is not None and budget is not None and _ends_budget(err):
         budget.stop(err.code)
     return ok, result, err
 
@@ -137,7 +143,12 @@ async def _call(
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
         except auth.TokenLoginError as err:
-            # get_api() inside pace export: stored tokens missing or rejected, or the login failed
+            # get_api() inside pace export: stored tokens missing or rejected, or the login failed.
+            # The login is not tried again in the run, so a failed login ends the budget whatever
+            # its status. Not auth_required: it ends the export, and a stopped budget would turn
+            # the rest of a fan-out into `deferred`, which could be reported in its place.
+            if budget is not None and err.code != "auth_required":
+                budget.stop(err.code)
             return False, None, ApiError(err.code, err.message, err.http)
         except GarthHTTPError as err:
             # Raised by library writes that call garth directly (gear link, upload_workout,

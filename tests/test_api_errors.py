@@ -286,29 +286,50 @@ def test_stopped_budget_defers_calls_already_waiting_for_a_slot(fake_client) -> 
     assert sum(1 for ok, _, err in res if not ok and err.code == "deferred") == 8 - fake_client.calls
 
 
+def _two_calls() -> list:
+    async def two():
+        return [await safe_call("get_x"), await safe_call("get_x")]
+
+    return asyncio.run(two())
+
+
+def test_server_error_fails_only_its_call(fake_client) -> None:
+    # Garmin answered with a 5xx: one endpoint failing says nothing about the others
+    fake_client.raise_next(GarminConnectConnectionError("HTTP error: Error in request: 503 Server Error"))
+    with budget(10, 60) as b:
+        first, second = _two_calls()
+    assert (first[0], first[2].code, first[2].http) == (False, "network", 503) and second[0] is True
+    assert b.stopped is None and fake_client.calls == 2
+
+
+def test_connection_error_ends_the_budget(fake_client) -> None:
+    # no answer from Garmin at all: every later call would hit the same wall
+    fake_client.raise_next(GarminConnectConnectionError("Connection error: Failed to establish a new connection"))
+    with budget(10, 60) as b:
+        first, second = _two_calls()
+    assert (first[2].code, first[2].http) == ("network", None) and second[2].code == "deferred"
+    assert b.stopped == "network" and fake_client.calls == 1
+
+
 def _login_failed(status: int) -> GarminConnectConnectionError:
-    """What Garmin.login raises for an HTTP error other than 401/429: the garth error is the cause."""
+    """What Garmin.login raises when the token login's profile or settings read fails with an HTTP
+    error, 429 included (garth's error has no `response`, so the library misses the status): the
+    garth error is the cause."""
     err = GarminConnectConnectionError("Login failed: Error in request")
     err.__cause__ = _garth_http_error(status)
     return err
 
 
-@pytest.mark.parametrize(("exc", "code"), [
-    (FileNotFoundError("oauth1_token.json"), "auth_required"),
-    (GarminConnectAuthenticationError("Authentication failed: 401"), "auth_required"),
-    (_login_failed(403), "auth_required"),
-    (_login_failed(500), "network"),
-    (requests.exceptions.ConnectionError("connection refused"), "network"),
-])
-def test_noninteractive_token_login_failure_is_an_error_code(monkeypatch, exc, code) -> None:
-    """Inside auth.noninteractive() a failed token login never prompts: it becomes an error code,
-    and later calls get the same error without a second login attempt."""
-    logins = []
+@pytest.fixture
+def failing_login(monkeypatch):
+    """The real get_api, whose token login raises the exception given to the returned setter."""
+    logins: list = []
+    raised: list[BaseException] = []
 
     class FailingGarmin:
         def login(self, tokenstore=None):
             logins.append(tokenstore)
-            raise exc
+            raise raised[0]
 
     def prompt(*args, **kwargs):
         raise AssertionError("prompted for credentials")
@@ -318,11 +339,38 @@ def test_noninteractive_token_login_failure_is_an_error_code(monkeypatch, exc, c
     monkeypatch.setattr("pace.auth.Garmin", FailingGarmin)
     monkeypatch.setattr("pace.auth.get_credentials", prompt)
     monkeypatch.setattr("pace.api.limiter", RateLimiter(min_interval=0.0))
+    return raised.append, logins
 
-    async def two():
-        return [await safe_call("get_x"), await safe_call("get_x")]
 
+@pytest.mark.parametrize(("exc", "code"), [
+    (FileNotFoundError("oauth1_token.json"), "auth_required"),
+    (GarminConnectAuthenticationError("Authentication failed: 401"), "auth_required"),
+    (_login_failed(403), "auth_required"),
+    (_login_failed(429), "rate_limited"),
+    (_login_failed(500), "network"),
+    (requests.exceptions.ConnectionError("connection refused"), "network"),
+])
+def test_noninteractive_token_login_failure_is_an_error_code(failing_login, exc, code) -> None:
+    """Inside auth.noninteractive() a failed token login never prompts: it becomes an error code,
+    and later calls get the same error without a second login attempt."""
+    set_exc, logins = failing_login
+    set_exc(exc)
     with auth.noninteractive():
-        results = asyncio.run(two())
+        results = _two_calls()
     assert [(ok, err.code) for ok, _, err in results] == [(False, code), (False, code)]
     assert len(logins) == 1
+
+
+@pytest.mark.parametrize(("exc", "code"), [
+    (_login_failed(500), "network"),
+    (_login_failed(429), "rate_limited"),
+    (requests.exceptions.ConnectionError("connection refused"), "network"),
+])
+def test_failed_token_login_ends_the_budget(failing_login, exc, code) -> None:
+    # the login is not tried again in the run, so no later call can succeed, whatever its status
+    set_exc, logins = failing_login
+    set_exc(exc)
+    with auth.noninteractive(), budget(10, 60) as b:
+        first, second = _two_calls()
+    assert first[2].code == code and second[2].code == "deferred"
+    assert b.stopped == code and len(logins) == 1
