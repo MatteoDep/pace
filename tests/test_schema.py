@@ -212,3 +212,26 @@ def test_zones_in_schema() -> None:
     res = runner.invoke(app, ["schema", "zones"])
     assert res.exit_code == 0
     assert {c["name"].split(" ")[0] for c in json.loads(res.stdout)["data"]["commands"]} == {"zones"}
+
+
+def test_every_and_span_flags_in_schema() -> None:
+    cmds = {c["name"]: c for c in build_schema(None)["commands"]}
+    assert "--every" in cmds["wellness sleep"]["flags"] and "--every" in cmds["training fitness-age"]["flags"]
+    rp = cmds["training race-predictions"]
+    assert rp["keyed"] == "date" and {"--from", "--to", "--days"} <= set(rp["flags"]) and "--every" not in rp["flags"]
+    assert "--rows" in cmds["load"]["flags"]
+
+
+def test_exportable_flags_and_export_block() -> None:
+    doc = build_schema(None)
+    cmds = {c["name"]: c for c in doc["commands"]}
+    assert all(isinstance(c["exportable"], bool) for c in cmds.values())
+    assert cmds["training fitness-age"]["exportable"] and cmds["load"]["exportable"]
+    assert not cmds["gear link"]["exportable"] and not cmds["diary show"]["exportable"]
+    assert not any(c["exportable"] for c in cmds.values() if c.get("write") or c.get("local_write"))
+    assert doc["export"]["max_calls_default"] == 60 and "--no-cache" in doc["export"]["refused_flags"]
+
+
+def test_exportable_static_names_exist() -> None:
+    from pace.commands.schema import EXPORTABLE_STATIC
+    assert EXPORTABLE_STATIC <= {c["name"] for c in build_schema(None)["commands"]}

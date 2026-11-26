@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 from pace.envelope import PaceError
 
-__all__ = ["parse_date", "date_range", "resolve_range"]
+__all__ = ["parse_date", "date_range", "resolve_range", "sample_days"]
 
 _RELATIVE = re.compile(r"^([+-]?\d+)d$")
 
@@ -42,3 +42,17 @@ def resolve_range(from_: str | None, to: str, days: int) -> tuple[date, date]:
     if start > end:
         start, end = end, start
     return start, end
+
+
+def sample_days(start: date, end: date, every: int) -> list[date]:
+    """Days in [start, end] on a fixed grid (ordinal % every == 0), plus `end`.
+
+    The grid is anchored on the calendar, not on the range, so a range that moves by a day
+    reuses the cache for every grid day it still contains.
+    """
+    if every < 1:
+        raise PaceError("bad_args", "--every must be >= 1")
+    days = [d for d in date_range(start, end) if d.toordinal() % every == 0]
+    if not days or days[-1] != end:
+        days.append(end)
+    return days

@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from getpass import getpass
 
@@ -19,6 +21,56 @@ from pace import config
 from pace.config import TOKEN_STORE
 
 
+class TokenLoginError(Exception):
+    """A token login that failed inside `noninteractive()`; `code` is a pace error code."""
+
+    def __init__(self, code: str, message: str, http: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.http = http
+
+
+_prompts = True  # False inside noninteractive(): init_api raises TokenLoginError instead of prompting
+_failed: TokenLoginError | None = None  # the failed token login of the current noninteractive() block
+
+
+@contextmanager
+def noninteractive() -> Iterator[None]:
+    """Inside this block `init_api` never prompts: a failed token login raises TokenLoginError, and
+    later calls raise the same error without trying again (one login attempt per block)."""
+    global _prompts, _failed
+    saved = _prompts, _failed
+    _prompts, _failed = False, None
+    try:
+        yield
+    finally:
+        _prompts, _failed = saved
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status of a failed login, on the error itself or on the one it wraps (`from e`)."""
+    for err in (exc, exc.__cause__):
+        for holder in (getattr(err, "error", None), err):
+            code = getattr(getattr(holder, "response", None), "status_code", None)
+            if isinstance(code, int):
+                return code
+    return None
+
+
+def _login_error(exc: BaseException) -> TokenLoginError:
+    """auth_required when there are no tokens or Garmin refused them (auth error, 401, 403),
+    rate_limited on a 429, else network."""
+    status = _http_status(exc)
+    if isinstance(exc, (FileNotFoundError, GarminConnectAuthenticationError)) or status in (401, 403):
+        return TokenLoginError("auth_required", f"Stored Garmin tokens are missing or were rejected: {exc}", status)
+    if status == 429:
+        # the library maps a 429 only on the token refresh; on the profile or settings read it
+        # arrives as a connection error with garth's error as the cause
+        return TokenLoginError("rate_limited", f"Token login rate limited: {exc}", status)
+    return TokenLoginError("network", f"Token login failed: {exc}", status)
+
+
 def get_credentials() -> tuple[str, str]:
     """Read EMAIL/PASSWORD env vars or prompt interactively."""
     email = os.getenv("EMAIL") or input("Login email: ")
@@ -30,7 +82,11 @@ def init_api() -> Garmin | None:
     """Return authenticated Garmin client, or None on failure.
 
     Tries cached tokens first, falls back to credential entry with MFA support.
+    Inside `noninteractive()` it never prompts: a failed token login raises TokenLoginError.
     """
+    global _failed
+    if not _prompts and _failed is not None:
+        raise TokenLoginError(_failed.code, _failed.message, _failed.http)
     try:
         garmin = Garmin()
         garmin.login(str(TOKEN_STORE))
@@ -40,8 +96,13 @@ def init_api() -> Garmin | None:
         GarthHTTPError,
         GarminConnectAuthenticationError,
         GarminConnectConnectionError,
-    ):
-        pass
+        requests.exceptions.RequestException,
+    ) as exc:
+        if not _prompts:
+            _failed = _login_error(exc)
+            raise _failed from exc
+        if isinstance(exc, requests.exceptions.RequestException):
+            raise  # interactive behaviour unchanged: only the token errors fall through to the prompt
 
     while True:
         try:

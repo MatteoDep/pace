@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from pace.dates import parse_date, resolve_range
+from pace.dates import parse_date, resolve_range, sample_days
 from pace.envelope import PaceError
 
 
@@ -27,3 +27,24 @@ def test_bad_date_is_bad_args() -> None:
     assert exc.value.code == "bad_args"
     with pytest.raises(PaceError):
         resolve_range(None, "today", 0)
+
+
+def test_sample_days_grid_and_last_day() -> None:
+    s, e = date(2026, 11, 1), date(2026, 11, 26)
+    got = sample_days(s, e, 7)
+    assert got[-1] == e and all(d.toordinal() % 7 == 0 for d in got[:-1])
+    assert got == sorted(set(got)) and all(s <= d <= e for d in got)
+    assert sample_days(s, e, 1) == [s + timedelta(days=i) for i in range(26)]
+    assert sample_days(e, e, 7) == [e]
+
+
+def test_sample_days_grid_is_stable_day_to_day() -> None:
+    s, e = date(2026, 8, 1), date(2026, 11, 26)
+    today = set(sample_days(s, e, 7))
+    tomorrow = set(sample_days(s + timedelta(1), e + timedelta(1), 7))
+    assert len(tomorrow - today) <= 2   # the new last day, plus a grid day it may cross
+
+
+def test_sample_days_rejects_zero() -> None:
+    with pytest.raises(PaceError):
+        sample_days(date(2026, 1, 1), date(2026, 1, 2), 0)

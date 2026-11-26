@@ -1,12 +1,18 @@
 # Dashboard
 
 The training load dashboard is one claude.ai artifact made from the Data type; its URL is the profile's `dashboard.url` (`pace diary show`).
-Its page reads one attached file, `load.json`, produced by `pace load --export`: dataset `load` (`datasets/load` in the artifact's store), with calcs `weeks`, `days`, `thisweek` and `nextsession`, and the page filters `metric` (`km`, `elev_m`, `hours`) and `sport` (`running`, `all`).
+Its page reads one attached bundle, produced by `pace export` from the recipe `$PACE_HOME/dashboard/recipe.json` (or the shipped default): one section per dataset, at `answer.datasets["<id>"]`.
+Each dataset of the artifact (`datasets/<id>`) points at the same uploaded bundle and reads its own section with a loader declared in the page script: `dash.loader("<id>", {description, fn: ({answer}) => ...})`.
+A section loader is `({answer}) => answer.datasets["<id>"].rows` (brackets, since an id may contain `-`); throw an `Error` when the section is missing, which fails that source only.
+A loader may use nothing from outside itself, since readers see its code.
+Dataset `load` keeps its calcs `weeks`, `days`, `thisweek` and `nextsession` and the page filters `metric` (`km`, `elev_m`, `hours`) and `sport` (`running`, `all`).
+`PACE_HOME` is often unset: the bundle is `${PACE_HOME:-$HOME/.pace}/dashboard/bundle.json`.
 
 ## Create
 
 Only when the user asks, never in an unattended run.
-Run `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"` (`PACE_HOME` is often unset), then follow the Data type's instructions: create the artifact from its `type_url` with title "Training Load", upload the file as an asset, and write `dash/meta`, `dash/params` (`{"metric": "km", "sport": "running"}`), `datasets/load` (a `file` source with `updated: {at, by: "pace coach"}`) and `files/index.html` in one batch.
+Run `pace export` (default recipe) with a 10-minute timeout (Refresh, step 1); when the athlete's page needs a custom recipe, run `pace export --init` first, edit the file, and check it with `pace export --check`.
+Then follow the Data type's instructions: create the artifact from its `type_url` with title "Training Load", upload the bundle as an asset, and write in one batch `dash/meta`, `dash/params` (`{"metric": "km", "sport": "running"}`), one `datasets/<id>` per section the page uses (each a `file` source with the same `/_blob/<id>` url, `name`, `format: "json"`, and `updated: {at, by: "pace coach"}` with `at` as in Refresh step 3), and `files/index.html` with a `dash.loader` for each dataset.
 The page source used for the current dashboard is in the artifact itself (`files/index.html`); read it there rather than rewriting it from scratch.
 Then `pace diary set dashboard.url <url>`.
 Tell the user the attached file is readable by anyone who can open the link.
@@ -15,12 +21,22 @@ Tell the user the attached file is readable by anyone who can open the link.
 
 When: at the end of a full check-in, and once after a batch of plan edits (not after each edit).
 Steps, exactly:
-1. `pace load --export "${PACE_HOME:-$HOME/.pace}/dashboard/load.json"`.
-2. Upload it to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
-3. Read `datasets/load` for its `version` and its current `source.url`; one `update` pinned to that version: `{"source": {"url": "<new>"}, "updated": {"at": "<export Generated time>", "by": "pace coach"}}`.
-4. Keep the asset you just replaced, since a page open during the refresh may still fetch it; delete the older load exports (Artifact `list` with `scope: "assets"`, then delete each `application/json` asset that is neither the new one nor the replaced one; never touch assets of other types).
+1. `pace export`, with a 10-minute timeout: its time budget is 8 minutes and a cold run took over 4, so the default 2-minute tool timeout can kill it before it writes the bundle.
+   Its summary lists per dataset `stale`, `reason` and `error` (`code`, `message`).
+   If it fails with `auth_required` (exit 3, no bundle written): stop, no refresh this time, and tell the athlete to log in again with `pace auth login` (you never run it).
+2. Upload the bundle (`path` of the summary) to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
+3. ArtifactData `list` the `datasets` collection.
+   The previous bundle's `/_blob/<id>` is the `source.url` that the file datasets share in this listing, read before any update; matching on it skips the `settings_*` store datasets.
+   For each dataset with that `source.url`, one `update` in a single `batch`, pinned to that dataset's `version`: `{"source": {"url": "<new>"}, "updated": {"at": "<at>", "by": "pace coach"}}`.
+   `<at>` is the value of the `meta` entry labelled `Generated` in the bundle file (the `path` in the summary); for a dataset whose section in that file is stale, it is the section's `meta.generated` instead, so old rows never show as fresh.
+4. Keep the asset you just replaced, since a page open during the refresh may still fetch it; delete the older bundles (Artifact `list` with `scope: "assets"`, then delete each `application/json` asset that is neither the new one nor the replaced one; never touch assets of other types).
 5. ArtifactData `list` on collection `data/users/me`, once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
 6. Write the current settings (Settings below).
+
+A dataset with `stale: true` and `reason: "deferred"` is not reported: the call budget ran out and the next refresh continues from the cache.
+Any other stale dataset (`reason: "error"`): tell the athlete once, with its `error` message; its section still holds the previous rows.
+A dataset whose `errors` has an item with a code other than `deferred`, or whose `day_errors` is above 0, is mentioned once the same way: those parents or days kept their previous rows or have none.
+`day_errors` carries no codes and also counts days the budget deferred, so leave it out when anything in the run was deferred.
 
 ## Settings
 
@@ -32,12 +48,23 @@ Two store documents under `data/`, where everyone who can open the page reads an
   Only the page writes it, merging a new request into the existing document; the coach reads it with ArtifactData `get`, applies it (SKILL.md, Settings), then `delete`s it pinned to the version it read.
 The page reads both through the datasets `settings_current` and `settings_pending` (`kind: "store"`).
 
+## Add a view
+
+On the user's request only, never unprompted:
+1. `pace export --init` if `$PACE_HOME/dashboard/recipe.json` does not exist yet, then add a recipe line for the new data (CONTRACT.md, Export, Recipe).
+2. `pace export --check`, then `pace export` with a 10-minute timeout; read the new section's `stale` and row count in the summary.
+3. Run Refresh steps 2 to 4 so the new bundle is uploaded and the existing datasets point at it.
+4. Add the dataset `datasets/<id>` (file source on the new `/_blob/<id>`, loader `({answer}) => answer.datasets["<id>"].rows`) and the page section as in Change a view.
+
+Deep dives (one run, one block, a comparison) are separate plain artifacts or `pace chart` PNGs, never extra sections on this page.
+
 ## Change a view
 
-On the user's request only: read `files/index.html` again first (they may have edited words with the pencil), change what was asked, keep the `<meta name="dash-one-writer">` rule, write it back pinned to its version, read `check` once, and record a diary `note` with what changed and why.
-Deep dives (one run, one block, a comparison) are separate plain artifacts or `pace chart` PNGs, never extra sections bolted on here.
+On the user's request only.
+Read `files/index.html` again first (they may have edited words with the pencil), change only what was asked, keep the `<meta name="dash-one-writer">` rule, and write it back pinned to its version.
+Read `check` once, and record a diary `note` with what changed and why.
 
 ## Unattended runs
 
 The unattended session (project 2) refreshes only; it never creates or redesigns the dashboard.
-It needs permission for the Bash `pace` commands, the Artifact asset upload and delete, and ArtifactData reads, updates, sets and deletes on this artifact (the settings documents).
+It needs permission for Bash `pace export`, the Artifact asset upload and delete, and ArtifactData reads, batched dataset updates, sets and deletes on this artifact (the dataset documents and the settings documents).

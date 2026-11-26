@@ -35,3 +35,14 @@ def test_sentinel_series_declare_min_value() -> None:
                 assert ser.min_value == 0, f"{spec.command} {ser.path} has no min_value"
                 checked += 1
     assert checked == 3
+
+
+def test_registry_methods_are_reads() -> None:
+    """Every registry command is exportable by being in the registry, so each one must be a read."""
+    assert [s.command for s in REGISTRY if not s.method.startswith("get_")] == []
+
+
+def test_race_predictions_help_names_the_range() -> None:
+    # `pace schema` is the coach's authority on what a command returns
+    spec = next(s for s in REGISTRY if s.command == "training race-predictions")
+    assert "the latest" in spec.help and "one row per day over --from/--to/--days" in spec.help

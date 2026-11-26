@@ -17,6 +17,7 @@ from pace.plan import (
     INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES, WORKOUT_PREFIX,
 )
 from pace.ratelimit import CONCURRENCY, limiter
+from pace.recipe import EXPORT_MAX_CALLS, EXPORT_MAX_SECONDS, RECIPE_VERSION, REFUSED_FLAGS
 from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 from pace.workout import DSL_REFERENCE
@@ -79,6 +80,7 @@ GLOBAL_FLAGS = {
     "--raw": "Garmin JSON verbatim inside the envelope",
     "--no-cache": "bypass the local cache for this call",
     "--verbose": "(root) log fetch/cache events to stderr",
+    "--every": "date-keyed per-day commands: sample one day every N days (grid anchored on the calendar, plus the last day); not on the one-call range commands",
     "--from/--to/--days": "date-keyed commands; --from overrides --days; dates: YYYY-MM-DD | today | yesterday | -Nd",
     "--help": "plain-text usage, not JSON; exit 0",
     "required_flags": "not a flag: a command entry's `required_flags` lists the options that must be given",
@@ -176,8 +178,9 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
     {"name": "diary resolve", "help": 'Mark a constraint or injury resolved (--date, default today), or --reopen it. Not both.', "keyed": "none", "args": ["ID"], "flags": ["--date", "--reopen"],
      "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "wellness sleep-range", "help": "Nightly sleep (deep, light, REM, awake seconds), resting HR, average HR, HRV and sleep score for a date range, from one Garmin call per 28 days; fields are null when absent (HRV and score on the current watch). Rows: date, sleep_s, deep_s, light_s, rem_s, awake_s, rhr, avg_hr, hrv, hrv_7d, score.", "keyed": "date", "args": [], "flags": RANGE_FLAGS + ["--no-cache"], "default_fields": [], "series": [], "ttl_s": 3600},
-    {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. --export PATH writes dashboard rows (both sports; --sport is bad_args) and returns data = {path, rows}. Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--export", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "load", "help": "Weekly and daily training load (km, elev_m, hours): actual, planned, projected and a rolling 7-day sum, from Garmin activities and the plan. --export PATH writes dashboard rows (both sports; --sport is bad_args) and returns data = {path, rows}; --rows returns those rows as data (not with --export or --sport). Default: 16 weeks back through the plan's last session (at most 26 weeks ahead).", "keyed": "week", "args": [], "flags": ["--weeks", "--weeks-ahead", "--sport", "--export", "--rows", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
     {"name": "chart", "help": "Render a PNG chart (1200 x 675 px) and return data = {path, kind, range, summary}. KIND: volume (weekly bars and rolling 7-day line; week-ranged like `load`: --weeks, --weeks-ahead; --metric km|elev|hours, --sport running|all), plan (sessions by status and unplanned activities; day-ranged: --from, --to, --past, --ahead; default 14 days back, 14 ahead), recovery (resting HR, its 7-day mean, HRV when recorded; day-ranged, default 90 back through today), sleep (stacked sleep stages per night, score when recorded; day-ranged, default 90 back through today), weight (weigh-ins and their 7-day mean; day-ranged, default 90 back through today), intensity (HR-zone time against planned intensity per ISO week; day-ranged, default 56 back and 14 ahead snapped to whole ISO weeks, --sport running|all) or activity ID (pace or speed, heart rate and elevation over distance; positional activity ID, no range flags). Health kinds stop at today even when --to is later. A flag the kind does not use is bad_args. Default path $PACE_HOME/charts/<name>.png; --out must end in .png.", "keyed": "none", "args": ["KIND", "[ID]"], "flags": ["--weeks", "--weeks-ahead", "--from", "--to", "--past", "--ahead", "--metric", "--sport", "--out", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
+    {"name": "export", "help": "Run the dashboard recipe ($PACE_HOME/dashboard/recipe.json, else the built-in default recipe) in one process within a call and time budget (--max-calls, --max-seconds; cache hits are free), and write the bundle file (--out, default $PACE_HOME/dashboard/bundle.json, replaced atomically). data is a summary: path, recipe, bytes, calls, seconds and per dataset rows, calls, stale, reason, error {code, message}, day_errors, errors. A dataset that fails keeps the previous bundle's rows, marked stale; auth_required writes nothing. --check validates the recipe without network calls; --init writes the default recipe for editing (refused when the file exists, and with --check).", "keyed": "none", "args": [], "flags": ["--recipe", "--out", "--max-calls", "--max-seconds", "--check", "--init"], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "plan new", "help": "Start a new plan; the current one is archived to $PACE_HOME/plans/.", "keyed": "none", "args": [], "flags": ["--name", "--goal", "--event-date"], "required_flags": ["--name"], "default_fields": [], "series": [], "ttl_s": 0, "local_write": True},
     {"name": "plan show", "help": "Plan meta, all blocks and the sessions in the range (default: 7 days back, 28 ahead).", "keyed": "none", "args": [], "flags": ["--from", "--to", "--past", "--ahead"], "default_fields": [], "series": [], "ttl_s": 0},
     {"name": "plan status", "help": "Planned vs done for a range (default: 7 days back, 7 ahead): sessions matched to Garmin activities (derived status done, modified, missed, unconfirmed, rest), unplanned activities, totals. Effort (RPE, feel) costs one Garmin call per activity, cached one day; --no-effort skips it.", "keyed": "date", "args": [], "flags": ["--from", "--to", "--past", "--ahead", "--no-effort", "--no-cache"], "default_fields": [], "series": [], "ttl_s": 600},
@@ -201,12 +204,23 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
 ]
 
 
+#: Static commands a dashboard recipe may run: read-only and free of file output. Everything else is refused.
+EXPORTABLE_STATIC = frozenset({
+    "activity list", "activity show", "activity gear", "activity splits", "activity details", "activity weather",
+    "activity last", "load", "plan show", "plan status", "wellness sleep-range", "log weight list", "log bp list",
+    "workout list", "workout show", "workout calendar", "zones show",
+})
+EXPORT_REFUSED_FLAGS = REFUSED_FLAGS
+
+STATIC_COMMANDS = [{**c, "exportable": c["name"] in EXPORTABLE_STATIC} for c in STATIC_COMMANDS]
+
+
 def _keyed(spec: EndpointSpec) -> str:
     if spec.id_arg and spec.dated:
         return "id+date"
     if spec.id_arg:
         return "id"
-    if spec.dated:
+    if spec.dated:  # single, range and span
         return "date"
     return "none"
 
@@ -215,10 +229,12 @@ def _entry(spec: EndpointSpec) -> dict[str, Any]:
     return {
         "name": spec.command, "help": spec.help, "keyed": _keyed(spec),
         "args": [spec.id_arg] if spec.id_arg else [],
-        "flags": (RANGE_FLAGS if spec.dated else []) + SHAPE_FLAGS,
+        "flags": (RANGE_FLAGS if spec.dated else []) + (["--every"] if spec.dated in ("single", "range") else [])
+                 + SHAPE_FLAGS,
         "default_fields": list(spec.default_fields),
         "series": [s.path for s in spec.series],
         "ttl_s": spec.ttl,
+        "exportable": True,
     }
 
 
@@ -244,8 +260,12 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "plan": "Training plan: blocks and dated sessions (local file); push sessions to Garmin.",
                    "load": "Weekly and daily training load.",
                    "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
+                   "export": "Dashboard export: run the recipe of read commands and write the bundle file.",
                    "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file); push to the watch."},
         "commands": commands,
+        "export": {"recipe_path": "$PACE_HOME/dashboard/recipe.json", "bundle_path": "$PACE_HOME/dashboard/bundle.json",
+                   "recipe_version": RECIPE_VERSION, "refused_flags": list(EXPORT_REFUSED_FLAGS),
+                   "max_calls_default": EXPORT_MAX_CALLS, "max_seconds_default": EXPORT_MAX_SECONDS},
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
         "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
@@ -278,7 +298,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "zones"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "export", "zones"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 

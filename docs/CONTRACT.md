@@ -52,6 +52,7 @@
 | `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
 | `rejected` | 1 | 4xx on a write other than 401/403/404/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
 | `network` | 1 | connection failure, 5xx |
+| `deferred` | 1 | only inside `pace export`, when its call or time budget ran out; nothing was sent to Garmin |
 | `internal` | 1 | anything else |
 | `internal` | 130 | aborted by user (Ctrl-C) |
 
@@ -66,6 +67,17 @@ A Ctrl-C during a command is caught at the top level and emitted as `{"ok": fals
 
 If some days fail and some succeed, the failed days appear in `data` as `{"date": ..., "error": {"code": ..., "message": ...}}`, the envelope is `ok: true`, exit 0.
 If every day fails, the envelope is `ok: false` with the first error.
+
+### Sampling a range with `--every`
+
+Date-keyed commands that make one Garmin call per day take `--every N` (default 1) to call only every Nth day.
+The grid is anchored on the calendar (a day is sampled when its proleptic ordinal, `date.toordinal()`, is divisible by N), plus the last day of the range, so a range that moves by one day reuses the cached days.
+`--every 0` or less is `bad_args`.
+The envelope args echo `every`, and `data` holds only the sampled days.
+Commands that fetch a whole range in one call (`wellness sleep-range`, `activity list`, `training race-predictions`) have no `--every`.
+
+`training race-predictions` with no range flag returns the latest prediction, as before.
+With `--from`, `--to` or `--days` it makes one Garmin call over the range (at most 366 days) and returns one row per day with `calendarDate`, `time5K`, `time10K`, `timeHalfMarathon` and `timeMarathon`; the args echo `from` and `to` (null without a range).
 
 ### Shaping flags (every data command)
 
@@ -113,6 +125,8 @@ The details payload carries no `*GMT` / `*Local` pair, so that local time is the
 
 ### Rate limits and cost
 
+Every command entry in `pace schema` carries `exportable`, and the top-level `export` block lists the flags a dashboard recipe may never use (`refused_flags`).
+
 Garmin is called through one process-wide limiter, and `pace schema` publishes its numbers under `data.limits`:
 
 | limit | value | meaning |
@@ -126,6 +140,13 @@ Garmin is called through one process-wide limiter, and `pace schema` publishes i
 A date-keyed command issues one Garmin call per day, so a cold range costs roughly `days x 6 s`: `--days 7` about 40 s, `--days 30` about 3 minutes, the 366-day maximum about 37 minutes.
 A warm cache costs nothing; TTLs are today `spec.ttl` (5 min wellness, 1 h training, 1 day static), yesterday 1 day, older 7 days.
 Prefer a narrow range, and expect `--days 30` to sit there for minutes rather than to fail.
+
+`pace export` runs several commands in one process under a budget: a cap on Garmin calls, checked under the limiter lock so a gathered fan-out is counted call by call, and a deadline that includes the limiter's waits.
+A call that would exceed either is not sent and comes back as `deferred`; this includes a call that was waiting for a concurrency slot when the budget ended.
+Calls already in flight when it ends still finish.
+A `rate_limited` error, or a `network` error with no HTTP status (Garmin did not answer, as on a connection failure), ends the budget too.
+A `network` error with a 5xx status fails only its call, and the budget goes on.
+Cache hits cost nothing.
 
 ### Units (static)
 
@@ -415,6 +436,9 @@ That method pages internally in requests the rate limiter does not count.
 
 ### Export
 
+`pace load --rows` returns the same rows as `--export` in `data` (a list) instead of writing a file.
+`--rows` with `--export` or with `--sport` is `bad_args`.
+
 `pace load --export PATH` takes the usual range flags and writes one JSON file for the dashboard instead of returning the load data.
 `--sport` with `--export` is `bad_args`: both sports are computed, and the envelope args echo `"sport": null`.
 The file is `{"rows": [...], "meta": [{"label": "Generated", "value": ISO datetime with UTC offset}, {"label": "Command", "value": "pace load --export"}]}`, written atomically with mode 0600.
@@ -614,6 +638,100 @@ Every other entry and field (`trainingMethod`, resting HR, the profile id) is se
 Success returns `{"action": "update", "resource": "hr_zones", "id": null, "echo": {"sports", "floors", "max_hr"}}` (`max_hr` null when the watch's value was kept) and drops the cached watch zones, so the next `zones show` reads them again.
 `--dry-run` makes the one read and returns `{"dry_run": true, "payload": {"before", "after", "body"}}`: the target entries as the watch has them now, the same entries as they would be sent, and the full body.
 Refusals, all before any write: `bad_args` without a current LT1 and LT2 record with HR (no Garmin call), with `floor_errors` (no Garmin call), or with `zone5Floor` not below the `maxHeartRateUsed` to be sent; `endpoint_unavailable` when the watch zones have no `DEFAULT` or `RUNNING` entry.
+
+## Export
+
+`pace export [--recipe PATH] [--out PATH] [--max-calls N] [--max-seconds N] [--check] [--init]` runs the dashboard recipe, a list of read commands, in one process and writes one bundle file that the dashboard reads section by section.
+
+### Recipe
+
+The recipe is `$PACE_HOME/dashboard/recipe.json`, or the file given with `--recipe`.
+When the default file does not exist, the built-in default recipe runs.
+A missing `--recipe` file, a file that is not valid JSON, and a recipe that breaks any rule below are `bad_args`, and nothing is written.
+
+The default recipe's measured cost: a cold run (empty cache) made 50 Garmin calls in 261 s with 7 shoes, and an immediate second run made 0 calls in about 1 s.
+On later refreshes the cost is driven by `activity show` (cached one day, one call per activity) and `gear activities` (cached 5 minutes, one call per shoe; raise it with `cache_ttl_overrides` for `gear.activities` in `config.toml`).
+Today's `race_predictions` row can have null times until Garmin computes it, so a page shows the latest row with values.
+
+A recipe is `{"version": 1, "datasets": [...]}` with 1 to 50 datasets; unknown keys are refused at both levels.
+
+| key | required | meaning |
+|---|---|---|
+| `id` | yes | section id in the bundle: 1-64 letters, digits, `_` or `-`; unique |
+| `command` | yes | a built-in command as `pace schema` names it (`"wellness sleep-range"`), marked `"exportable": true` |
+| `argv` | no | arguments exactly as typed after the command, positional ones included (`["--days", "112"]`) |
+| `rows` | no | dotted path to the list of rows inside the envelope's `data`; default `data` itself: a list gives its items, an object one row |
+| `columns` | yes | `{"<column>": "<dotted path inside a row>"}`; only these are written, and a missing path gives `null`; a column name is not empty and does not start with `parent.` |
+| `foreach` | no | `{"dataset": "<earlier id>", "limit": N}` with N from 1 to 100: run the command once per row of that earlier dataset, its first N rows |
+
+Dotted paths use the `--fields` syntax (`latestWeight.weight`).
+A row item that is not an object is read as `{"value": item}`.
+An `argv` item that is exactly `{column}` is a placeholder: it is allowed only in a `foreach` dataset, names a column of the parent dataset, and is replaced by that parent row's value; `{` and `}` appear nowhere else in `argv`.
+
+Only exportable commands run: the registry reads and a fixed list of hand-written reads, shown by `pace schema` as `"exportable": true`.
+Writes, commands that write local stores or files (`zones estimate`, `chart`, `activity export`), `diary` commands and every command not on the list are refused.
+The flags listed in `export.refused_flags` of `pace schema` (`--export`, `--out`, `--out-dir`, `--save`, `--no-cache`, `--help`) are refused in `argv`, alone or as `--flag=value`, even on an exportable command.
+
+`--check` validates the recipe, each `argv` included against its command's own parser (placeholders parsed as `0`), without network calls, and writes nothing: `data = {"recipe", "datasets": [ids], "valid": true}`.
+`--init` writes the default recipe to `--recipe` or the default path, for editing, and returns `data = {"path", "datasets": n}`; it is `bad_args` when the file exists or with `--check`.
+
+### Running
+
+A run first checks that Garmin tokens exist: without them it is `auth_required` before any dataset.
+Datasets run without any credential prompt, and a token login that fails as below is not tried again in the same run.
+Tokens that Garmin rejects (its authentication error, 401 or 403) make the first call `auth_required`, which stops the export (Failures below).
+A token login that fails for another reason makes the call `rate_limited` on a 429 and `network` otherwise (a connection error, another HTTP status), and ends the budget whatever its status.
+`--max-calls` (default 60) caps the Garmin calls of the whole run, `--max-seconds` (default 480) its time, limiter waits included; a value below 1 is `bad_args`.
+Datasets run in recipe order, each as `pace <command> <argv>` runs in a shell (same parsing, defaults, shaping and cache), with an empty stdin.
+A call past the budget is not sent and fails with `deferred`.
+A `rate_limited` error, or a `network` error with no HTTP status, ends the budget for the rest of the run; a `network` error with a 5xx status fails only its call.
+Every dataset still runs after the budget ends: cache hits are free, so a dataset served from the cache still refreshes.
+A `foreach` dataset reads its parent's rows as this run wrote them, stale ones included.
+A parent row whose placeholder values were already run in that dataset is skipped, so each value runs once.
+A parent value that is null, or whose text starts with `-` (it could be read as a flag), is not run and is recorded as a `bad_args` error of that child.
+Ctrl-C stops the run with the `internal` "Aborted by user." envelope and exit 130, and writes no bundle.
+
+What a refresh costs depends on the cache lifetimes: a `foreach` over N rows costs up to N calls each time those entries expire, and a cold first run costs the most.
+`--every`, `foreach.limit` and the budget keep a recipe's cost bounded; the summary reports the calls per dataset.
+
+### Bundle
+
+The bundle is written to `--out` (default `$PACE_HOME/dashboard/bundle.json`), replaced atomically with mode 0600, keys in recipe and column order:
+
+```json
+{"meta": [{"label": "Generated", "value": "2026-11-26T10:16:15+01:00"},
+          {"label": "Recipe", "value": "~/.pace/dashboard/recipe.json"}],
+ "datasets": {
+   "rhr": {"rows": [{"date": "2026-11-25", "rhr": 44}],
+           "meta": {"command": "wellness sleep-range --days 112", "generated": "2026-11-26T10:16:02+01:00",
+                    "columns": ["date", "rhr"], "rows": 112, "calls": 0, "cache_oldest_age_s": 812,
+                    "stale": false, "reason": null, "error": null, "day_errors": 0, "errors": []}}}}
+```
+
+`Recipe` is `default`, or the recipe path with the home directory written as `~`.
+A section's `meta` holds `command` (the command and `argv` as in the recipe), `generated` (when the dataset ran, or the previous bundle's time when its rows were kept), `columns`, `rows` (the count), `calls` (Garmin calls it made), `cache_oldest_age_s` (from the envelope's `cache`, null without one), `stale`, `reason` (`deferred` or `error`, null when fresh), `error` (`{"code"}` or null), `day_errors` and `errors`.
+Rows of a `foreach` dataset also carry `parent.<column>` for each placeholder column.
+Everyone who can open the dashboard can read the bundle, so it carries error codes only; the messages are in the envelope.
+
+### Failures
+
+A dataset whose command fails as a whole does not fail the export.
+Its section keeps the previous bundle's rows with `stale: true`, the previous `generated`, `reason` (`deferred` for the `deferred` code, else `error`) and `error: {"code"}`; with no usable previous section it has no rows.
+Previous rows are reused only when the previous section's `meta.columns` equals the recipe line's column names, so an edited line never gets rows in the old shape.
+On success, a missing `rows` path (pace prunes empty lists) or a null there means no rows.
+A date-keyed command that fetches one day per call returns `{"date", "error"}` items for the days that failed, deferred days included.
+Each failed day is replaced by the previous section's row with the same date in the column mapped from the path `date`, or dropped when there is none or no column maps `date`; it counts in `day_errors`, and the section is not stale.
+A `foreach` child that fails is recorded in `meta.errors` as `{"parent": {"<placeholder column>": value}, "code"}`, the previous rows with the same `parent.<column>` values are kept, and the other children still run.
+A `foreach` dataset whose parent section is stale with no rows does not run; it keeps its previous rows (same column rule) with `stale: true`, `reason: "error"` and the parent's error code, and the summary carries the parent's message.
+`auth_required` stops the export, whether a whole command, a `foreach` child or a single failed day returns it: no bundle is written, the previous one stays, and the envelope carries the error.
+A missing, unreadable or non-object previous bundle counts as none; sections whose ids left the recipe are dropped.
+Commands that catch per-item errors themselves (`plan status` effort, the due check of `zones show`) return nulls for a deferred item, with no `stale` flag.
+
+### Summary
+
+`data = {"path", "recipe", "bytes", "calls", "seconds", "datasets": {"<id>": {"rows", "calls", "stale", "reason", "error", "day_errors", "errors"}}}`.
+`error` is `{"code", "message"}` (the message cut to 300 characters) or null, and each `errors` item is `{"parent", "code", "message"}`.
+`calls` counts the calls the limiter registered, so a call deferred while it waited for a concurrency slot still counts.
 
 ## Keeping this file honest
 

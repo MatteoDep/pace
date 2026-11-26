@@ -10,7 +10,7 @@ import typer
 from pace.cache import Cache, CacheTracker, ttl_for_day
 from pace.commands._helpers import cached_call
 from pace.config import load_config
-from pace.dates import date_range, resolve_range
+from pace.dates import resolve_range, sample_days
 from pace.envelope import PaceError, Result, fail, run
 from pace.shape import apply, parse_bucket, parse_fields
 from pace.spec import GROUPS, TTL_STATIC, EndpointSpec, specs_for
@@ -25,6 +25,10 @@ NO_CACHE_OPT = typer.Option(False, "--no-cache", help="Bypass the cache read for
 FROM_OPT = typer.Option(None, "--from", "-F", help="Start date (YYYY-MM-DD | today | yesterday | -Nd). Overrides --days.")
 TO_OPT = typer.Option("today", "--to", "-T", help="End date (inclusive).")
 DAYS_OPT = typer.Option(1, "--days", "-n", help="Number of days ending at --to.")
+EVERY_OPT = typer.Option(1, "--every", help="Sample one day every N days (calendar-anchored grid, plus the last day).")
+SPAN_FROM_OPT = typer.Option(None, "--from", "-F", help="Start date; with --to/--days, one call over the range.")
+SPAN_TO_OPT = typer.Option(None, "--to", "-T", help="End date (inclusive); default today when a range is given.")
+SPAN_DAYS_OPT = typer.Option(None, "--days", "-n", help="Number of days ending at --to.")
 
 
 def shape_args(fields: str, bucket: str, raw: bool) -> tuple[str | list[str], str, dict[str, Any]]:
@@ -60,7 +64,8 @@ def _shape_kwargs(spec: EndpointSpec, fields, bucket, raw, span_s: int = DAY_S) 
 
 async def fetch_spec(spec: EndpointSpec, *, ident: Any = None, dates: list[date] | None = None,
                      no_cache: bool = False, fields: str | list[str] = "default",
-                     bucket: str = "auto", raw: bool = False) -> Result:
+                     bucket: str = "auto", raw: bool = False,
+                     span: tuple[date, date] | None = None) -> Result:
     # `no_cache` means "refresh": always open the cache so a fresh result is still written,
     # just skip the read on this call. It never leaves the DB unopened.
     cache = Cache()
@@ -73,7 +78,16 @@ async def fetch_spec(spec: EndpointSpec, *, ident: Any = None, dates: list[date]
             prefix.append(ident)
         ttl = today_ttl(spec)
 
-        if spec.dated is None:
+        if spec.dated == "span" and span is not None:
+            start, end = span
+            data = await cached_call(spec.method, *prefix, start.isoformat(), end.isoformat(), *spec.span_args,
+                                     cache=cache, ttl=ttl_for_day(end, ttl), tracker=tracker, refresh=no_cache)
+            rows = data if isinstance(data, list) else [data]
+            shaped, report = apply(rows, **_shape_kwargs(spec, fields, bucket, raw,
+                                                         ((end - start).days + 1) * DAY_S))
+            return Result(shaped, tracker.report(), report)
+
+        if spec.dated is None or spec.dated == "span":
             data = _unwrap(spec, await cached_call(spec.method, *prefix, cache=cache, ttl=ttl,
                                                     tracker=tracker, refresh=no_cache))
             shaped, report = apply(data, **_shape_kwargs(spec, fields, bucket, raw))
@@ -123,11 +137,18 @@ def build_command(app: typer.Typer, spec: EndpointSpec) -> None:
     if spec.id_arg is not None:
         params.append(P("ident", P.POSITIONAL_OR_KEYWORD, annotation=spec.id_type,
                         default=typer.Argument(..., metavar=spec.id_arg)))
-    if spec.dated is not None:
+    if spec.dated == "span":
+        params += [
+            P("from_", P.KEYWORD_ONLY, annotation=str | None, default=SPAN_FROM_OPT),
+            P("to", P.KEYWORD_ONLY, annotation=str | None, default=SPAN_TO_OPT),
+            P("days", P.KEYWORD_ONLY, annotation=int | None, default=SPAN_DAYS_OPT),
+        ]
+    elif spec.dated is not None:
         params += [
             P("from_", P.KEYWORD_ONLY, annotation=str | None, default=FROM_OPT),
             P("to", P.KEYWORD_ONLY, annotation=str, default=TO_OPT),
             P("days", P.KEYWORD_ONLY, annotation=int, default=DAYS_OPT),
+            P("every", P.KEYWORD_ONLY, annotation=int, default=EVERY_OPT),
         ]
     params += [
         P("fields", P.KEYWORD_ONLY, annotation=str, default=FIELDS_OPT),
@@ -139,25 +160,36 @@ def build_command(app: typer.Typer, spec: EndpointSpec) -> None:
     def command(**kw: Any) -> None:
         args: dict[str, Any] = {}
         dates: list[date] | None = None
+        span: tuple[date, date] | None = None
         ident = kw.get("ident")
         try:
             if spec.id_arg is not None:
                 if spec.id_check is not None:
                     ident = spec.id_check(ident)
                 args[spec.id_arg.lower()] = ident
-            if spec.dated is not None:
+            if spec.dated == "span":
+                if kw["from_"] is None and kw["to"] is None and kw["days"] is None:
+                    args.update(**{"from": None, "to": None})
+                else:
+                    days = kw["days"] if kw["days"] is not None else 1
+                    span = resolve_range(kw["from_"], kw["to"] or "today", days)
+                    if (span[1] - span[0]).days + 1 > MAX_DAYS:
+                        raise PaceError("bad_args", f"Range too long ({(span[1] - span[0]).days + 1} days); "
+                                                    f"max {MAX_DAYS}.")
+                    args.update(**{"from": span[0].isoformat(), "to": span[1].isoformat()})
+            elif spec.dated is not None:
                 start, end = resolve_range(kw["from_"], kw["to"], kw["days"])
-                dates = list(date_range(start, end))
-                if len(dates) > MAX_DAYS:
-                    raise PaceError("bad_args", f"Range too long ({len(dates)} days); max {MAX_DAYS}.")
-                args.update(**{"from": start.isoformat(), "to": end.isoformat()})
+                if (end - start).days + 1 > MAX_DAYS:
+                    raise PaceError("bad_args", f"Range too long ({(end - start).days + 1} days); max {MAX_DAYS}.")
+                dates = sample_days(start, end, kw["every"])
+                args.update(**{"from": start.isoformat(), "to": end.isoformat(), "every": kw["every"]})
             fields, bucket, shape_echo = shape_args(kw["fields"], kw["bucket"], kw["raw"])
         except PaceError as err:
             fail(spec.command, err)
         args.update(shape_echo)
         run(spec.command, args, lambda: fetch_spec(
             spec, ident=ident, dates=dates, no_cache=kw["no_cache"],
-            fields=fields, bucket=bucket, raw=kw["raw"]))
+            fields=fields, bucket=bucket, raw=kw["raw"], span=span))
 
     command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
     command.__name__ = spec.name.replace("-", "_")

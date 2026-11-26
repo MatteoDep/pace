@@ -57,6 +57,7 @@ pace zones add --source lab --lt1-hr 140 --lt2-hr 165 --lt2-pace 4:10
 pace zones accept <record-id> --only lt2
 pace zones push --dry-run
 pace load --weeks 8 --weeks-ahead 4
+pace export
 pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
 pace chart recovery --past 28
@@ -74,6 +75,7 @@ To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 
 Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
 A cold `pace zones estimate` takes up to about 4 minutes (the 40-call cap at 10 calls a minute); use a 10-minute shell timeout.
+A cold `pace export` with the default recipe took about 4.5 minutes (its time budget is 8); use a 10-minute shell timeout there too.
 `pace cache clear` does not clear `$PACE_HOME/fit/` (derived FIT data for the zones methods).
 The diary, the plan and the zones records are local files under `$PACE_HOME` (default `~/.pace`), not Garmin data; the confirmation rule covers Garmin writes only (`zones push` is the one zones command that writes to Garmin), and the coaching skill decides when to ask about local writes.
 

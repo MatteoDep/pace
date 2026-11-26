@@ -124,3 +124,16 @@ def test_export_rejects_sport(api, tmp_path) -> None:
     code, doc = _run("--export", str(tmp_path / "a.json"), "--sport", "all")
     assert code == 2 and doc["error"]["code"] == "bad_args" and api == []
     assert not (tmp_path / "a.json").exists()
+
+
+def test_rows_returns_the_export_rows(api, tmp_path) -> None:
+    code, doc = _run("--weeks", "2", "--rows")
+    _, exp = _run("--weeks", "2", "--export", str(tmp_path / "l.json"))
+    assert code == 0 and doc["data"] == json.loads((tmp_path / "l.json").read_text())["rows"]
+    assert {r["table"] for r in doc["data"]} >= {"week", "day"}
+
+
+@pytest.mark.parametrize("extra", [["--sport", "all"], ["--export", "x.json"]])
+def test_rows_refuses_sport_and_export(api, extra) -> None:
+    code, doc = _run("--rows", *extra)
+    assert code == 2 and doc["error"]["code"] == "bad_args"
