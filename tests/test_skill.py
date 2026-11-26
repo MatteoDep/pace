@@ -198,3 +198,19 @@ def test_coaching_sections() -> None:
 
 def test_skill_md_size() -> None:
     assert len(SKILL.read_text().splitlines()) <= 250
+
+
+def test_settings_rules() -> None:
+    skill = SKILL.read_text()
+    flat = " ".join(skill.split())
+    assert "0 means never ask" in flat
+    start = _section(skill, "## Session start")
+    assert "`checkin.gear`" in start and "pace activity gear" in start
+    assert "measurementSystem" in _section(skill, "## Settings")
+    assert "untrusted" in " ".join(_section(skill, "## Settings").split())
+    assert "never gaps" in " ".join(_section(skill, "## Intake").split())
+    writes = " ".join(_section(skill, "## Writes").split())
+    assert "pace gear link" in writes and "naming the shoe" in writes
+    dash = (SKILL.parent / "dashboard.md").read_text()
+    assert "data/settings-pending" in dash and "data/settings-current" in dash
+    assert "deletes" in dash

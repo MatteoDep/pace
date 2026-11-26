@@ -14,12 +14,18 @@ from pace.envelope import PaceError
 KINDS = ("note", "plan", "recommendation", "feedback", "constraint", "injury", "decision")
 ACTIVE_KINDS = ("constraint", "injury")
 PROFILE_KEYS = ("goal", "event.name", "event.date", "availability", "background", "other_sports",
-                "strength", "preferences", "checkin.weight_days", "checkin.last", "dashboard.url")
+                "strength", "preferences", "checkin.weight_days", "checkin.gear", "units",
+                "checkin.last", "dashboard.url")
+SETTINGS_KEYS = ("checkin.weight_days", "checkin.gear", "units")  # coach settings; defaults apply when unset
 WEIGHT_DAYS_DEFAULT = 7
+WEIGHT_DAYS_RANGE = (0, 90)  # 0 = never ask
+GEAR_DEFAULT = False
+UNIT_SYSTEMS = ("metric", "imperial")
 REF_PATTERN = r"(session|activity|entry):[1-9][0-9]*"  # always used with re.fullmatch
 EMPTY: dict[str, Any] = {"profile": {}, "entries": [], "next_id": 1}
 
 _BOOKKEEPING_PREFIXES = ("checkin.", "dashboard.")
+_BOOKKEEPING_KEYS = ("units",)
 _PARENT_KEYS = ("event", "checkin", "dashboard")
 
 
@@ -88,13 +94,22 @@ def _parse_checkin_last(value: str) -> str:
     return moment.isoformat(timespec="seconds")
 
 
-def _normalize(key: str, value: str) -> str | int:
+def _normalize(key: str, value: str) -> str | int | bool:
     if key == "event.date":
         return parse_date(value).isoformat()
     if key == "checkin.weight_days":
-        if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 90:
-            raise _bad("checkin.weight_days must be an integer between 1 and 90")
+        low, high = WEIGHT_DAYS_RANGE
+        if not re.fullmatch(r"[0-9]+", value) or not low <= int(value) <= high:
+            raise _bad(f"checkin.weight_days must be an integer between {low} and {high} (0 = never ask)")
         return int(value)
+    if key == "checkin.gear":
+        if value.lower() not in ("true", "false"):
+            raise _bad(f"checkin.gear must be true or false, got {value!r}")
+        return value.lower() == "true"
+    if key == "units":
+        if value.lower() not in UNIT_SYSTEMS:
+            raise _bad(f"units must be one of {', '.join(UNIT_SYSTEMS)}, got {value!r}")
+        return value.lower()
     if key == "checkin.last":
         return _parse_checkin_last(value)
     if key == "dashboard.url" and not value.startswith("https://claude.ai/"):
@@ -108,7 +123,7 @@ def _check_key(key: str) -> None:
 
 
 def _touch(profile: dict[str, Any], key: str) -> None:
-    if not key.startswith(_BOOKKEEPING_PREFIXES):
+    if not key.startswith(_BOOKKEEPING_PREFIXES) and key not in _BOOKKEEPING_KEYS:
         profile["updated"] = date.today().isoformat()
 
 

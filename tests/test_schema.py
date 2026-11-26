@@ -120,6 +120,11 @@ def test_diary_in_schema() -> None:
     assert "Garmin" in data["writes"]["confirm"]
     assert data["diary"]["kinds"][-1] == "decision"
     assert "dashboard.url" in data["diary"]["profile_keys"]
+    from pace import diary
+    assert data["diary"]["checkin_weight_days_range"] == list(diary.WEIGHT_DAYS_RANGE) == [0, 90]
+    assert data["diary"]["settings_keys"] == list(diary.SETTINGS_KEYS)
+    assert data["diary"]["units_values"] == ["metric", "imperial"]
+    assert data["diary"]["checkin_gear_default"] is False
     assert "diary" in data["groups"]
     res = runner.invoke(app, ["schema", "diary"])
     assert res.exit_code == 0
