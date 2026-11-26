@@ -25,13 +25,14 @@ Steps, exactly:
    Its summary lists per dataset `stale`, `reason` and `error` (`code`, `message`).
    If it fails with `auth_required` (exit 3, no bundle written): stop, no refresh this time, and tell the athlete to log in again with `pace auth login` (you never run it).
 2. Upload the bundle (`path` of the summary) to the artifact as an asset (`asset: true`); note the new `/_blob/<id>`.
-3. Read each `datasets/<id>` that points at the previous bundle, for its `version`; one ArtifactData `batch` of `update`s, each pinned to its dataset's version: `{"source": {"url": "<new>"}, "updated": {"at": "<bundle Generated time>", "by": "pace coach"}}`.
+3. ArtifactData `list` the `datasets` collection; for each dataset whose `source.url` is the previous bundle's `/_blob/<id>` (this skips the `settings_*` store datasets), one `update` in a single `batch`, pinned to that dataset's `version`: `{"source": {"url": "<new>"}, "updated": {"at": "<Generated>", "by": "pace coach"}}`.
+   `<Generated>` is the value of the `meta` entry labelled `Generated` in the bundle file (the `path` in the summary).
 4. Keep the asset you just replaced, since a page open during the refresh may still fetch it; delete the older bundles (Artifact `list` with `scope: "assets"`, then delete each `application/json` asset that is neither the new one nor the replaced one; never touch assets of other types).
 5. ArtifactData `list` on collection `data/users/me`, once: a `check` with `failed` means the page broke; fix it now. No `check` means nobody has the page open or it passed; move on, never loop.
 6. Write the current settings (Settings below).
 
-A dataset with `stale: true`: tell the athlete once, with its `error` message; its section still holds the previous rows.
-`reason: "deferred"` means the call budget ran out; the next refresh continues from the cache, so say nothing more.
+A dataset with `stale: true` and `reason: "deferred"` is not reported: the call budget ran out and the next refresh continues from the cache.
+Any other stale dataset (`reason: "error"`): tell the athlete once, with its `error` message; its section still holds the previous rows.
 
 ## Settings
 
@@ -48,11 +49,16 @@ The page reads both through the datasets `settings_current` and `settings_pendin
 On the user's request only, never unprompted:
 1. `pace export --init` if `$PACE_HOME/dashboard/recipe.json` does not exist yet, then add a recipe line for the new data (CONTRACT.md, Export, Recipe).
 2. `pace export --check`, then `pace export`; read the new section's `stale` and row count in the summary.
-3. Add the dataset `datasets/<id>` (file source on the current bundle, loader `({answer}) => answer.datasets.<id>.rows`) and the page section: read `files/index.html` again first (they may have edited words with the pencil), keep the `<meta name="dash-one-writer">` rule, write it back pinned to its version.
-4. Read `check` once, and record a diary `note` with what changed and why.
+3. Run Refresh steps 2 to 4 so the new bundle is uploaded and the existing datasets point at it.
+4. Add the dataset `datasets/<id>` (file source on the new `/_blob/<id>`, loader `({answer}) => answer.datasets.<id>.rows`) and the page section as in Change a view.
 
 Deep dives (one run, one block, a comparison) are separate plain artifacts or `pace chart` PNGs, never extra sections on this page.
-A change to an existing section (words, layout, chart) follows steps 3 and 4 only.
+
+## Change a view
+
+On the user's request only.
+Read `files/index.html` again first (they may have edited words with the pencil), change only what was asked, keep the `<meta name="dash-one-writer">` rule, and write it back pinned to its version.
+Read `check` once, and record a diary `note` with what changed and why.
 
 ## Unattended runs
 
