@@ -125,6 +125,8 @@ The details payload carries no `*GMT` / `*Local` pair, so that local time is the
 
 ### Rate limits and cost
 
+Every command entry in `pace schema` carries `exportable`, and the top-level `export` block lists the flags a dashboard recipe may never use (`refused_flags`).
+
 Garmin is called through one process-wide limiter, and `pace schema` publishes its numbers under `data.limits`:
 
 | limit | value | meaning |

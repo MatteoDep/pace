@@ -17,6 +17,7 @@ from pace.plan import (
     INTENSITIES, MODIFIED_TOLERANCE, PHASES, SESSION_FIELDS, SETTABLE_STATUSES, STATUSES, WORKOUT_PREFIX,
 )
 from pace.ratelimit import CONCURRENCY, limiter
+from pace.recipe import EXPORT_MAX_CALLS, EXPORT_MAX_SECONDS, RECIPE_VERSION, REFUSED_FLAGS
 from pace.sports import PUSHABLE, SESSION_SPORTS, UNTRACKED
 from pace.spec import GROUPS, REGISTRY, EndpointSpec
 from pace.workout import DSL_REFERENCE
@@ -202,6 +203,17 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
 ]
 
 
+#: Static commands a dashboard recipe may run: read-only and free of file output. Everything else is refused.
+EXPORTABLE_STATIC = frozenset({
+    "activity list", "activity show", "activity gear", "activity splits", "activity details", "activity weather",
+    "activity last", "load", "plan show", "plan status", "wellness sleep-range", "log weight list", "log bp list",
+    "workout list", "workout show", "workout calendar", "zones show",
+})
+EXPORT_REFUSED_FLAGS = REFUSED_FLAGS
+
+STATIC_COMMANDS = [{**c, "exportable": c["name"] in EXPORTABLE_STATIC} for c in STATIC_COMMANDS]
+
+
 def _keyed(spec: EndpointSpec) -> str:
     if spec.id_arg and spec.dated:
         return "id+date"
@@ -221,6 +233,7 @@ def _entry(spec: EndpointSpec) -> dict[str, Any]:
         "default_fields": list(spec.default_fields),
         "series": [s.path for s in spec.series],
         "ttl_s": spec.ttl,
+        "exportable": True,
     }
 
 
@@ -248,6 +261,9 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
                    "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file); push to the watch."},
         "commands": commands,
+        "export": {"recipe_path": "$PACE_HOME/dashboard/recipe.json", "bundle_path": "$PACE_HOME/dashboard/bundle.json",
+                   "recipe_version": RECIPE_VERSION, "refused_flags": list(EXPORT_REFUSED_FLAGS),
+                   "max_calls_default": EXPORT_MAX_CALLS, "max_seconds_default": EXPORT_MAX_SECONDS},
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
         "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
