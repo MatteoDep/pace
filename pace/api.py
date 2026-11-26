@@ -136,6 +136,9 @@ async def _call(
             method = getattr(get_api(), method_name)
             result = await asyncio.to_thread(method, *args, **kwargs)
             return True, result, None
+        except auth.TokenLoginError as err:
+            # get_api() inside pace export: stored tokens missing or rejected, or the login failed
+            return False, None, ApiError(err.code, err.message, err.http)
         except GarthHTTPError as err:
             # Raised by library writes that call garth directly (gear link, upload_workout,
             # add_weigh_in, ...): a 4xx there is a refused payload, not "endpoint not enabled".

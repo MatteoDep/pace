@@ -672,12 +672,16 @@ The flags listed in `export.refused_flags` of `pace schema` (`--export`, `--out`
 
 ### Running
 
-A run first checks that Garmin tokens exist: without them it is `auth_required` before any dataset, and it never prompts for credentials.
+A run first checks that Garmin tokens exist: without them it is `auth_required` before any dataset.
+Datasets run without any credential prompt, and a token login that fails as below is not tried again in the same run.
+Tokens that Garmin rejects (its authentication error, 401 or 403) make the first call `auth_required`, which stops the export (Failures below).
+A token login that fails for another reason (a connection error, another HTTP status) makes the call `network`, which ends the budget.
 `--max-calls` (default 60) caps the Garmin calls of the whole run, `--max-seconds` (default 480) its time, limiter waits included; a value below 1 is `bad_args`.
 Datasets run in recipe order, each as `pace <command> <argv>` runs in a shell (same parsing, defaults, shaping and cache), with an empty stdin.
 A call past the budget is not sent and fails with `deferred`; a `rate_limited` or `network` error ends the budget for the rest of the run.
 Every dataset still runs after the budget ends: cache hits are free, so a dataset served from the cache still refreshes.
 A `foreach` dataset reads its parent's rows as this run wrote them, stale ones included.
+A parent row whose placeholder values were already run in that dataset is skipped, so each value runs once.
 A parent value that is null, or whose text starts with `-` (it could be read as a flag), is not run and is recorded as a `bad_args` error of that child.
 Ctrl-C stops the run with the `internal` "Aborted by user." envelope and exit 130, and writes no bundle.
 
@@ -712,6 +716,7 @@ On success, a missing `rows` path (pace prunes empty lists) or a null there mean
 A date-keyed command that fetches one day per call returns `{"date", "error"}` items for the days that failed, deferred days included.
 Each failed day is replaced by the previous section's row with the same date in the column mapped from the path `date`, or dropped when there is none or no column maps `date`; it counts in `day_errors`, and the section is not stale.
 A `foreach` child that fails is recorded in `meta.errors` as `{"parent": {"<placeholder column>": value}, "code"}`, the previous rows with the same `parent.<column>` values are kept, and the other children still run.
+A `foreach` dataset whose parent section is stale with no rows does not run; it keeps its previous rows (same column rule) with `stale: true`, `reason: "error"` and the parent's error code, and the summary carries the parent's message.
 `auth_required` from any command stops the export: no bundle is written, the previous one stays, and the envelope carries the error.
 A missing, unreadable or non-object previous bundle counts as none; sections whose ids left the recipe are dropped.
 Commands that catch per-item errors themselves (`plan status` effort, the due check of `zones show`) return nulls for a deferred item, with no `stale` flag.

@@ -20,13 +20,16 @@ from garminconnect import (
 )
 from typer.testing import CliRunner
 
+import pace.auth
 from pace import ratelimit
+from pace.cache import Cache
 from pace.cli import app
 from pace.commands.schema import build_schema
 from pace.envelope import PaceError
 from pace.exporter import extract, invoke, run_recipe
 from pace.ratelimit import RateLimiter
 from pace.recipe import DEFAULT_RECIPE, Dataset, bundle_path, parse_recipe, recipe_path
+from tests.conftest import REAL_GET_API
 
 runner = CliRunner()
 COMMANDS = {c["name"]: c for c in build_schema(None)["commands"]}
@@ -280,6 +283,50 @@ def test_foreach_cannot_smuggle_a_writing_flag(garmin, tmp_path, value, argv) ->
     assert b["datasets"]["loads"]["meta"]["errors"] == [{"parent": {"x": value}, "code": "bad_args"}]
 
 
+def test_foreach_runs_each_parent_value_once(garmin) -> None:
+    # duplicate parent values (a foreach over a foreach section, `gear defaults`) must not multiply
+    # the kept rows on every failing run
+    garmin.payloads["get_gear"] = [GEAR[0], GEAR[0]]
+    row = {"activity_id": 12345678901, "start": "2026-11-20 07:00:00", "parent.uuid": U1}
+    b, _ = _run([SHOES, SHOE_ACTS])
+    assert garmin.called("get_gear_activities") == [(U1,)] and b["datasets"]["shoe_acts"]["rows"] == [row]
+    garmin.fail("get_gear_activities", NOT_FOUND)
+    for _ in range(2):  # two failing runs in a row, each on the previous run's bundle
+        c = Cache()
+        c.clear()  # the child must reach Garmin (and fail), not the cache
+        c.close()
+        b, _ = _run([SHOES, SHOE_ACTS], previous=b)
+        assert b["datasets"]["shoe_acts"]["rows"] == [row]
+        assert b["datasets"]["shoe_acts"]["meta"]["errors"] == [{"parent": {"uuid": U1}, "code": "not_found"}]
+
+
+def test_foreach_keeps_previous_rows_when_its_parent_has_none(garmin) -> None:
+    garmin.fail("get_gear", NOT_FOUND)  # no previous shoes section: the parent is stale with no rows
+    old = [{"activity_id": 12345678911, "start": "2026-10-01 07:00:00", "parent.uuid": U1}]
+    b, s = _run([SHOES, SHOE_ACTS], previous=_prev(shoe_acts=_section(["activity_id", "start"], old)))
+    sec = b["datasets"]["shoe_acts"]
+    assert sec["rows"] == old and garmin.called("get_gear_activities") == []
+    assert {k: sec["meta"][k] for k in ("stale", "reason", "error", "generated", "calls", "errors")} == {
+        "stale": True, "reason": "error", "error": {"code": "not_found"}, "generated": GENERATED, "calls": 0,
+        "errors": []}
+    err = s["datasets"]["shoe_acts"]["error"]
+    assert err["code"] == "not_found" and "shoes" in err["message"] and "Endpoint not found (404)" in err["message"]
+    # without a usable previous section it is stale with no rows
+    b, _ = _run([SHOES, SHOE_ACTS])
+    assert b["datasets"]["shoe_acts"]["rows"] == [] and b["datasets"]["shoe_acts"]["meta"]["stale"] is True
+
+
+def test_foreach_runs_on_a_stale_parents_previous_rows(garmin) -> None:
+    garmin.fail("get_gear", NOT_FOUND)
+    prev = _prev(shoes=_section(["uuid", "name"], [{"uuid": U1, "name": "Shoe 1"}, {"uuid": U3, "name": "Shoe 3"}]))
+    b, _ = _run([SHOES, SHOE_ACTS], previous=prev)
+    assert b["datasets"]["shoes"]["meta"]["stale"] is True
+    assert garmin.called("get_gear_activities") == [(U1,), (U3,)]
+    sec = b["datasets"]["shoe_acts"]
+    assert sec["meta"]["stale"] is False and sec["meta"]["error"] is None
+    assert [r["parent.uuid"] for r in sec["rows"]] == [U1, U3]
+
+
 def test_invoke_wraps_usage_errors_and_silent_commands(garmin, monkeypatch) -> None:
     env = invoke("gear list", ["--bogus"])
     assert env["ok"] is False and env["error"]["code"] == "bad_args" and "--bogus" in env["error"]["message"]
@@ -318,6 +365,34 @@ def test_auth_required_mid_run_stops_the_export(garmin, tmp_path) -> None:
     with pytest.raises(PaceError) as e:
         _run([SHOES])
     assert e.value.code == "auth_required" and ratelimit.active_budget() is None
+
+
+def test_rejected_tokens_end_the_export_without_prompting(garmin, tmp_path, monkeypatch) -> None:
+    # tokens exist (auth_status says so) but Garmin rejects them: no prompt, one login, auth_required
+    logins, prompts = [], []
+
+    class RejectingGarmin:
+        def login(self, tokenstore=None):
+            logins.append(tokenstore)
+            raise GarminConnectAuthenticationError("Authentication failed: 401 Unauthorized")
+
+    def prompt(*args, **kwargs):
+        prompts.append(args)
+        raise EOFError
+
+    monkeypatch.setattr("pace.api.get_api", REAL_GET_API)
+    monkeypatch.setattr("pace.api._api", None)
+    monkeypatch.setattr("pace.auth.Garmin", RejectingGarmin)
+    for target in ("pace.auth.get_credentials", "pace.auth.getpass", "builtins.input"):
+        monkeypatch.setattr(target, prompt)
+    recipe = _write_recipe(tmp_path / "r.json", [_fa("fa", days=3), SHOES])  # a gathered fan-out first
+    code, doc = _cli("--recipe", str(recipe))
+    assert code == 3 and doc["error"]["code"] == "auth_required"
+    assert not bundle_path().exists() and len(logins) == 1 and prompts == [] and garmin.calls == []
+    # outside the export, a failed token login still falls through to the interactive prompt
+    with pytest.raises(EOFError):
+        pace.auth.init_api()
+    assert len(prompts) == 1
 
 
 def test_ctrl_c_aborts_without_a_bundle(garmin, tmp_path) -> None:

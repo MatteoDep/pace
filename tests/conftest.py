@@ -19,6 +19,10 @@ def _no_real_fit_dir(monkeypatch):
     monkeypatch.setattr(fit, "fit_dir", guarded_fit_dir)
 
 
+#: The real get_api, for tests that fake the Garmin class itself (the guard below replaces get_api).
+REAL_GET_API = api.get_api
+
+
 def _no_real_garmin():
     raise AssertionError("test reached the real Garmin client: monkeypatch pace.api.get_api")
 

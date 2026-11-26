@@ -14,6 +14,7 @@ from typing import Any
 import click
 from typer.main import get_command
 
+import pace.auth
 from pace import envelope, ratelimit
 from pace.envelope import PaceError
 from pace.recipe import Dataset, placeholder
@@ -157,15 +158,19 @@ def _merge_days(rows: list[dict], failed: list[str], previous: list[dict], ds: D
     return sorted(rows + kept, key=lambda r: str(r.get(col) or "")) if kept else rows
 
 
+def _keep_previous(st: _Section, prev: dict | None, failure: dict, reason: str) -> None:
+    """A section that could not refresh: stale, with the previous rows and their time when usable."""
+    st.stale, st.reason, st.error = True, reason, failure
+    if prev is not None:
+        st.rows, st.generated = prev["rows"], prev["generated"]
+
+
 def _run_single(ds: Dataset, prev: dict | None, st: _Section) -> None:
     env = invoke(ds.command, list(ds.argv))
     _note_cache(env, st)
     failure = _failure(env)
     if failure is not None:
-        st.stale, st.error = True, failure
-        st.reason = "deferred" if failure["code"] == "deferred" else "error"
-        if prev is not None:
-            st.rows, st.generated = prev["rows"], prev["generated"]
+        _keep_previous(st, prev, failure, "deferred" if failure["code"] == "deferred" else "error")
         return
     rows, failed = extract(env.get("data"), ds)
     st.rows = _merge_days(rows, failed, prev["rows"] if prev else [], ds)
@@ -188,8 +193,13 @@ def _child_argv(ds: Dataset, values: dict[str, Any]) -> list[str] | None:
 
 def _run_children(ds: Dataset, parent_rows: list[dict], prev: dict | None, st: _Section) -> None:
     assert ds.foreach is not None
+    seen: set[str] = set()
     for parent in parent_rows[: ds.foreach.limit]:
         values = {name: parent.get(name) for name in ds.placeholders}
+        key = json.dumps(values, sort_keys=True, default=str)
+        if key in seen:  # one run per parent value, or kept rows would multiply on every failing run
+            continue
+        seen.add(key)
         tag = {f"parent.{k}": v for k, v in values.items()}
         mine = [r for r in (prev["rows"] if prev else []) if all(r.get(k) == v for k, v in tag.items())]
         argv = _child_argv(ds, values)
@@ -221,16 +231,23 @@ def run_recipe(datasets: list[Dataset], *, previous: dict | None, max_calls: int
         prev_sections = {}
     sections: dict[str, dict] = {}
     report: dict[str, dict] = {}
+    states: dict[str, _Section] = {}
     started = time.monotonic()
-    with ratelimit.budget(max_calls, max_seconds) as budget:
+    # no credential prompt: rejected tokens become auth_required, which ends the export
+    with pace.auth.noninteractive(), ratelimit.budget(max_calls, max_seconds) as budget:
         for ds in datasets:
             calls_before = budget.calls
-            st = _Section(generated=_now())
+            st = states[ds.id] = _Section(generated=_now())
             prev = _previous(prev_sections.get(ds.id), ds)
             if ds.foreach is None:
                 _run_single(ds, prev, st)
+            elif (parent := states[ds.foreach.dataset]).stale and not parent.rows:
+                # nothing to run on: keep this section's rows rather than empty it
+                err = parent.error or {"code": "internal", "message": ""}
+                _keep_previous(st, prev, {"code": err["code"], "message": (
+                    f"Not run: dataset {ds.foreach.dataset!r} failed: {err['message']}")[:MESSAGE_MAX]}, "error")
             else:
-                _run_children(ds, sections[ds.foreach.dataset]["rows"], prev, st)
+                _run_children(ds, parent.rows, prev, st)
             calls = budget.calls - calls_before
             sections[ds.id] = {"rows": st.rows, "meta": {
                 "command": " ".join([ds.command, *ds.argv]), "generated": st.generated,

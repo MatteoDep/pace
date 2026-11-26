@@ -5,12 +5,19 @@ import time
 
 import pytest
 import requests
-from garminconnect import Garmin, GarminConnectConnectionError, GarminConnectTooManyRequestsError
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 from garth.exc import GarthHTTPError
 
+from pace import auth
 from pace.api import ApiError, _status_from_text, classify_http, safe_call
 from pace.ratelimit import CONCURRENCY, RateLimiter, budget
 from pace.envelope import HINTS, PaceError, exit_code
+from tests.conftest import REAL_GET_API
 
 
 def test_status_from_parenthesised_code() -> None:
@@ -277,3 +284,45 @@ def test_stopped_budget_defers_calls_already_waiting_for_a_slot(fake_client) -> 
     assert b.stopped == "rate_limited"
     assert fake_client.calls <= CONCURRENCY
     assert sum(1 for ok, _, err in res if not ok and err.code == "deferred") == 8 - fake_client.calls
+
+
+def _login_failed(status: int) -> GarminConnectConnectionError:
+    """What Garmin.login raises for an HTTP error other than 401/429: the garth error is the cause."""
+    err = GarminConnectConnectionError("Login failed: Error in request")
+    err.__cause__ = _garth_http_error(status)
+    return err
+
+
+@pytest.mark.parametrize(("exc", "code"), [
+    (FileNotFoundError("oauth1_token.json"), "auth_required"),
+    (GarminConnectAuthenticationError("Authentication failed: 401"), "auth_required"),
+    (_login_failed(403), "auth_required"),
+    (_login_failed(500), "network"),
+    (requests.exceptions.ConnectionError("connection refused"), "network"),
+])
+def test_noninteractive_token_login_failure_is_an_error_code(monkeypatch, exc, code) -> None:
+    """Inside auth.noninteractive() a failed token login never prompts: it becomes an error code,
+    and later calls get the same error without a second login attempt."""
+    logins = []
+
+    class FailingGarmin:
+        def login(self, tokenstore=None):
+            logins.append(tokenstore)
+            raise exc
+
+    def prompt(*args, **kwargs):
+        raise AssertionError("prompted for credentials")
+
+    monkeypatch.setattr("pace.api.get_api", REAL_GET_API)
+    monkeypatch.setattr("pace.api._api", None)
+    monkeypatch.setattr("pace.auth.Garmin", FailingGarmin)
+    monkeypatch.setattr("pace.auth.get_credentials", prompt)
+    monkeypatch.setattr("pace.api.limiter", RateLimiter(min_interval=0.0))
+
+    async def two():
+        return [await safe_call("get_x"), await safe_call("get_x")]
+
+    with auth.noninteractive():
+        results = asyncio.run(two())
+    assert [(ok, err.code) for ok, _, err in results] == [(False, code), (False, code)]
+    assert len(logins) == 1
