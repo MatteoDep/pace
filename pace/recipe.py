@@ -40,7 +40,13 @@ class Dataset:
 
     @property
     def placeholders(self) -> tuple[str, ...]:
-        return tuple(m.group(1) for a in self.argv if (m := _PLACEHOLDER_RE.match(a)))
+        return tuple(name for a in self.argv if (name := placeholder(a)) is not None)
+
+
+def placeholder(arg: str) -> str | None:
+    """The column a whole `{column}` argv item names, else None."""
+    m = _PLACEHOLDER_RE.match(arg)
+    return m.group(1) if m else None
 
 
 def _bad(where: str, msg: str) -> PaceError:
@@ -83,6 +89,10 @@ def _parse_dataset(i: int, raw: Any, commands: dict[str, dict], done: dict[str, 
     if (not isinstance(columns, dict) or not columns
             or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in columns.items())):
         raise _bad(where, "columns must be a non-empty object of column name to path")
+    for name in columns:
+        if not name or name.startswith("parent."):
+            # foreach rows carry parent.<col> keys next to the columns
+            raise _bad(where, f"column name {name!r} must be non-empty and not start with 'parent.'")
     foreach = None
     if "foreach" in raw:
         f = raw["foreach"]

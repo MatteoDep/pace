@@ -7,7 +7,7 @@ import typer
 from typer.main import get_command
 
 from pace import __version__, envelope
-from pace.commands import activity, auth, cache, chart, config, device, diary, gear, goal, load, log, plan, profile, schema, training, wellness, workout, zones
+from pace.commands import activity, auth, cache, chart, config, device, diary, export, gear, goal, load, log, plan, profile, schema, training, wellness, workout, zones
 from pace.plugins import load_plugins
 
 app = typer.Typer(
@@ -27,6 +27,7 @@ for module, name in (
 app.command("schema", help="Machine-readable command manifest.")(schema.schema)
 app.command("load", help="Weekly and daily training load.")(load.load)
 app.command("chart", help="Render a PNG chart: volume, plan, recovery, sleep, weight, intensity or activity ID.")(chart.chart)
+app.command("export", help="Run the dashboard recipe and write the bundle file.")(export.export)
 load_plugins(app)
 
 

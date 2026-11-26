@@ -23,6 +23,9 @@ def test_default_recipe_is_valid() -> None:
     ({"version": 1, "datasets": [_ds(id="a b")]}, "id"),
     ({"version": 1, "datasets": [_ds(extra=1)]}, "extra"),
     ({"version": 1, "datasets": [_ds(columns={})]}, "columns"),
+    # the runner adds parent.<col> keys to foreach rows, so column names may not collide with them
+    ({"version": 1, "datasets": [_ds(columns={"": "date"})]}, "column name ''"),
+    ({"version": 1, "datasets": [_ds(columns={"parent.uuid": "date"})]}, "parent."),
     ({"version": 1, "datasets": [_ds(argv=["{date}"])]}, "foreach"),
     ({"version": 1, "datasets": [_ds(id="c", command="activity show", argv=["{id}"],
                                      foreach={"dataset": "later", "limit": 5})]}, "later"),

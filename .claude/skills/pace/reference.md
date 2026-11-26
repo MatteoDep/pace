@@ -42,6 +42,7 @@ Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (d
 | diary | `pace diary remove` | none | (L) Delete an entry. |
 | diary | `pace diary set-due` | none | (L) Set or clear an entry's due date. |
 | diary | `pace diary resolve` | none | (L) Mark a constraint or injury resolved, or reopen it. |
+| export | `pace export` | none | Run the dashboard recipe and write the bundle file (`--check` validates it, `--init` writes the default recipe). |
 | gear | `pace gear list` | none | Which gear items exist? |
 | gear | `pace gear stats` | id | How much has this gear been used? |
 | gear | `pace gear activities` | id | Which activities used this gear? |

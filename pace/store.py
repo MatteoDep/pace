@@ -33,12 +33,14 @@ def _mkdir(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-def save_json(path: Path, data: dict[str, Any]) -> None:
-    """Write atomically and durably: <path>.tmp (0600), flush + fsync, then os.replace."""
+def save_json(path: Path, data: dict[str, Any], sort_keys: bool = True) -> None:
+    """Write atomically and durably: <path>.tmp (0600), flush + fsync, then os.replace.
+
+    `sort_keys=False` keeps the dict order (recipe lines start with `id`, bundle rows keep column order)."""
     _mkdir(path.parent)
     tmp = path.with_name(path.name + ".tmp")
     try:
-        payload = json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+        payload = json.dumps(data, indent=1, sort_keys=sort_keys, ensure_ascii=False) + "\n"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)

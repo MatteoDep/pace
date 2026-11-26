@@ -638,6 +638,90 @@ Success returns `{"action": "update", "resource": "hr_zones", "id": null, "echo"
 `--dry-run` makes the one read and returns `{"dry_run": true, "payload": {"before", "after", "body"}}`: the target entries as the watch has them now, the same entries as they would be sent, and the full body.
 Refusals, all before any write: `bad_args` without a current LT1 and LT2 record with HR (no Garmin call), with `floor_errors` (no Garmin call), or with `zone5Floor` not below the `maxHeartRateUsed` to be sent; `endpoint_unavailable` when the watch zones have no `DEFAULT` or `RUNNING` entry.
 
+## Export
+
+`pace export [--recipe PATH] [--out PATH] [--max-calls N] [--max-seconds N] [--check] [--init]` runs the dashboard recipe, a list of read commands, in one process and writes one bundle file that the dashboard reads section by section.
+
+### Recipe
+
+The recipe is `$PACE_HOME/dashboard/recipe.json`, or the file given with `--recipe`.
+When the default file does not exist, the built-in default recipe runs.
+A missing `--recipe` file, a file that is not valid JSON, and a recipe that breaks any rule below are `bad_args`, and nothing is written.
+
+A recipe is `{"version": 1, "datasets": [...]}` with 1 to 50 datasets; unknown keys are refused at both levels.
+
+| key | required | meaning |
+|---|---|---|
+| `id` | yes | section id in the bundle: 1-64 letters, digits, `_` or `-`; unique |
+| `command` | yes | a built-in command as `pace schema` names it (`"wellness sleep-range"`), marked `"exportable": true` |
+| `argv` | no | arguments exactly as typed after the command, positional ones included (`["--days", "112"]`) |
+| `rows` | no | dotted path to the list of rows inside the envelope's `data`; default `data` itself: a list gives its items, an object one row |
+| `columns` | yes | `{"<column>": "<dotted path inside a row>"}`; only these are written, and a missing path gives `null`; a column name is not empty and does not start with `parent.` |
+| `foreach` | no | `{"dataset": "<earlier id>", "limit": N}` with N from 1 to 100: run the command once per row of that earlier dataset, its first N rows |
+
+Dotted paths use the `--fields` syntax (`latestWeight.weight`).
+A row item that is not an object is read as `{"value": item}`.
+An `argv` item that is exactly `{column}` is a placeholder: it is allowed only in a `foreach` dataset, names a column of the parent dataset, and is replaced by that parent row's value; `{` and `}` appear nowhere else in `argv`.
+
+Only exportable commands run: the registry reads and a fixed list of hand-written reads, shown by `pace schema` as `"exportable": true`.
+Writes, commands that write local stores or files (`zones estimate`, `chart`, `activity export`), `diary` commands and every command not on the list are refused.
+The flags listed in `export.refused_flags` of `pace schema` (`--export`, `--out`, `--out-dir`, `--save`, `--no-cache`, `--help`) are refused in `argv`, alone or as `--flag=value`, even on an exportable command.
+
+`--check` validates the recipe, each `argv` included against its command's own parser (placeholders parsed as `0`), without network calls, and writes nothing: `data = {"recipe", "datasets": [ids], "valid": true}`.
+`--init` writes the default recipe to `--recipe` or the default path, for editing, and returns `data = {"path", "datasets": n}`; it is `bad_args` when the file exists.
+
+### Running
+
+A run first checks that Garmin tokens exist: without them it is `auth_required` before any dataset, and it never prompts for credentials.
+`--max-calls` (default 60) caps the Garmin calls of the whole run, `--max-seconds` (default 480) its time, limiter waits included; a value below 1 is `bad_args`.
+Datasets run in recipe order, each as `pace <command> <argv>` runs in a shell (same parsing, defaults, shaping and cache), with an empty stdin.
+A call past the budget is not sent and fails with `deferred`; a `rate_limited` or `network` error ends the budget for the rest of the run.
+Every dataset still runs after the budget ends: cache hits are free, so a dataset served from the cache still refreshes.
+A `foreach` dataset reads its parent's rows as this run wrote them, stale ones included.
+A parent value that is null, or whose text starts with `-` (it could be read as a flag), is not run and is recorded as a `bad_args` error of that child.
+Ctrl-C stops the run with the `internal` "Aborted by user." envelope and exit 130, and writes no bundle.
+
+What a refresh costs depends on the cache lifetimes: a `foreach` over N rows costs up to N calls each time those entries expire, and a cold first run costs the most.
+`--every`, `foreach.limit` and the budget keep a recipe's cost bounded; the summary reports the calls per dataset.
+
+### Bundle
+
+The bundle is written to `--out` (default `$PACE_HOME/dashboard/bundle.json`), replaced atomically with mode 0600, keys in recipe and column order:
+
+```json
+{"meta": [{"label": "Generated", "value": "2026-11-26T10:16:15+01:00"},
+          {"label": "Recipe", "value": "~/.pace/dashboard/recipe.json"}],
+ "datasets": {
+   "rhr": {"rows": [{"date": "2026-11-25", "rhr": 44}],
+           "meta": {"command": "wellness sleep-range --days 112", "generated": "2026-11-26T10:16:02+01:00",
+                    "columns": ["date", "rhr"], "rows": 112, "calls": 0, "cache_oldest_age_s": 812,
+                    "stale": false, "reason": null, "error": null, "day_errors": 0, "errors": []}}}}
+```
+
+`Recipe` is `default`, or the recipe path with the home directory written as `~`.
+A section's `meta` holds `command` (the command and `argv` as in the recipe), `generated` (when the dataset ran, or the previous bundle's time when its rows were kept), `columns`, `rows` (the count), `calls` (Garmin calls it made), `cache_oldest_age_s` (from the envelope's `cache`, null without one), `stale`, `reason` (`deferred` or `error`, null when fresh), `error` (`{"code"}` or null), `day_errors` and `errors`.
+Rows of a `foreach` dataset also carry `parent.<column>` for each placeholder column.
+Everyone who can open the dashboard can read the bundle, so it carries error codes only; the messages are in the envelope.
+
+### Failures
+
+A dataset whose command fails as a whole does not fail the export.
+Its section keeps the previous bundle's rows with `stale: true`, the previous `generated`, `reason` (`deferred` for the `deferred` code, else `error`) and `error: {"code"}`; with no usable previous section it has no rows.
+Previous rows are reused only when the previous section's `meta.columns` equals the recipe line's column names, so an edited line never gets rows in the old shape.
+On success, a missing `rows` path (pace prunes empty lists) or a null there means no rows.
+A date-keyed command that fetches one day per call returns `{"date", "error"}` items for the days that failed, deferred days included.
+Each failed day is replaced by the previous section's row with the same date in the column mapped from the path `date`, or dropped when there is none or no column maps `date`; it counts in `day_errors`, and the section is not stale.
+A `foreach` child that fails is recorded in `meta.errors` as `{"parent": {"<placeholder column>": value}, "code"}`, the previous rows with the same `parent.<column>` values are kept, and the other children still run.
+`auth_required` from any command stops the export: no bundle is written, the previous one stays, and the envelope carries the error.
+A missing, unreadable or non-object previous bundle counts as none; sections whose ids left the recipe are dropped.
+Commands that catch per-item errors themselves (`plan status` effort, the due check of `zones show`) return nulls for a deferred item, with no `stale` flag.
+
+### Summary
+
+`data = {"path", "recipe", "bytes", "calls", "seconds", "datasets": {"<id>": {"rows", "calls", "stale", "reason", "error", "day_errors", "errors"}}}`.
+`error` is `{"code", "message"}` (the message cut to 300 characters) or null, and each `errors` item is `{"parent", "code", "message"}`.
+`calls` counts the calls the limiter registered, so a call deferred while it waited for a concurrency slot still counts.
+
 ## Keeping this file honest
 
 `pace/envelope.py` owns the envelope keys and exit codes.
