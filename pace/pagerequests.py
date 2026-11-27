@@ -234,9 +234,10 @@ class _Seen:
 
 
 def _logged_day(value: Any) -> date | None:
+    """The host's local date of a logged time (written in UTC), comparable with the run's `today`."""
     try:
-        return datetime.fromisoformat(value).date() if isinstance(value, str) else None
-    except ValueError:
+        return datetime.fromisoformat(value).astimezone().date() if isinstance(value, str) else None
+    except (ValueError, OverflowError):
         return None
 
 
@@ -421,7 +422,8 @@ class _Run:
         if seen.failures >= MAX_ATTEMPTS:
             return self._result(req, op, "refused", reason=_GAVE_UP)
         if seen.gave_up:
-            return self._result(req, op, "refused", reason=f"gave up: failing since {seen.first_failed}")
+            since = f": failing since {seen.first_failed.isoformat()}" if seen.first_failed else " earlier"
+            return self._result(req, op, "refused", reason=f"gave up{since}")
         targets = _targets(op, params)
         if targets & self.failed_targets:
             return self._result(req, op, "failed",

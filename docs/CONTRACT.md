@@ -793,7 +793,7 @@ A request whose `id` and `hash` the log holds as `applied` is reported `applied`
 
 A failure counts toward the three attempts unless Garmin throttled (`rate_limited`) or did not answer (`network` with no HTTP status), or the call was not sent (`deferred`, which is not logged).
 `endpoint_unavailable` (a 403, or a 400 on a read) counts like a 5xx instead of refusing at once, because Garmin's edge sometimes answers a passing 403.
-A request that fails 7 or more days after its first logged failure is refused, whatever its failures were, so a request Garmin never answers cannot hold up the requests behind it for good.
+A request that fails 7 or more days (host local dates) after its first logged failure is refused, whatever its failures were, so a request Garmin never answers cannot hold up the requests behind it for good.
 After a request fails, later requests in the same run for the same target (the activity's shoe, its RPE, its feel, or the weigh-in date) are `failed` "not attempted" and not logged, so an older press never lands after a newer one.
 `did` keeps the writes that landed before a failure: a `shoe.set` whose unlink failed lists its link, and its retry only unlinks.
 An unexpected error inside one request makes it `failed` with `internal`; the other requests still run.

@@ -487,7 +487,7 @@ def test_gives_up_a_week_after_the_first_failure(fake) -> None:
     fake.answers["connectapi"] = ApiError("network", "Connection issue", None)
     [res] = run([first], today=date(2026, 11, 25))
     assert res["status"] == "failed"  # six days: still retried
-    [res] = run([first])
+    [res] = run([first], today=date(2026, 11, 26))  # seven days: the first day it gives up
     assert res["status"] == "refused" and res["reason"].startswith("gave up: failing since 2026-11-19")
     fake.calls.clear()
     [res] = run([first])
