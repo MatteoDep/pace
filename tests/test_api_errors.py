@@ -421,10 +421,11 @@ def _login_failed(status: int) -> GarminConnectConnectionError:
 
 
 def _login_retries_ran_out(status: int) -> GarminConnectConnectionError:
-    """Garmin.login when garth's retries on the settings read ran out: `connectapi` wraps the
-    RetryError, and the login wraps that again."""
-    err = GarminConnectConnectionError("Login failed: Connection error")
-    err.__cause__ = _connection_error(_retries_ran_out(status))
+    """Garmin.login when garth's retries on the settings read ran out: garth's own `connectapi`
+    raises the RetryError, and the login wraps it (`from e`)."""
+    cause = _retries_ran_out(status)
+    err = GarminConnectConnectionError(f"Login failed: {cause}")
+    err.__cause__ = cause
     return err
 
 
