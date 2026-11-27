@@ -145,7 +145,8 @@ Prefer a narrow range, and expect `--days 30` to sit there for minutes rather th
 A call that would exceed either is not sent and comes back as `deferred`; this includes a call that was waiting for a concurrency slot when the budget ended.
 Calls already in flight when it ends still finish.
 A `rate_limited` error, or a `network` error with no HTTP status (Garmin did not answer, as on a connection failure), ends the budget too.
-A `network` error with a 408 or 5xx status fails only its call, and the budget goes on.
+So does a failed token login, whatever its status; tokens that Garmin rejects stop the export instead.
+Any other `network` error, with a 408 or 5xx status, fails only its call, and the budget goes on.
 Cache hits cost nothing.
 
 ### Units (static)
