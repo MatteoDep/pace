@@ -33,6 +33,7 @@ Then, with D from the profile, these three together:
     pace zones show
 
 With them, when the profile has `dashboard.url`, read the pending dashboard settings (Settings).
+Then, still before the run review and only when `dashboard.url` is set, apply the dashboard requests (dashboard.md, Requests), so the review sees the new RPE, feel and shoes.
 D is the date of the profile's `checkin.last`, but at most 21 days back; when `checkin.last` is unset, D is 7 days back.
 If `pace auth status` says no tokens or any call returns `auth_required`: send one message asking the user to run `pace auth login` in their own terminal (interactive MFA), and stop; never run it yourself, never wait for it.
 Empty data is normal for a new user (no profile, no plan, no zones): go to Intake, do not treat it as an error.
@@ -143,8 +144,9 @@ When a chart answers better than a table (trends, load, a run's profile), render
 ## Writes
 
 Garmin writes (`"write": true` in `pace schema`) need an explicit yes after the user has seen the planned write (as a table, or the `--dry-run` payload summarized):
-`pace workout push`, `pace workout schedule`, `pace workout delete`, `pace plan push`, `pace plan unpush`, `pace log weight add`, `pace log weight delete`, `pace log hydration`, `pace log bp add`, `pace log bp delete`, `pace gear link`, `pace gear unlink`, `pace activity effort` and `pace zones push`.
+`pace workout push`, `pace workout schedule`, `pace workout delete`, `pace plan push`, `pace plan unpush`, `pace log weight add`, `pace log weight delete`, `pace log hydration`, `pace log bp add`, `pace log bp delete`, `pace gear link`, `pace gear unlink`, `pace activity effort`, `pace zones push` and `pace requests apply`.
 Three exceptions: the user's own RPE/feel statement is the yes for that one `pace activity effort ID --rpe N --feel LABEL` (feel: very-weak, weak, normal, strong, very-strong), a weight number the user gives is the yes for that one `pace log weight add`, and the user naming the shoe they wore is the yes for that one `pace gear link` (with the matching `pace gear unlink` of the shoe they said was wrong); echo what was written.
+A press on the dashboard is the yes for the request it stored: `pace requests apply` runs them without asking again (dashboard.md, Requests).
 Plan changes are proposed and applied on the user's yes: `pace plan new`, `pace plan meta`, `pace plan add`, `pace plan set`, `pace plan remove`, `pace plan block add`, `pace plan block set`, `pace plan block remove`.
 `pace zones accept` also needs the user's yes.
 Diary writes need no per-call yes; say what you recorded: `pace diary add`, `pace diary set`, `pace diary unset`, `pace diary set-due`, `pace diary resolve`, `pace diary remove`.

@@ -48,6 +48,30 @@ Two store documents under `data/`, where everyone who can open the page reads an
   Only the page writes it, merging a new request into the existing document; the coach reads it with ArtifactData `get`, applies it (SKILL.md, Settings), then `delete`s it pinned to the version it read.
 The page reads both through the datasets `settings_current` and `settings_pending` (`kind: "store"`).
 
+## Requests
+
+The page's quick actions (a shoe picker and RPE and feel controls on an activity, a weigh-in form) never write to Garmin themselves.
+Each press adds one document, with a fresh id, to the store collection `data/requests/pending`, which everyone who can open the page reads and only editors write.
+A document is `{"op", "params", "at"}`, with `at` the press time from `new Date().toISOString()` and numbers in SI (the page converts pounds to kg):
+- `shoe.set`: `{"activity_id", "gear_uuid"}`, offered only for the active shoes of the bundle's `shoes` section.
+- `effort.set`: `{"activity_id", "rpe", "feel"}` with either or both; RPE an integer 1-10, feel one of `very-weak`, `weak`, `normal`, `strong`, `very-strong`.
+- `weight.add`: `{"kg", "date"}`, the date `YYYY-MM-DD`, today or up to a year back.
+Before the press the page shows exactly what will be written; after it, the request shows as pending ("applied at the next session") until its document is gone.
+`pace schema requests` has the exact rules.
+
+Apply them at session start (SKILL.md) and in unattended runs, when `dashboard.url` is set:
+1. ArtifactData `list` the collection `data/requests/pending`; when it is empty, stop.
+2. Write the documents to a scratch file as a JSON list of `{"id", "version", "at", "op", "params"}` (id and version from the listing, the other fields copied unchanged from the document), and run `pace requests apply FILE` with a 5-minute timeout.
+3. In one `batch`, delete each document whose result is `applied` or `refused`, pinned to the `version` you read; keep the `failed` ones for the next run.
+4. Tell the athlete in one line what was applied, and each refused request with its reason, once.
+5. When anything was applied, refresh the dashboard (Refresh) so the page shows it, unless a full check-in in this session refreshes it at its end.
+
+The press is the athlete's yes for these writes, so never ask again; this holds because the dashboard is private and only its editors can write to the collection.
+If it is ever shared with edit rights, stop applying requests and tell the athlete.
+`auth_required` stops the run like any call (SKILL.md, Session start); the next run reports the requests already applied as `applied` ("already applied"), and they are deleted then.
+`internal` with "busy" in the message means another `pace requests apply` is running: leave the requests for the next session.
+A result with no `id` comes from a document without a valid id: tell the athlete once and leave the document.
+
 ## Add a view
 
 On the user's request only, never unprompted:
@@ -66,5 +90,5 @@ Read `check` once, and record a diary `note` with what changed and why.
 
 ## Unattended runs
 
-The unattended session (project 2) refreshes only; it never creates or redesigns the dashboard.
-It needs permission for Bash `pace export`, the Artifact asset upload and delete, and ArtifactData reads, batched dataset updates, sets and deletes on this artifact (the dataset documents and the settings documents).
+The unattended session (project 2) refreshes and applies requests only; it never creates or redesigns the dashboard.
+It needs permission for Bash `pace export` and `pace requests apply`, the Artifact asset upload and delete, and ArtifactData reads, batched dataset updates, sets and deletes on this artifact (the dataset documents, the settings documents and the request documents).

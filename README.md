@@ -58,6 +58,7 @@ pace zones accept <record-id> --only lt2
 pace zones push --dry-run
 pace load --weeks 8 --weeks-ahead 4
 pace export
+pace requests apply requests.json --dry-run
 pace chart volume --metric hours
 pace chart plan --past 14 --ahead 14
 pace chart recovery --past 28
@@ -74,6 +75,7 @@ Run `pace gear list`, then `pace gear activities <uuid>` once per shoe, then `pa
 To change shoes, `gear link` the new one first, then `gear unlink` the old one.
 
 Writes to Garmin require explicit user confirmation in the coaching skill; the CLI itself has no `--yes`.
+The one exception is `pace requests apply`, where the athlete's press on the dashboard page is the confirmation.
 A cold `pace zones estimate` takes up to about 4 minutes (the 40-call cap at 10 calls a minute); use a 10-minute shell timeout.
 A cold `pace export` with the default recipe took a little over 4 minutes (its time budget is 8); use a 10-minute shell timeout there too.
 `pace cache clear` does not clear `$PACE_HOME/fit/` (derived FIT data for the zones methods).

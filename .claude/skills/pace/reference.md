@@ -73,6 +73,7 @@ Writes: (G) is a Garmin write that needs the user's yes; (L) is a local write (d
 | plan | `pace plan unpush` | none | (G) Delete the sessions' workouts from Garmin. |
 | profile | `pace profile show` | none | Name, profile and unit system. |
 | profile | `pace profile settings` | none | Profile settings, including the unit system. |
+| requests | `pace requests apply` | none | (G) Apply the athlete's dashboard requests: shoe, RPE/feel, weigh-in (the press on the page is the yes). |
 | training | `pace training status` | date | Training status, load and VO2max. |
 | training | `pace training readiness` | date | Training readiness and its contributors. |
 | training | `pace training endurance` | date | Endurance score. |
