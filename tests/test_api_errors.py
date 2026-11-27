@@ -1,6 +1,8 @@
 """Tests for HTTP error classification in the API wrapper."""
 
 import asyncio
+import http.server
+import threading
 import time
 
 import pytest
@@ -12,25 +14,89 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 from garth.exc import GarthHTTPError
+from requests.adapters import HTTPAdapter, Retry
 
 from pace import auth
-from pace.api import ApiError, _status_from_text, classify_http, safe_call
+from pace.api import ApiError, classify_http, safe_call
+from pace.httpstatus import http_status, status_from_text
 from pace.ratelimit import CONCURRENCY, RateLimiter, budget
 from pace.envelope import HINTS, PaceError, exit_code
 from tests.conftest import REAL_GET_API
 
 
 def test_status_from_parenthesised_code() -> None:
-    assert _status_from_text("API client error (404): not found") == 404
+    assert status_from_text("API client error (404): not found") == 404
 
 
 def test_status_from_bare_code() -> None:
-    assert _status_from_text("Error in request: 503 Service Unavailable") == 503
+    assert status_from_text("Error in request: 503 Service Unavailable") == 503
 
 
 def test_status_none_when_absent() -> None:
-    assert _status_from_text("Connection error: name resolution failed") is None
-    assert _status_from_text("retrieved 200 items") is None
+    assert status_from_text("Connection error: name resolution failed") is None
+    assert status_from_text("retrieved 200 items") is None
+    assert status_from_text(f"Connection error: {_POOL}") is None
+
+
+# requests names the pool in every transport error: the port is not a status
+_POOL = ("HTTPSConnectionPool(host='connectapi.garmin.com', port=443): Max retries exceeded with url: "
+         "/activitylist-service/activities/search/activities?start=0&limit=20")
+
+
+def _connection_error(cause: BaseException) -> GarminConnectConnectionError:
+    """What garminconnect's `connectapi` raises when the request got no HTTP error back: its own
+    error, chained to requests' (`from e`)."""
+    err = GarminConnectConnectionError(f"Connection error: {cause}")
+    err.__cause__ = cause
+    return err
+
+
+def _no_answer() -> requests.exceptions.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        f"{_POOL} (Caused by NameResolutionError(\"Failed to resolve 'connectapi.garmin.com'\"))")
+
+
+def _retries_ran_out(status: int) -> requests.exceptions.RetryError:
+    """garth retries 408, 429 and 5xx; when they run out urllib3 gives up with this text and
+    requests raises RetryError without a response."""
+    return requests.exceptions.RetryError(f"{_POOL} (Caused by ResponseError('too many {status} error responses'))")
+
+
+def test_status_from_the_chain_not_the_text() -> None:
+    assert http_status(_connection_error(_no_answer())) is None
+    assert http_status(_connection_error(_retries_ran_out(429))) == 429
+    assert http_status(_garth_http_error(503)) == 503
+
+
+def test_redirect_status_is_not_an_error_status() -> None:
+    resp = requests.Response()
+    resp.status_code = 302
+    redirects = requests.exceptions.TooManyRedirects("Exceeded 30 redirects.", response=resp)
+    assert http_status(_connection_error(redirects)) is None
+
+
+def test_retry_give_up_text_of_real_urllib3() -> None:
+    """Pins urllib3's give-up text, the only place a retried 429 or 5xx keeps its status."""
+    class Always429(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(429)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Always429)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        session = requests.Session()
+        session.mount("http://", HTTPAdapter(max_retries=Retry(total=1, status_forcelist=(429,), backoff_factor=0)))
+        with pytest.raises(requests.exceptions.RetryError) as raised:
+            session.get(f"http://127.0.0.1:{server.server_address[1]}/x", timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert http_status(raised.value) == 429
 
 
 def test_classify_codes() -> None:
@@ -113,6 +179,19 @@ async def test_connection_error_without_status_stays_network(monkeypatch) -> Non
     _raising_api(monkeypatch, GarminConnectConnectionError("boom"))
     ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
     assert not ok and err is not None and err.code == "network"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("exc", "code", "status"), [
+    (requests.exceptions.ConnectionError(f"{_POOL} (Caused by NewConnectionError('refused'))"), "network", None),
+    (requests.exceptions.ReadTimeout(f"{_POOL}: Read timed out. (read timeout=10)"), "network", None),
+    (_retries_ran_out(429), "rate_limited", 429),
+])
+async def test_unwrapped_transport_error_is_not_internal(monkeypatch, exc, code, status) -> None:
+    """Library writes that call garth directly let requests' own errors through unwrapped."""
+    _raising_api(monkeypatch, exc)
+    ok, _, err = await safe_call("add_gear_to_activity", "u", 1)
+    assert not ok and err is not None and (err.code, err.http) == (code, status)
 
 
 @pytest.mark.asyncio
@@ -311,12 +390,42 @@ def test_connection_error_ends_the_budget(fake_client) -> None:
     assert b.stopped == "network" and fake_client.calls == 1
 
 
+def test_connection_error_naming_the_port_ends_the_budget(fake_client) -> None:
+    fake_client.raise_next(_connection_error(_no_answer()))
+    with budget(10, 60) as b:
+        first, second = _two_calls()
+    assert (first[2].code, first[2].http) == ("network", None) and second[2].code == "deferred"
+    assert b.stopped == "network" and fake_client.calls == 1
+
+
+@pytest.mark.parametrize(("status", "code", "stops"), [
+    (429, "rate_limited", True),
+    (503, "network", False),
+    (408, "network", False),
+])
+def test_retries_ran_out_keeps_the_status(fake_client, status, code, stops) -> None:
+    fake_client.raise_next(_connection_error(_retries_ran_out(status)))
+    with budget(10, 60) as b:
+        first, second = _two_calls()
+    assert (first[0], first[2].code, first[2].http) == (False, code, status)
+    assert second[0] is not stops and b.stopped == (code if stops else None)
+
+
 def _login_failed(status: int) -> GarminConnectConnectionError:
     """What Garmin.login raises when the token login's profile or settings read fails with an HTTP
     error, 429 included (garth's error has no `response`, so the library misses the status): the
     garth error is the cause."""
     err = GarminConnectConnectionError("Login failed: Error in request")
     err.__cause__ = _garth_http_error(status)
+    return err
+
+
+def _login_retries_ran_out(status: int) -> GarminConnectConnectionError:
+    """Garmin.login when garth's retries on the settings read ran out: garth's own `connectapi`
+    raises the RetryError, and the login wraps it (`from e`)."""
+    cause = _retries_ran_out(status)
+    err = GarminConnectConnectionError(f"Login failed: {cause}")
+    err.__cause__ = cause
     return err
 
 
@@ -348,6 +457,7 @@ def failing_login(monkeypatch):
     (_login_failed(403), "auth_required"),
     (_login_failed(429), "rate_limited"),
     (_login_failed(500), "network"),
+    (_login_retries_ran_out(429), "rate_limited"),
     (requests.exceptions.ConnectionError("connection refused"), "network"),
 ])
 def test_noninteractive_token_login_failure_is_an_error_code(failing_login, exc, code) -> None:
@@ -364,6 +474,7 @@ def test_noninteractive_token_login_failure_is_an_error_code(failing_login, exc,
 @pytest.mark.parametrize(("exc", "code"), [
     (_login_failed(500), "network"),
     (_login_failed(429), "rate_limited"),
+    (_login_retries_ran_out(429), "rate_limited"),
     (requests.exceptions.ConnectionError("connection refused"), "network"),
 ])
 def test_failed_token_login_ends_the_budget(failing_login, exc, code) -> None:
