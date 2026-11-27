@@ -3,10 +3,10 @@
 import asyncio
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any
 
+import requests
 from garth.exc import GarthHTTPError
 
 from garminconnect import (
@@ -16,6 +16,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 from pace import auth
+from pace.httpstatus import http_status
 from pace.ratelimit import BudgetExhausted, active_budget, limiter, slot
 
 # The garminconnect library logs full tracebacks on every HTTP error (404, 400,
@@ -49,21 +50,9 @@ _HTTP_CODES: dict[int, tuple[str, str]] = {
     401: ("auth_required", "Auth required (401) -- re-authenticate"),
     403: ("endpoint_unavailable", "Access denied (403)"),
     404: ("not_found", "Endpoint not found (404)"),
+    408: ("network", "Request timeout (408)"),
     429: ("rate_limited", "Rate limit exceeded (429)"),
 }
-
-
-def _status_from_text(msg: str) -> int | None:
-    """Pull an HTTP status code out of an error message.
-
-    garminconnect wraps HTTP failures as e.g. "API client error (404): ..."
-    without exposing the code as an attribute, so we recover it from the text.
-    """
-    paren = re.search(r"\((\d{3})\)", msg)
-    if paren:
-        return int(paren.group(1))
-    bare = re.search(r"\b([45]\d{2})\b", msg)
-    return int(bare.group(1)) if bare else None
 
 
 def classify_http(code: int | None, msg: str) -> ApiError:
@@ -75,19 +64,9 @@ def classify_http(code: int | None, msg: str) -> ApiError:
     return ApiError("internal", f"HTTP error: {msg}", code)
 
 
-def _garth_status(err: GarthHTTPError) -> int | None:
-    """HTTP status of a GarthHTTPError: garth keeps the requests error on `.error`; `.response`
-    is checked too for any wrapper that exposes it directly; the message text is the last resort."""
-    for holder in (getattr(err, "error", None), err):
-        code = getattr(getattr(holder, "response", None), "status_code", None)
-        if isinstance(code, int):
-            return code
-    return _status_from_text(str(err))
-
-
 _BODY_MAX = 300
 # Statuses with their own meaning; any other 4xx from a write is Garmin refusing the payload.
-_NOT_REJECTIONS = {401, 403, 404, 429}
+_NOT_REJECTIONS = {401, 403, 404, 408, 429}
 
 
 def _rejection(status: int | None, err: GarthHTTPError) -> ApiError | None:
@@ -153,7 +132,7 @@ async def _call(
         except GarthHTTPError as err:
             # Raised by library writes that call garth directly (gear link, upload_workout,
             # add_weigh_in, ...): a 4xx there is a refused payload, not "endpoint not enabled".
-            code = _garth_status(err)
+            code = http_status(err)
             return False, None, _rejection(code, err) or classify_http(code, str(err))
         except FileNotFoundError:
             return False, None, ApiError("auth_required", "No valid tokens. Run `pace auth login`.")
@@ -165,10 +144,10 @@ async def _call(
                 # pace calls `connectapi` itself for writes (workout schedule/delete, activity
                 # effort) and for one read (`workout calendar`); a 400 there surfaces as `rejected`.
                 # The library wraps garth's error, which still carries Garmin's reason.
-                rejected = _rejection(_garth_status(cause), cause)
+                rejected = _rejection(http_status(cause), cause)
                 if rejected:
                     return False, None, rejected
-            code = _status_from_text(str(err))
+            code = http_status(err)
             if code is None and "gear not found" in str(err).lower():
                 # The library's own 404 branches (e.g. gear link/unlink) drop the status code.
                 code = 404
@@ -177,6 +156,12 @@ async def _call(
             return False, None, ApiError("network", f"Connection issue: {err}")
         except GarminConnectTooManyRequestsError as err:
             return False, None, ApiError("rate_limited", f"Rate limit: {err}")
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.RetryError) as err:
+            # Library writes that call garth directly let requests' transport errors through unwrapped.
+            code = http_status(err)
+            if code is not None:
+                return False, None, classify_http(code, str(err))
+            return False, None, ApiError("network", f"Connection issue: {err}")
         except (ValueError, TypeError) as err:
             # garminconnect validates its own arguments (blood-pressure bounds,
             # get_workouts(limit<=0), unit keys, timestamp format) and raises

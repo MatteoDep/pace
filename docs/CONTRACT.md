@@ -47,11 +47,11 @@
 |---|---|---|
 | `bad_args` | 2 | Typer usage error, invalid date, unknown field/bucket, argument rejected by garminconnect's own validation |
 | `auth_required` | 3 | no tokens, 401, garminconnect auth error |
-| `rate_limited` | 4 | 429 or garminconnect too-many-requests |
+| `rate_limited` | 4 | 429 (also when garth's own retries on it run out) or garminconnect too-many-requests |
 | `not_found` | 1 | 404 |
 | `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
-| `rejected` | 1 | 4xx on a write other than 401/403/404/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
-| `network` | 1 | connection failure, 5xx |
+| `rejected` | 1 | 4xx on a write other than 401/403/404/408/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
+| `network` | 1 | connection failure or timeout, 408, 5xx (also when garth's own retries on them run out) |
 | `deferred` | 1 | only inside `pace export`, when its call or time budget ran out; nothing was sent to Garmin |
 | `internal` | 1 | anything else |
 | `internal` | 130 | aborted by user (Ctrl-C) |
@@ -145,7 +145,7 @@ Prefer a narrow range, and expect `--days 30` to sit there for minutes rather th
 A call that would exceed either is not sent and comes back as `deferred`; this includes a call that was waiting for a concurrency slot when the budget ended.
 Calls already in flight when it ends still finish.
 A `rate_limited` error, or a `network` error with no HTTP status (Garmin did not answer, as on a connection failure), ends the budget too.
-A `network` error with a 5xx status fails only its call, and the budget goes on.
+A `network` error with a 408 or 5xx status fails only its call, and the budget goes on.
 Cache hits cost nothing.
 
 ### Units (static)
@@ -684,7 +684,7 @@ A token login that fails for another reason makes the call `rate_limited` on a 4
 `--max-calls` (default 60) caps the Garmin calls of the whole run, `--max-seconds` (default 480) its time, limiter waits included; a value below 1 is `bad_args`.
 Datasets run in recipe order, each as `pace <command> <argv>` runs in a shell (same parsing, defaults, shaping and cache), with an empty stdin.
 A call past the budget is not sent and fails with `deferred`.
-A `rate_limited` error, or a `network` error with no HTTP status, ends the budget for the rest of the run; a `network` error with a 5xx status fails only its call.
+A `rate_limited` error, or a `network` error with no HTTP status, ends the budget for the rest of the run; other than on the token login (above), a `network` error with a 408 or 5xx status fails only its call.
 Every dataset still runs after the budget ends: cache hits are free, so a dataset served from the cache still refreshes.
 A `foreach` dataset reads its parent's rows as this run wrote them, stale ones included.
 A parent row whose placeholder values were already run in that dataset is skipped, so each value runs once.

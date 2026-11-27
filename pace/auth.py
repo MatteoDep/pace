@@ -19,6 +19,7 @@ from garminconnect import (
 )
 from pace import config
 from pace.config import TOKEN_STORE
+from pace.httpstatus import http_status
 
 
 class TokenLoginError(Exception):
@@ -48,20 +49,10 @@ def noninteractive() -> Iterator[None]:
         _prompts, _failed = saved
 
 
-def _http_status(exc: BaseException) -> int | None:
-    """The HTTP status of a failed login, on the error itself or on the one it wraps (`from e`)."""
-    for err in (exc, exc.__cause__):
-        for holder in (getattr(err, "error", None), err):
-            code = getattr(getattr(holder, "response", None), "status_code", None)
-            if isinstance(code, int):
-                return code
-    return None
-
-
 def _login_error(exc: BaseException) -> TokenLoginError:
     """auth_required when there are no tokens or Garmin refused them (auth error, 401, 403),
     rate_limited on a 429, else network."""
-    status = _http_status(exc)
+    status = http_status(exc)
     if isinstance(exc, (FileNotFoundError, GarminConnectAuthenticationError)) or status in (401, 403):
         return TokenLoginError("auth_required", f"Stored Garmin tokens are missing or were rejected: {exc}", status)
     if status == 429:
