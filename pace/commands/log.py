@@ -12,6 +12,7 @@ from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, DAYS_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
 from pace.shape import apply
 from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
+from pace.writespecs import manual_weigh_in_ids, weigh_in_spec
 
 app = typer.Typer(no_args_is_help=True, help="Health logs written to Garmin Connect: weight, hydration, blood pressure.")
 weight_app = typer.Typer(no_args_is_help=True, help="Weigh-ins and body composition.")
@@ -38,31 +39,18 @@ async def _resolve_weight_id(d: str, kg: float) -> Any:
     """`add_weigh_in` / `add_body_composition` responses carry no samplePk, so look the new
     entry up in the day view.
 
-    Only entries that match the weight just written (Garmin stores grams, so within 100 g)
-    and that Garmin attributes to a manual entry are candidates: a scale sync or an earlier
-    weigh-in on the same day must not hand back its id. Of those the greatest samplePk is
-    the newest, i.e. ours. Never raises -- a failed, empty or ambiguous lookup leaves the
-    id null, which the caller can still resolve with `log weight list`."""
+    Only entries that match the weight just written (`manual_weigh_in_ids`: within 100 g, manual
+    source) are candidates: a scale sync or an earlier weigh-in on the same day must not hand back
+    its id. Of those the greatest samplePk is the newest, i.e. ours. Never raises -- a failed,
+    empty or ambiguous lookup leaves the id null, which the caller can still resolve with
+    `log weight list`."""
     try:
         ok, data, err = await safe_call("get_daily_weigh_ins", d)
     except Exception:  # noqa: BLE001 -- id resolution is best-effort, never fatal
         return None
-    if not ok or err is not None or not isinstance(data, dict):
+    if not ok or err is not None:
         return None
-    entries = data.get("dateWeightList")
-    if not isinstance(entries, list):
-        return None
-    pks = []
-    for e in entries:
-        if not isinstance(e, dict) or not isinstance(e.get("samplePk"), (int, float)):
-            continue
-        grams = e.get("weight")
-        if not isinstance(grams, (int, float)) or abs(float(grams) - kg * 1000) > 100:
-            continue
-        source = e.get("sourceType")
-        if source is not None and source != "MANUAL":
-            continue
-        pks.append(e["samplePk"])
+    pks = manual_weigh_in_ids(data, kg)
     return max(pks) if pks else None
 
 
@@ -106,7 +94,7 @@ def weight_add(kg: float = typer.Argument(..., metavar="KG"), date: str = DATE_O
         for name, v, lo, hi in (("muscle", muscle, 0, 200), ("bone", bone, 0, 20), ("bmi", bmi, 5, 100)):
             if v is not None:
                 _check(name, v, lo, hi)
-        d, ts = _noon(date)
+        d = parse_date(date).isoformat()
     except PaceError as err:
         fail(cmd, err)
     extras = {"percent_fat": fat, "percent_hydration": water, "muscle_mass": muscle, "bone_mass": bone, "bmi": bmi}
@@ -114,14 +102,7 @@ def weight_add(kg: float = typer.Argument(..., metavar="KG"), date: str = DATE_O
     echo: dict[str, Any] = {"weight_kg": kg, "date": d}
     echo.update({"fat_pct": fat, "water_pct": water, "muscle_kg": muscle, "bone_kg": bone, "bmi": bmi})
     echo = {k: v for k, v in echo.items() if v is not None}
-    if extras:
-        method, kwargs = "add_body_composition", {"timestamp": ts, "weight": kg, **extras}
-    else:
-        method, kwargs = "add_weigh_in", {"weight": kg, "unitKey": "kg", "timestamp": ts}
-    spec = WriteSpec(resource="weight", action="create", method=method, kwargs=kwargs,
-                     payload={"method": method, **kwargs}, echo=echo,
-                     invalidate=("get_weigh_ins:", f"get_daily_weigh_ins:{d}"),
-                     id_of=lambda r: r.get("samplePk") if isinstance(r, dict) else None)
+    spec = weigh_in_spec(kg, d, extras, echo)
 
     async def work() -> Result:
         result = await run_write(spec, dry_run=dry_run)

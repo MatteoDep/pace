@@ -18,14 +18,15 @@ from pace.effort import parse_feel, parse_rpe, with_effort
 from pace.envelope import PaceError, Result, fail, run
 from pace.factory import BUCKET_OPT, FIELDS_OPT, FROM_OPT, NO_CACHE_OPT, RAW_OPT, TO_OPT, shape_args
 from pace.shape import BUCKETS, MAX_ROWS, apply, choose_bucket, prune, tz_offset_s
-from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
+from pace.writes import DRY_RUN_OPT, run_write
+from pace.writespecs import effort_spec
 
 app = typer.Typer(no_args_is_help=True, help="Workouts and activity history; set effort (RPE/feel) on one activity.")
 
 _LIST_TTL = 600
-_DETAIL_TTL = 86400
+DETAIL_TTL = 86400
 #: Gear can change in the Garmin app, which pace cannot invalidate: keep it short.
-_GEAR_TTL = 300
+GEAR_TTL = 300
 ACTIVITY_GEAR_FIELDS: tuple[str, ...] = ("uuid", "customMakeModel", "gearTypeName", "gearStatusName")
 
 LIST_FIELDS: tuple[str, ...] = (
@@ -112,7 +113,7 @@ def list_(
 
 
 def _by_id(name: str, method: str, help_: str, default_fields: tuple[str, ...] = (),
-           transform: Callable[[Any], Any] | None = None, ttl: int = _DETAIL_TTL) -> None:
+           transform: Callable[[Any], Any] | None = None, ttl: int = DETAIL_TTL) -> None:
     def command(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                 fields: str = FIELDS_OPT, bucket: str = BUCKET_OPT, raw: bool = RAW_OPT,
                 no_cache: bool = NO_CACHE_OPT) -> None:
@@ -143,7 +144,7 @@ def _by_id(name: str, method: str, help_: str, default_fields: tuple[str, ...] =
 
 _by_id("show", "get_activity", "One activity: summary metrics, plus rpe (1-10) and feel (label) when set.",
        transform=with_effort)
-_by_id("gear", "get_activity_gear", "Gear linked to one activity.", default_fields=ACTIVITY_GEAR_FIELDS, ttl=_GEAR_TTL)
+_by_id("gear", "get_activity_gear", "Gear linked to one activity.", default_fields=ACTIVITY_GEAR_FIELDS, ttl=GEAR_TTL)
 _by_id("splits", "get_activity_splits", "Laps / splits of one activity.")
 _by_id("weather", "get_activity_weather", "Weather during one activity.")
 
@@ -244,7 +245,7 @@ def details(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
         cache = Cache()
         tracker = CacheTracker()
         try:
-            payload = await cached_call("get_activity_details", activity_id, cache=cache, ttl=_DETAIL_TTL,
+            payload = await cached_call("get_activity_details", activity_id, cache=cache, ttl=DETAIL_TTL,
                                          tracker=tracker, refresh=no_cache)
         finally:
             cache.close()
@@ -335,25 +336,17 @@ def effort(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
     """Set perceived exertion and/or feel on one activity; only the given field(s) are sent."""
     cmd = "activity effort"
     args = {"activity_id": activity_id, "rpe": rpe, "feel": feel, "dry_run": dry_run}
-    summary: dict[str, int] = {}
-    echo: dict[str, Any] = {"activity_id": activity_id}
+    label: str | None = None
     try:
         if activity_id <= 0:
             raise PaceError("bad_args", f"ACTIVITY_ID must be positive: {activity_id}")
         if rpe is None and feel is None:
             raise PaceError("bad_args", "Give --rpe and/or --feel.")
         if rpe is not None:
-            summary["directWorkoutRpe"] = parse_rpe(rpe)
-            echo["rpe"] = rpe
+            parse_rpe(rpe)
         if feel is not None:
-            label, summary["directWorkoutFeel"] = parse_feel(feel)
-            echo["feel"] = label
+            label, _ = parse_feel(feel)
     except PaceError as err:
         fail(cmd, err)
-    path = f"/activity-service/activity/{activity_id}"
-    body = {"activityId": activity_id, "summaryDTO": summary}
-    # Prefix invalidation also drops ids that extend this one; harmless over-invalidation.
-    spec = WriteSpec(resource="activity_effort", action="update", method="connectapi", args=(path,),
-                     kwargs={"method": "PUT", "json": body}, payload={"path": path, "json": body}, echo=echo,
-                     invalidate=(f"get_activity:{activity_id}", f"zones:get_activity:{activity_id}"))
+    spec = effort_spec(activity_id, rpe, label)
     run(cmd, args, lambda: run_write(spec, dry_run=dry_run))

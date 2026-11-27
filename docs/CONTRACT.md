@@ -52,7 +52,7 @@
 | `endpoint_unavailable` | 1 | 400 on a read, 403 (feature not enabled for account) |
 | `rejected` | 1 | 4xx on a write other than 401/403/404/408/429: Garmin refused the payload, and `message` carries its reason (e.g. "Gear's start date must be before activity's start date") |
 | `network` | 1 | connection failure or timeout, 408, 5xx (also when garth's own retries on them run out) |
-| `deferred` | 1 | only inside `pace export`, when its call or time budget ran out; nothing was sent to Garmin |
+| `deferred` | 1 | only inside `pace export` or `pace requests apply`, when the run's call or time budget ran out or an earlier call ended it (Garmin throttled or did not answer); nothing was sent to Garmin |
 | `internal` | 1 | anything else |
 | `internal` | 130 | aborted by user (Ctrl-C) |
 
@@ -156,12 +156,12 @@ Documented in `pace schema` and the skill; never repeated per response.
 
 ### Writes
 
-Fourteen commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`, `plan push`, `plan unpush`, `zones push`.
+Fifteen commands mutate Garmin Connect: `workout push`, `workout schedule`, `workout delete`, `log weight add`, `log weight delete`, `log hydration`, `log bp add`, `log bp delete`, `gear link`, `gear unlink`, `activity effort`, `plan push`, `plan unpush`, `zones push`, `requests apply`.
 Every one of them takes `--dry-run`; `pace schema` marks each with `"write": true` and lists them under `data.writes`.
 
-`--dry-run` makes no network call, with one exception: `zones push --dry-run` makes one live read of the watch zones (never the cache), because the body is built on it; it writes nothing.
+`--dry-run` makes no network call, with two exceptions that read but write nothing: `zones push --dry-run` makes one live read of the watch zones (never the cache), because the body is built on it, and `requests apply --dry-run` makes the reads its checks need (Page requests below).
 It returns `{"dry_run": true, "payload": ...}`: the exact call pace will make, so a caller can inspect precisely what would be sent before committing to it.
-The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands and `gear link`/`gear unlink` show `{"method": ..., ...arguments}` for the garminconnect call; `activity effort` shows `{"path": ..., "json": ...}` like `workout schedule`; `zones push` shows `{"before", "after", "body"}` (see Zones below).
+The payload shape depends on the command: `workout push` shows the full Garmin workout body; `workout schedule` and `workout delete` show `{"path": ..., "json": ...}` (delete has no body); the `log` commands and `gear link`/`gear unlink` show `{"method": ..., ...arguments}` for the garminconnect call; `activity effort` shows `{"path": ..., "json": ...}` like `workout schedule`; `zones push` shows `{"before", "after", "body"}` (see Zones below); `requests apply` returns one result per request with the dry-run payloads of its writes in `did` (Page requests below).
 
 `--date D` on `log weight add` and `log bp add` timestamps the entry at 12:00 local time of D, not midnight, so a day's entry cannot land in the neighbouring day once Garmin converts it to GMT.
 `log hydration` and the two deletes take a plain date (`cdate`) instead.
@@ -169,7 +169,7 @@ The payload shape depends on the command: `workout push` shows the full Garmin w
 Without `--dry-run`, a successful write returns `{"action": "create"|"delete"|"update"|"link"|"unlink", "resource": "workout"|"weight"|"hydration"|"bp"|"activity_gear"|"activity_effort"|"hr_zones", "id": <Garmin-assigned id, or null when the response carries none>, "echo": <the values you sent>}`.
 `gear link` and `gear unlink` return `link`/`unlink` on `activity_gear`; `activity effort` returns `update` on `activity_effort`; `zones push` returns `update` on `hr_zones`; all four have `id: null`.
 A failed write raises the same error envelope as a read (`docs/CONTRACT.md` error table above); no partial-success shape exists for a single write.
-`plan push` and `plan unpush` are batches with their own result shape (see Plan below).
+`plan push` and `plan unpush` are batches with their own result shape (see Plan below), and so is `requests apply` (Page requests below).
 
 Deletes are limited to workouts, weigh-ins and blood-pressure readings; activities and other resources are never deleted through `pace`.
 The only activity edits are gear links and perceived effort; no other activity field is ever written.
@@ -191,15 +191,18 @@ To change shoes, link the new item first, then unlink the old one: Garmin keeps 
 To review gear across many activities, do not call `activity gear` once per activity (10 calls a minute): `gear list`, then `gear activities UUID` once per item, then `activity list` for the range; an activity in no item's list has no gear.
 There is no `--yes` flag anywhere in the CLI: a write either runs (given no `--dry-run`) or it doesn't.
 Confirmation before a real Garmin write is the caller's responsibility -- the coaching skill must show the planned write (or its `--dry-run` payload) and get an explicit yes from the user before calling without `--dry-run`.
+The one exception is `requests apply`: the athlete pressed each request on the private dashboard page, which showed the planned write before the press, so the press is the yes.
 The confirmation rule covers Garmin writes only: `diary` commands write a local file (`"local_write": true` in `pace schema`, never `"write"`) and are outside this rule; the coaching skill decides when to ask about them.
 
 A successful write drops the cache keys it affects (`data.writes.invalidation` in `pace schema`), so a following read is never served stale data.
-Write commands themselves never read the cache: every write always calls Garmin directly.
+Write commands never write through the cache: every write always calls Garmin directly.
+`requests apply` reads through the cache only for its checks (Page requests below).
 A cache failure during that invalidation is logged (`--verbose`) and ignored: the write already landed on Garmin, so it is still reported as `ok: true`.
 
 Creating writes are not idempotent: a retry after an ambiguous failure duplicates the workout/weigh-in/hydration.
 `gear link`, `gear unlink` and `activity effort` set a state, so repeating them is harmless.
 Verify with the matching read (`workout list`, `log weight list`, `log bp list`) before retrying.
+`requests apply` guards its own retries: its applied log skips a request applied before, and `weight.add` writes nothing when the day already has a manual weigh-in within 100 g.
 The `network` and `rate_limited` hints say so too, since both otherwise read as "retry once".
 
 `log weight delete`, `log bp delete` and `activity export-range` have a mandatory option; `pace schema` lists it per command under `required_flags`, because a flat `flags` list cannot tell a required option from an optional one.
@@ -733,6 +736,69 @@ Commands that catch per-item errors themselves (`plan status` effort, the due ch
 `data = {"path", "recipe", "bytes", "calls", "seconds", "datasets": {"<id>": {"rows", "calls", "stale", "reason", "error", "day_errors", "errors"}}}`.
 `error` is `{"code", "message"}` (the message cut to 300 characters) or null, and each `errors` item is `{"parent", "code", "message"}`.
 `calls` counts the calls the limiter registered, so a call deferred while it waited for a concurrency slot still counts.
+
+## Page requests
+
+`pace requests apply FILE [--dry-run]` applies the requests the athlete made on the dashboard page.
+The page stores one document per press in the store collection `data/requests/pending`; the coach lists them and passes them as a JSON list of `{"id", "version", "at", "op", "params"}` (FILE, or `-` for stdin).
+Values come from a browser, so every one is checked in code before any Garmin call, and they reach the write functions as typed arguments, never through a shell.
+`pace schema` -> `requests` has the limits below as data.
+
+### Operations
+
+| op | params | What runs |
+|---|---|---|
+| `shoe.set` | `activity_id`, `gear_uuid` | Link that shoe unless it is linked already, then unlink every other linked item whose `gearTypeName` is `Shoes`, in Garmin's order. Non-shoe gear is never touched. |
+| `effort.set` | `activity_id`, `rpe` and/or `feel` | `activity effort` with the given fields. |
+| `weight.add` | `kg`, `date` | `log weight add` for that date (12:00 local), unless the day already has a manual weigh-in within 100 g. |
+
+The writes are those of `gear link`, `gear unlink`, `activity effort` and `log weight add`: same payloads, same cache invalidation.
+A `weight.add` does not resolve the new weigh-in's id (`log weight add` spends one more read on it).
+
+### Checks
+
+A request is refused (`bad_args`, with a reason naming the key) unless:
+- `id` matches `[A-Za-z0-9_-]{1,128}` and no earlier request in the file has it;
+- `op` is one of the three, and `params` is an object with only that op's keys and all its required ones;
+- `activity_id` is an integer above 0 and below 2^63, and `activity show` finds it;
+- `gear_uuid` is 32 hex characters and an active shoe in `gear list` (`gearTypeName` `Shoes`, `gearStatusName` `active`), read from the cache and read again, once per run, when it is missing there;
+- `rpe` is an integer 1-10 and `feel` exactly one of `very-weak`, `weak`, `normal`, `strong`, `very-strong`, with at least one of them;
+- `kg` is a number 25-250, and `date` a `YYYY-MM-DD` date at most 365 days back and at most one day ahead of the host's today (the page's local date may be ahead).
+
+`at`, `version` and other top-level keys are never refused.
+Reasons quote a value with `repr()`, cut to 80 characters.
+
+### Running
+
+Requests run in `at` order (an ISO time with a timezone); those without a usable `at` follow, in file order.
+The activity and gear-list checks read through the cache, with the keys and lifetimes of `activity show` and `gear list`, and each activity is checked once per run; the activity's current gear and the day's weigh-ins are read fresh.
+The run has a budget of 30 Garmin calls and 240 s, the mechanism of `pace export`: past it, or after a `rate_limited`, a `network` error with no HTTP status or a failed token login, calls are not sent (`deferred`).
+Garmin tokens are checked before the first request, and a rejected token is `auth_required`, never a prompt.
+`auth_required` from any call ends the run with that error (exit 3); the outcomes logged so far stay logged.
+
+### Applied log and results
+
+Every outcome that ran (except for a request without a valid `id`) is appended to `$PACE_HOME/requests-applied.jsonl` as `{"id", "hash", "op", "status", "code", "http", "reason", "time"}`, where `hash` is the SHA-256 of `op` and `params`.
+The run holds the log's lock, so a second `requests apply` waits 10 s and then fails `internal` "busy".
+A request whose `id` and `hash` the log holds as `applied` is reported `applied` again, with reason "already applied" and no call: this covers a retry after a lost store delete.
+
+`data` lists one result per request, in run order: `{"id", "version", "op", "status", "code", "reason", "did"}`, where `did` holds the results of the writes made (dry-run payloads with `--dry-run`) and `id` is null when the request had no valid one.
+
+| status | when | the coach |
+|---|---|---|
+| `applied` | done, or nothing to write: shoe already set, weigh-in already there, already applied, or a duplicate of an earlier `weight.add` with the same values in this run | deletes the document |
+| `refused` | a check failed; Garmin answered `rejected` or `not_found`; the third counted failure ("gave up after 3 attempts"); or a failure 7 or more days after the request's first one ("gave up: failing since ...") | deletes the document and tells the athlete the reason |
+| `failed` | `network`, `rate_limited`, `endpoint_unavailable`, `internal` or `deferred`, or not attempted (below) | keeps the document for the next run |
+| `planned` | only with `--dry-run`: the writes in `did` would run | nothing |
+
+A failure counts toward the three attempts unless Garmin throttled (`rate_limited`) or did not answer (`network` with no HTTP status), or the call was not sent (`deferred`, which is not logged).
+`endpoint_unavailable` (a 403, or a 400 on a read) counts like a 5xx instead of refusing at once, because Garmin's edge sometimes answers a passing 403.
+A request that fails 7 or more days (host local dates) after its first logged failure is refused, whatever its failures were, so a request Garmin never answers cannot hold up the requests behind it for good.
+After a request fails, later requests in the same run for the same target (the activity's shoe, its RPE, its feel, or the weigh-in date) are `failed` "not attempted" and not logged, so an older press never lands after a newer one.
+`did` keeps the writes that landed before a failure: a `shoe.set` whose unlink failed lists its link, and its retry only unlinks.
+An unexpected error inside one request makes it `failed` with `internal`; the other requests still run.
+
+`--dry-run` reads the log without taking its lock, makes the reads of the checks, and writes nothing to Garmin or to the log.
 
 ## Keeping this file honest
 

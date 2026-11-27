@@ -221,3 +221,14 @@ def test_dashboard_uses_export() -> None:
     assert "pace export" in dash and "pace load --export" not in dash
     assert "## Add a view" in dash and "bolted on" not in dash
     assert "dash.loader" in dash and "pace export --check" in dash
+
+
+def test_requests_flow() -> None:
+    dash = DASHBOARD.read_text()
+    flow = " ".join(_section(dash, "## Requests").split())
+    assert "data/requests/pending" in flow and "pace requests apply" in flow and "pinned" in flow
+    assert "pace requests apply" in " ".join(_section(dash, "## Unattended runs").split())
+    skill = SKILL.read_text()
+    writes = " ".join(_section(skill, "## Writes").split())
+    assert "`pace requests apply`" in writes and "press" in writes
+    assert "dashboard.md, Requests" in " ".join(_section(skill, "## Session start").split())
