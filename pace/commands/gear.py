@@ -5,11 +5,12 @@ import typer
 from pace.envelope import PaceError, fail, run
 from pace.factory import build_group
 from pace.ids import validate_uuid
-from pace.writes import DRY_RUN_OPT, WriteSpec, run_write
+from pace.writes import DRY_RUN_OPT, run_write
+from pace.writespecs import gear_link_spec
 
 app = build_group("gear")
 
-def _link_command(verb: str, method: str, help_: str) -> None:
+def _link_command(verb: str, help_: str) -> None:
     def command(activity_id: int = typer.Argument(..., metavar="ACTIVITY_ID"),
                 gear_uuid: str = typer.Argument(..., metavar="GEAR_UUID"),
                 dry_run: bool = DRY_RUN_OPT) -> None:
@@ -20,12 +21,7 @@ def _link_command(verb: str, method: str, help_: str) -> None:
             uuid = validate_uuid(gear_uuid)
         except PaceError as err:
             fail(cmd, err)
-        # Gear-side reads are keyed by the uuid as typed (any case), and Garmin may touch another
-        # shoe on link: drop the whole gear-side prefixes, they are a handful of rows.
-        spec = WriteSpec(resource="activity_gear", action=verb, method=method, args=(uuid, activity_id),
-                         payload={"method": method, "gearUUID": uuid, "activity_id": activity_id},
-                         echo={"activity_id": activity_id, "gear_uuid": uuid},
-                         invalidate=(f"get_activity_gear:{activity_id}", "get_gear_activities:", "get_gear_stats:"))
+        spec = gear_link_spec(verb, activity_id, uuid)
         run(cmd, {"activity_id": activity_id, "gear_uuid": uuid, "dry_run": dry_run},
             lambda: run_write(spec, dry_run=dry_run))
 
@@ -34,5 +30,5 @@ def _link_command(verb: str, method: str, help_: str) -> None:
     app.command(verb, help=help_)(command)
 
 
-_link_command("link", "add_gear_to_activity", "Link one gear item to one activity (other linked gear is kept).")
-_link_command("unlink", "remove_gear_from_activity", "Unlink one gear item from one activity.")
+_link_command("link", "Link one gear item to one activity (other linked gear is kept).")
+_link_command("unlink", "Unlink one gear item from one activity.")
