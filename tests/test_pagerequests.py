@@ -160,6 +160,7 @@ def test_validation_refuses_request(fake, request_, key) -> None:
     assert res["status"] == "refused" and res["code"] == "bad_args" and key in res["reason"], res
     assert res["id"] == (request_.get("id") if isinstance(request_, dict) and request_.get("id") == "r1" else None)
     assert fake.calls == []
+    assert [e["id"] for e in logged()] == ([] if res["id"] is None else ["r1"])
 
 
 def test_reason_quotes_untrusted_values_short(fake) -> None:
@@ -306,7 +307,7 @@ def test_same_id_new_content_runs_again(fake) -> None:
 
 
 @pytest.mark.parametrize(("code", "http", "status"), [
-    ("rejected", 400, "refused"), ("not_found", 404, "refused"), ("endpoint_unavailable", 403, "refused"),
+    ("rejected", 400, "refused"), ("not_found", 404, "refused"), ("endpoint_unavailable", 403, "failed"),
     ("network", 503, "failed"), ("network", None, "failed"), ("rate_limited", 429, "failed"),
     ("internal", None, "failed"), ("deferred", None, "failed"),
 ])
@@ -461,3 +462,33 @@ def test_call_budget_defers_the_rest(client, monkeypatch) -> None:
     res = run([effort(A, id="r1"), effort(A2, id="r2", at="2026-11-27T09:00:00Z")])
     assert [r["status"] for r in res] == ["applied", "failed"] and res[1]["code"] == "deferred"
     assert client.calls == ["get_activity", "connectapi"]
+
+
+def test_activity_checked_once_per_run(fake) -> None:
+    res = run([effort(id="e1", rpe=6), effort(id="e2", at="2026-11-27T09:00:00Z", feel="weak"),
+               req("shoe.set", {"activity_id": A, "gear_uuid": U}, id="s1", at="2026-11-27T10:00:00Z")])
+    assert {r["status"] for r in res} == {"applied"}
+    assert fake.methods().count("get_activity") == 1
+
+
+@pytest.mark.parametrize("method", ["get_gear", "get_activity_gear"])
+def test_odd_gear_answer_is_failed_not_refused(fake, method) -> None:
+    fake.answers[method] = {"unexpected": True}
+    [res] = run([req("shoe.set", {"activity_id": A, "gear_uuid": U})])
+    assert (res["status"], res["code"]) == ("failed", "internal") and fake.writes() == []
+
+
+def test_gives_up_a_week_after_the_first_failure(fake) -> None:
+    first = effort()
+    old = {"id": "r1", "hash": pr.content_hash(first["op"], first["params"]), "op": "effort.set",
+           "status": "failed", "code": "network", "http": None, "reason": "Connection issue",
+           "time": "2026-11-19T08:00:00+00:00"}
+    pr.log_path().write_text(json.dumps(old) + "\n")
+    fake.answers["connectapi"] = ApiError("network", "Connection issue", None)
+    [res] = run([first], today=date(2026, 11, 25))
+    assert res["status"] == "failed"  # six days: still retried
+    [res] = run([first])
+    assert res["status"] == "refused" and res["reason"].startswith("gave up: failing since 2026-11-19")
+    fake.calls.clear()
+    [res] = run([first])
+    assert res["status"] == "refused" and fake.calls == []

@@ -46,11 +46,17 @@ MAX_AGE_DAYS = 365
 #: A weigh-in may be dated one day after the host's today: the page's local date can be ahead of it.
 MAX_AHEAD_DAYS = 1
 MAX_ATTEMPTS = 3
+#: A request still failing this many days after its first failure is refused, whatever the failures were:
+#: failures Garmin's throttling or silence caused do not count as attempts, and must not keep a request
+#: (and the requests queued behind it) waiting forever.
+MAX_FAILING_DAYS = 7
 #: The run's call and time budget (the export's mechanism): past it, or once Garmin throttles or does
 #: not answer, calls are not sent and their requests wait for the next run.
 MAX_CALLS = 30
 MAX_SECONDS = 240
-REFUSED_CODES = ("bad_args", "rejected", "not_found", "endpoint_unavailable")
+#: Answers a retry would not change. `endpoint_unavailable` (a 403 or a 400 on a read) is not one: Garmin's
+#: edge sends a passing 403 at times, so it is a counted failure, refused after MAX_ATTEMPTS.
+REFUSED_CODES = ("bad_args", "rejected", "not_found")
 STATUSES = ("applied", "refused", "failed", "planned")
 LOG_NAME = "requests-applied.jsonl"
 #: The store collection the page writes to and the coach lists (docs only; pace never reads the store).
@@ -223,6 +229,15 @@ def _counts(code: Any, http: Any) -> bool:
 class _Seen:
     applied: bool = False
     failures: int = 0
+    first_failed: date | None = None
+    gave_up: bool = False  # a refusal logged after failures (not a refusal code): never tried again
+
+
+def _logged_day(value: Any) -> date | None:
+    try:
+        return datetime.fromisoformat(value).date() if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def _load_log(path: Path) -> dict[tuple[str, str], _Seen]:
@@ -242,10 +257,17 @@ def _load_log(path: Path) -> dict[tuple[str, str], _Seen]:
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not isinstance(entry.get("hash"), str):
             continue
         s = seen.setdefault((entry["id"], entry["hash"]), _Seen())
-        if entry.get("status") == "applied":
+        status, code = entry.get("status"), entry.get("code")
+        if status == "applied":
             s.applied = True
-        elif entry.get("status") in ("failed", "refused") and _counts(entry.get("code"), entry.get("http")):
-            s.failures += 1
+        elif status in ("failed", "refused") and code not in REFUSED_CODES and code is not None:
+            day = _logged_day(entry.get("time"))
+            if day is not None and (s.first_failed is None or day < s.first_failed):
+                s.first_failed = day
+            if _counts(code, entry.get("http")):
+                s.failures += 1
+            if status == "refused":
+                s.gave_up = True
     return seen
 
 
@@ -290,6 +312,7 @@ class _Run:
         self.ids: set[str] = set()
         self.failed_targets: set[tuple[str, Any]] = set()
         self.weights: dict[tuple[float, str], str] = {}  # weight.add content -> id that applied it
+        self.activities: set[int] = set()  # found this run: an effort write drops the cached activity
         self._shoes: set[str] | None = None
         self._shoes_refreshed = False
 
@@ -297,14 +320,17 @@ class _Run:
 
     async def activity(self, activity_id: int) -> None:
         """Raises not_found when the activity does not exist; same cache key and TTL as `activity show`."""
-        await cached_call("get_activity", activity_id, cache=self.cache, ttl=DETAIL_TTL, tracker=self.tracker)
+        if activity_id not in self.activities:
+            await cached_call("get_activity", activity_id, cache=self.cache, ttl=DETAIL_TTL, tracker=self.tracker)
+            self.activities.add(activity_id)
 
     async def _read_shoes(self, refresh: bool) -> set[str]:
         upn = await resolve_upn(self.cache, self.tracker)
         gear = await cached_call("get_gear", upn, cache=self.cache, ttl=today_ttl(_GEAR_LIST), tracker=self.tracker,
                                  refresh=refresh)
         if not isinstance(gear, list):
-            return set()
+            # Not "no shoes": refusing on it would delete a valid press.
+            raise PaceError("internal", f"gear list: expected a list from Garmin, got {type(gear).__name__}")
         return {g["uuid"].lower() for g in gear
                 if isinstance(g, dict) and isinstance(g.get("uuid"), str)
                 and g.get("gearTypeName") == "Shoes" and g.get("gearStatusName") == "active"}
@@ -331,8 +357,9 @@ class _Run:
         # Fresh: the unlinks must see what is linked now (gear changed in the app is not invalidated).
         linked = await cached_call("get_activity_gear", aid, cache=self.cache, ttl=GEAR_TTL, tracker=self.tracker,
                                    refresh=True)
-        items = [g for g in linked if isinstance(g, dict) and isinstance(g.get("uuid"), str)] \
-            if isinstance(linked, list) else []
+        if not isinstance(linked, list):
+            raise PaceError("internal", f"activity gear: expected a list from Garmin, got {type(linked).__name__}")
+        items = [g for g in linked if isinstance(g, dict) and isinstance(g.get("uuid"), str)]
         if uuid not in {g["uuid"].lower() for g in items}:
             # Link first: a failed link never leaves the activity without a shoe.
             await self.write(gear_link_spec("link", aid, uuid), did)
@@ -369,7 +396,7 @@ class _Run:
             version = None
         if reason is not None and len(reason) > _REASON_CHARS:
             reason = reason[:_REASON_CHARS - 3] + "..."
-        if record and self.writer is not None:
+        if record and self.writer is not None and rid is not None:
             self.writer.append({"id": rid, "hash": hash_, "op": op, "status": status, "code": code, "http": http,
                                 "reason": reason, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         return {"id": rid, "version": version, "op": op, "status": status, "code": code, "reason": reason,
@@ -393,6 +420,8 @@ class _Run:
             return self._result(req, op, "applied", reason="already applied")
         if seen.failures >= MAX_ATTEMPTS:
             return self._result(req, op, "refused", reason=_GAVE_UP)
+        if seen.gave_up:
+            return self._result(req, op, "refused", reason=f"gave up: failing since {seen.first_failed}")
         targets = _targets(op, params)
         if targets & self.failed_targets:
             return self._result(req, op, "failed",
@@ -424,6 +453,10 @@ class _Run:
             return self._result(req, op, "refused", failure.code, failure.message, did, failure.http, h, True)
         if _counts(failure.code, failure.http) and seen.failures + 1 >= MAX_ATTEMPTS:
             return self._result(req, op, "refused", failure.code, f"{_GAVE_UP}: {failure.message}", did,
+                                failure.http, h, True)
+        if seen.first_failed is not None and seen.first_failed <= self.today - timedelta(days=MAX_FAILING_DAYS):
+            return self._result(req, op, "refused", failure.code,
+                                f"gave up: failing since {seen.first_failed.isoformat()}: {failure.message}", did,
                                 failure.http, h, True)
         self.failed_targets |= targets
         return self._result(req, op, "failed", failure.code, failure.message, did, failure.http, h, True)

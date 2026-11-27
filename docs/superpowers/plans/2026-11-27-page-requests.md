@@ -157,3 +157,15 @@ The command is a thin wrapper that reads the file, checks login and runs inside 
   - `dashboard.md`: a `## Requests` section: collection `data/requests/pending`, the document shape per op for the page (`at` from `new Date().toISOString()`, SI numbers), the page shows the planned write before the press and the pending request after it; the coach flow (list, scratch file of `{"id", "version", "at", "op", "params"}`, `pace requests apply` with a 5-minute timeout, delete `applied` and `refused` pinned to the version read, keep `failed`, one line to the athlete, refresh); `internal` "busy" means another apply is running (leave the requests for the next session); after `auth_required` the next run reports the already applied ones as applied; the private-dashboard condition; and `## Unattended runs` gains the permissions for it.
 - [ ] **Step 5: Run the full suite; ASCII and one-sentence-per-line check on the touched docs.**
 - [ ] **Step 6: Commit** `feat: pace requests apply` and `docs: page requests in the contract and the coach skill`.
+
+## Post-review changes
+
+The implementation review found these, and the branch carries them:
+- `read_json` turns any unreadable file into `bad_args` (an integer past the digit limit, nesting past the recursion limit, bytes that are not UTF-8), so one junk document cannot crash every run without an envelope.
+- `endpoint_unavailable` is a counted failure, not a refusal: Garmin's edge sometimes answers a passing 403, and a refusal deletes the press.
+- A request still failing 7 days (`MAX_FAILING_DAYS`) after its first logged failure is refused, whatever its failures were, so a request Garmin never answers cannot block the queue behind it for good; the refusal is logged and later runs refuse it with no call.
+- Each activity is checked once per run (an effort write drops its cached `get_activity`).
+- A gear list or activity gear answer that is not a list is `internal` (failed, retried), not a refusal.
+- A request without a valid `id` is not logged; the page makes ids with `crypto.randomUUID()`.
+
+Left as known limits: a log append that fails after a write fails the whole run (a retry is safe); a local cache error counts as an attempt; in a dry run, an in-run duplicate `weight.add` reports `applied` next to the first one's `planned`.

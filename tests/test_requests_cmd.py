@@ -50,9 +50,13 @@ def _file(tmp_path, content: str):
     return str(path)
 
 
-@pytest.mark.parametrize("content", ["{not json", '{"op": "effort.set"}', '"x"'])
+@pytest.mark.parametrize("content", ["{not json", '{"op": "effort.set"}', '"x"', "[" + "9" * 5000 + "]",
+                                     "[" * 100000, b"[\xff\xfe]"],
+                         ids=["syntax", "object", "string", "huge-int", "deep", "not-utf8"])
 def test_bad_file_is_bad_args(tmp_path, calls, content) -> None:
-    res = runner.invoke(app, ["requests", "apply", _file(tmp_path, content)])
+    path = tmp_path / "requests.json"
+    path.write_bytes(content if isinstance(content, bytes) else content.encode())
+    res = runner.invoke(app, ["requests", "apply", str(path)])
     doc = _doc(res)
     assert res.exit_code == 2 and doc["error"]["code"] == "bad_args" and doc["command"] == "requests apply"
     assert calls == []
@@ -106,7 +110,7 @@ def test_schema_entry_and_block() -> None:
     assert block["log_path"] == "$PACE_HOME/requests-applied.jsonl"
     assert block["ops"] == {op: {"params": list(pr.PARAMS[op]), "required": list(pr.REQUIRED[op])} for op in pr.OPS}
     assert (block["max_attempts"], block["max_calls"], block["max_seconds"]) == (3, pr.MAX_CALLS, pr.MAX_SECONDS)
-    assert block["kg_range"] == [25, 250] and block["max_age_days"] == 365
+    assert block["kg_range"] == [25, 250] and block["max_age_days"] == 365 and block["max_failing_days"] == 7
     assert block["refused_codes"] == list(pr.REFUSED_CODES) and block["statuses"] == list(pr.STATUSES)
     assert "requests" in schema["groups"]
     assert "requests apply" in schema["writes"]["confirm"]

@@ -51,7 +51,7 @@ The page reads both through the datasets `settings_current` and `settings_pendin
 ## Requests
 
 The page's quick actions (a shoe picker and RPE and feel controls on an activity, a weigh-in form) never write to Garmin themselves.
-Each press adds one document, with a fresh id, to the store collection `data/requests/pending`, which everyone who can open the page reads and only editors write.
+Each press adds one document, with a fresh id from `crypto.randomUUID()`, to the store collection `data/requests/pending`, which everyone who can open the page reads and only editors write.
 A document is `{"op", "params", "at"}`, with `at` the press time from `new Date().toISOString()` and numbers in SI (the page converts pounds to kg):
 - `shoe.set`: `{"activity_id", "gear_uuid"}`, offered only for the active shoes of the bundle's `shoes` section.
 - `effort.set`: `{"activity_id", "rpe", "feel"}` with either or both; RPE an integer 1-10, feel one of `very-weak`, `weak`, `normal`, `strong`, `very-strong`.
@@ -70,6 +70,7 @@ The press is the athlete's yes for these writes, so never ask again; this holds 
 If it is ever shared with edit rights, stop applying requests and tell the athlete.
 `auth_required` stops the run like any call (SKILL.md, Session start); the next run reports the requests already applied as `applied` ("already applied"), and they are deleted then.
 `internal` with "busy" in the message means another `pace requests apply` is running: leave the requests for the next session.
+Any other error of the command itself (`bad_args`, `internal`): tell the athlete once, with its message, and leave the documents.
 A result with no `id` comes from a document without a valid id: tell the athlete once and leave the document.
 
 ## Add a view

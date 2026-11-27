@@ -159,7 +159,7 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "(not written when the day already has a manual weigh-in within 100 g). FILE is a JSON list of {id, version, at, "
      "op, params} (- reads stdin), applied in `at` order. data lists per request {id, version, op, status (applied | "
      "refused | failed; planned with --dry-run), code, reason, did}. The applied log ($PACE_HOME/requests-applied.jsonl) "
-     "skips a request applied before and counts failures (the third becomes refused). The run has a 30-call, 240 s "
+     "skips a request applied before and counts failures (the third, or any a week after the first, becomes refused). The run has a 30-call, 240 s "
      "budget, and a throttle or no answer from Garmin ends it: the remaining requests are failed, not attempted. "
      "--dry-run makes the validation reads and writes nothing, not even the log.",
      "keyed": "none", "args": ["FILE"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0,
@@ -291,7 +291,8 @@ def build_schema(group: str | None) -> dict[str, Any]:
                      "rule": "effort.set needs rpe or feel or both", "rpe_range": [1, 10], "feel": list(FEEL_LEVELS),
                      "kg_range": list(preq.KG_RANGE), "max_age_days": preq.MAX_AGE_DAYS,
                      "max_ahead_days": preq.MAX_AHEAD_DAYS, "id_pattern": preq.ID_PATTERN,
-                     "max_attempts": preq.MAX_ATTEMPTS, "max_calls": preq.MAX_CALLS, "max_seconds": preq.MAX_SECONDS,
+                     "max_attempts": preq.MAX_ATTEMPTS, "max_failing_days": preq.MAX_FAILING_DAYS,
+                     "max_calls": preq.MAX_CALLS, "max_seconds": preq.MAX_SECONDS,
                      "refused_codes": list(preq.REFUSED_CODES), "statuses": list(preq.STATUSES)},
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,

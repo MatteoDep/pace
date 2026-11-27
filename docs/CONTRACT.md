@@ -771,14 +771,14 @@ Reasons quote a value with `repr()`, cut to 80 characters.
 ### Running
 
 Requests run in `at` order (an ISO time with a timezone); those without a usable `at` follow, in file order.
-The activity and gear-list checks read through the cache, with the keys and lifetimes of `activity show` and `gear list`; the activity's current gear and the day's weigh-ins are read fresh.
+The activity and gear-list checks read through the cache, with the keys and lifetimes of `activity show` and `gear list`, and each activity is checked once per run; the activity's current gear and the day's weigh-ins are read fresh.
 The run has a budget of 30 Garmin calls and 240 s, the mechanism of `pace export`: past it, or after a `rate_limited`, a `network` error with no HTTP status or a failed token login, calls are not sent (`deferred`).
 Garmin tokens are checked before the first request, and a rejected token is `auth_required`, never a prompt.
 `auth_required` from any call ends the run with that error (exit 3); the outcomes logged so far stay logged.
 
 ### Applied log and results
 
-Every outcome that ran is appended to `$PACE_HOME/requests-applied.jsonl` as `{"id", "hash", "op", "status", "code", "http", "reason", "time"}`, where `hash` is the SHA-256 of `op` and `params`.
+Every outcome that ran (except for a request without a valid `id`) is appended to `$PACE_HOME/requests-applied.jsonl` as `{"id", "hash", "op", "status", "code", "http", "reason", "time"}`, where `hash` is the SHA-256 of `op` and `params`.
 The run holds the log's lock, so a second `requests apply` waits 10 s and then fails `internal` "busy".
 A request whose `id` and `hash` the log holds as `applied` is reported `applied` again, with reason "already applied" and no call: this covers a retry after a lost store delete.
 
@@ -787,11 +787,13 @@ A request whose `id` and `hash` the log holds as `applied` is reported `applied`
 | status | when | the coach |
 |---|---|---|
 | `applied` | done, or nothing to write: shoe already set, weigh-in already there, already applied, or a duplicate of an earlier `weight.add` with the same values in this run | deletes the document |
-| `refused` | a check failed; Garmin answered `rejected`, `not_found` or `endpoint_unavailable`; or the third counted failure ("gave up after 3 attempts") | deletes the document and tells the athlete the reason |
-| `failed` | `network`, `rate_limited`, `internal` or `deferred`, or not attempted (below) | keeps the document for the next run |
+| `refused` | a check failed; Garmin answered `rejected` or `not_found`; the third counted failure ("gave up after 3 attempts"); or a failure 7 or more days after the request's first one ("gave up: failing since ...") | deletes the document and tells the athlete the reason |
+| `failed` | `network`, `rate_limited`, `endpoint_unavailable`, `internal` or `deferred`, or not attempted (below) | keeps the document for the next run |
 | `planned` | only with `--dry-run`: the writes in `did` would run | nothing |
 
 A failure counts toward the three attempts unless Garmin throttled (`rate_limited`) or did not answer (`network` with no HTTP status), or the call was not sent (`deferred`, which is not logged).
+`endpoint_unavailable` (a 403, or a 400 on a read) counts like a 5xx instead of refusing at once, because Garmin's edge sometimes answers a passing 403.
+A request that fails 7 or more days after its first logged failure is refused, whatever its failures were, so a request Garmin never answers cannot hold up the requests behind it for good.
 After a request fails, later requests in the same run for the same target (the activity's shoe, its RPE, its feel, or the weigh-in date) are `failed` "not attempted" and not logged, so an older press never lands after a newer one.
 `did` keeps the writes that landed before a failure: a `shoe.set` whose unlink failed lists its link, and its retry only unlinks.
 An unexpected error inside one request makes it `failed` with `internal`; the other requests still run.

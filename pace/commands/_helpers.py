@@ -53,9 +53,12 @@ def read_json(source: str) -> Any:
     """Parse JSON from a file path, or from stdin when `source` is `-`. Raises PaceError(bad_args)."""
     try:
         text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise PaceError("bad_args", f"cannot read {source}: {exc}") from None
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise PaceError("bad_args", f"{source}: invalid JSON ({exc.msg} at line {exc.lineno})") from None
+    except (ValueError, RecursionError) as exc:
+        # Valid syntax json still refuses: an integer past Python's digit limit, nesting past the recursion limit.
+        raise PaceError("bad_args", f"{source}: unreadable JSON ({type(exc).__name__}: {str(exc)[:200]})") from None
