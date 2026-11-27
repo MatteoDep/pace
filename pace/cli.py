@@ -7,7 +7,7 @@ import typer
 from typer.main import get_command
 
 from pace import __version__, envelope
-from pace.commands import activity, auth, cache, chart, config, device, diary, export, gear, goal, load, log, plan, profile, schema, training, wellness, workout, zones
+from pace.commands import activity, auth, cache, chart, config, device, diary, export, gear, goal, load, log, plan, profile, requests_cmd, schema, training, wellness, workout, zones
 from pace.plugins import load_plugins
 
 app = typer.Typer(
@@ -20,7 +20,8 @@ app = typer.Typer(
 
 for module, name in (
     (activity, "activity"), (auth, "auth"), (cache, "cache"), (config, "config"), (device, "device"), (diary, "diary"),
-    (gear, "gear"), (goal, "goal"), (log, "log"), (plan, "plan"), (profile, "profile"), (training, "training"), (wellness, "wellness"),
+    (gear, "gear"), (goal, "goal"), (log, "log"), (plan, "plan"), (profile, "profile"), (requests_cmd, "requests"),
+    (training, "training"), (wellness, "wellness"),
     (workout, "workout"), (zones, "zones"),
 ):
     app.add_typer(module.app, name=name)

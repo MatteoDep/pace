@@ -81,7 +81,9 @@ def test_writes_and_dsl_in_schema() -> None:
     writes = {c["name"] for c in data["commands"] if c.get("write")}
     assert writes == {"workout push", "workout schedule", "workout delete", "log weight add", "log weight delete",
                       "log hydration", "log bp add", "log bp delete", "activity effort",
-                      "gear link", "gear unlink", "plan push", "plan unpush", "zones push"}
+                      "gear link", "gear unlink", "plan push", "plan unpush", "zones push", "requests apply"}
+    assert "requests apply --dry-run makes its validation reads" in data["writes"]["dry_run"]
+    assert "requests-applied.jsonl" in data["writes"]["idempotency"]
     for c in data["commands"]:
         if c.get("write"):
             assert "--dry-run" in c["flags"], c["name"]

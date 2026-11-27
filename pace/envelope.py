@@ -24,8 +24,8 @@ HINTS: dict[str, str] = {
                 " Garmin Connect, then retry. Do not retry unchanged.",
     "network": "Transient. Retry once after a few seconds."
                " For writes, verify with the matching read before retrying.",
-    "deferred": "The export's call or time budget ran out before this call; nothing was sent to Garmin."
-                " The next export continues from the cache.",
+    "deferred": "The call or time budget of `pace export` or `pace requests apply` ran out, or Garmin throttled"
+                " or did not answer earlier in the run; nothing was sent to Garmin. The next run continues.",
     "internal": "Unexpected. Re-run with --verbose for cache/fetch logs and report the message.",
 }
 

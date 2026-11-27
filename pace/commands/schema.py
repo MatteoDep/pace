@@ -5,12 +5,14 @@ from typing import Any
 import typer
 
 from pace import __version__, fit
+from pace import pagerequests as preq
 from pace import zones as zonesmod
 from pace.commands.activity import ACTIVITY_GEAR_FIELDS, LIST_FIELDS
 from pace.commands.zones import ANALYZE_TESTS, DEFAULT_MAX_CALLS, DEFAULT_WEEKS, F3_RECENT_DAYS, TESTS
 from pace.commands.workout import WORKOUT_LIST_FIELDS
 from pace.diary import (GEAR_DEFAULT, KINDS, PROFILE_KEYS, REF_PATTERN, SETTINGS_KEYS, UNIT_SYSTEMS,
                         WEIGHT_DAYS_DEFAULT, WEIGHT_DAYS_RANGE)
+from pace.effort import FEEL_LEVELS
 from pace.envelope import EXIT_CODES, HINTS, PaceError, Result, fail, run
 from pace.factory import MAX_DAYS
 from pace.plan import (
@@ -55,7 +57,7 @@ RANGE_FLAGS = ["--from", "--to", "--days"]
 
 #: The write safety contract, shared by every mutating command.
 WRITES: dict[str, Any] = {
-    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body; exception: zones push --dry-run makes one live read of the watch zones, payload {before, after, body}",
+    "dry_run": "--dry-run on every write: no network, data.payload = exact Garmin body; exceptions: zones push --dry-run makes one live read of the watch zones, payload {before, after, body}; requests apply --dry-run makes its validation reads (activity, gear list, activity gear, the day's weigh-ins), returns each request with status planned and the dry-run payloads in did, and writes neither Garmin nor its log",
     "result": {"action": "create | delete | update | link | unlink",
                "resource": "workout | weight | hydration | bp | activity_gear | activity_effort | hr_zones",
                "id": "Garmin-assigned id when the response carries one, else null",
@@ -63,15 +65,21 @@ WRITES: dict[str, Any] = {
                "batch": "plan push/unpush return {results, done, failed}: results[] = {id, ok, action "
                         "(pushed | skipped | unpushed | noop; null when refused), steps, error, garmin, session}, "
                         "results[].steps[] = {step: delete | upload | schedule, payload, id}; "
-                        "ok: false only when every session failed and no step completed"},
+                        "ok: false only when every session failed and no step completed",
+               "requests": "requests apply returns a list, one {id, version, op, status, code, reason, did} per request; "
+                           "did lists the write results above (dry-run payloads with --dry-run)"},
     "invalidation": "successful writes drop the affected cache keys",
     "idempotency": "Writes are not idempotent: a retry after an ambiguous failure duplicates the "
                    "workout/weigh-in/hydration. Verify with the matching read (workout list, "
                    "log weight list, log bp list) before retrying. gear link/unlink and activity effort set a "
                    "state, so repeating them is harmless. "
-                   "plan push skips unchanged pushed sessions (unless --force) and records every landed id.",
+                   "plan push skips unchanged pushed sessions (unless --force) and records every landed id. "
+                   "requests apply skips a request its applied log ($PACE_HOME/requests-applied.jsonl) holds as applied, "
+                   "and adds no weigh-in when the day already has a manual one within 100 g.",
     "confirm": "agents must show the planned Garmin write and get an explicit yes before calling; "
-               "local_write commands (diary, plan edits, zones) are outside this rule; the coaching skill decides when to ask about them.",
+               "local_write commands (diary, plan edits, zones) are outside this rule; the coaching skill decides when to ask about them. "
+               "Exception: requests apply runs the requests the athlete pressed on the private dashboard page, which showed "
+               "the planned write before the press, so the press is the yes.",
 }
 
 GLOBAL_FLAGS = {
@@ -145,6 +153,16 @@ STATIC_COMMANDS: list[dict[str, Any]] = [
      "write": True},
     {"name": "gear unlink", "help": "Unlink one gear item from one activity.", "keyed": "id",
      "args": ["ACTIVITY_ID", "GEAR_UUID"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0,
+     "write": True},
+    {"name": "requests apply", "help": "Apply the requests the athlete made on the dashboard page, each checked in code: "
+     "shoe.set (link the shoe, then unlink the activity's other shoes), effort.set (RPE and/or feel), weight.add "
+     "(not written when the day already has a manual weigh-in within 100 g). FILE is a JSON list of {id, version, at, "
+     "op, params} (- reads stdin), applied in `at` order. data lists per request {id, version, op, status (applied | "
+     "refused | failed; planned with --dry-run), code, reason, did}. The applied log ($PACE_HOME/requests-applied.jsonl) "
+     "skips a request applied before and counts failures (the third becomes refused). The run has a 30-call, 240 s "
+     "budget, and a throttle or no answer from Garmin ends it: the remaining requests are failed, not attempted. "
+     "--dry-run makes the validation reads and writes nothing, not even the log.",
+     "keyed": "none", "args": ["FILE"], "flags": ["--dry-run"], "default_fields": [], "series": [], "ttl_s": 0,
      "write": True},
     {"name": "log weight add", "help": "Record a weigh-in (plus optional body composition).", "keyed": "none",
      "args": ["KG"], "flags": ["--date", "--fat", "--water", "--muscle", "--bone", "--bmi", "--dry-run"],
@@ -261,11 +279,20 @@ def build_schema(group: str | None) -> dict[str, Any]:
                    "load": "Weekly and daily training load.",
                    "chart": "PNG charts: volume, plan, recovery, sleep, weight, intensity, activity.",
                    "export": "Dashboard export: run the recipe of read commands and write the bundle file.",
+                   "requests": "Dashboard page requests: apply the shoe, effort and weigh-in requests the athlete pressed.",
                    "zones": "Lactate thresholds and zones: estimate from history, analyze field tests, record, accept (local file); push to the watch."},
         "commands": commands,
         "export": {"recipe_path": "$PACE_HOME/dashboard/recipe.json", "bundle_path": "$PACE_HOME/dashboard/bundle.json",
                    "recipe_version": RECIPE_VERSION, "refused_flags": list(EXPORT_REFUSED_FLAGS),
                    "max_calls_default": EXPORT_MAX_CALLS, "max_seconds_default": EXPORT_MAX_SECONDS},
+        "requests": {"collection": preq.COLLECTION, "log_path": f"$PACE_HOME/{preq.LOG_NAME}",
+                     "ops": {op: {"params": list(preq.PARAMS[op]), "required": list(preq.REQUIRED[op])}
+                             for op in preq.OPS},
+                     "rule": "effort.set needs rpe or feel or both", "rpe_range": [1, 10], "feel": list(FEEL_LEVELS),
+                     "kg_range": list(preq.KG_RANGE), "max_age_days": preq.MAX_AGE_DAYS,
+                     "max_ahead_days": preq.MAX_AHEAD_DAYS, "id_pattern": preq.ID_PATTERN,
+                     "max_attempts": preq.MAX_ATTEMPTS, "max_calls": preq.MAX_CALLS, "max_seconds": preq.MAX_SECONDS,
+                     "refused_codes": list(preq.REFUSED_CODES), "statuses": list(preq.STATUSES)},
         "workout_dsl": DSL_REFERENCE,
         "writes": WRITES,
         "diary": {"path": "$PACE_HOME/diary.json", "kinds": KINDS, "profile_keys": PROFILE_KEYS,
@@ -298,7 +325,7 @@ def build_schema(group: str | None) -> dict[str, Any]:
 
 def schema(group: str | None = typer.Argument(None, help="Restrict to one group.")) -> None:
     """Machine-readable manifest of every command, flag, unit and error code."""
-    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "export", "zones"}
+    known = set(GROUPS) | {"activity", "auth", "cache", "config", "workout", "log", "diary", "plan", "load", "chart", "export", "requests", "zones"}
     if group is not None and group not in known:
         fail("schema", PaceError("bad_args", f"Unknown group {group!r}. Groups: {', '.join(sorted(known))}."))
 
